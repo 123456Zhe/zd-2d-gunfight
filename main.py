@@ -1,4 +1,4 @@
-import pygame
+﻿import pygame
 import math
 import random
 import sys
@@ -40,6 +40,10 @@ RESPAWN_TIME = 3.0  # 复活时间（秒）
 SERVER_PORT = 5555
 BUFFER_SIZE = 4096
 
+# 视角配置
+FIELD_OF_VIEW = 140  # 视角角度（度）
+VISION_RANGE = 400   # 视角范围（像素）
+
 # 颜色定义
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
@@ -50,6 +54,20 @@ GRAY = (100, 100, 100)
 YELLOW = (255, 255, 0)
 DOOR_COLOR = (139, 69, 19)
 DEAD_COLOR = (128, 128, 128)  # 死亡状态颜色
+VISION_COLOR = (255, 255, 0, 50)  # 视角范围颜色（半透明黄色）
+
+def normalize_angle(angle):
+    """将角度标准化到0-360度范围"""
+    while angle < 0:
+        angle += 360
+    while angle >= 360:
+        angle -= 360
+    return angle
+
+def angle_difference(angle1, angle2):
+    """计算两个角度之间的最小差值"""
+    diff = abs(angle1 - angle2)
+    return min(diff, 360 - diff)
 
 class Door:
     """门类，管理门的状态、动画和交互"""
@@ -677,6 +695,55 @@ class Player:
         self.last_respawn_check = 0
         self.last_door_interaction = 0
 
+    def is_in_field_of_view(self, target_pos, observer_pos=None, observer_angle=None):
+        """检查目标位置是否在视角范围内"""
+        if observer_pos is None:
+            observer_pos = self.pos
+        if observer_angle is None:
+            observer_angle = self.angle
+            
+        # 计算距离
+        distance = (target_pos - observer_pos).length()
+        if distance > VISION_RANGE:
+            return False
+            
+        # 计算角度
+        direction_to_target = target_pos - observer_pos
+        if direction_to_target.length() == 0:
+            return True  # 如果目标就在观察者位置上
+            
+        target_angle = math.degrees(math.atan2(-direction_to_target.y, direction_to_target.x))
+        target_angle = normalize_angle(target_angle)
+        observer_angle = normalize_angle(observer_angle)
+        
+        # 计算角度差
+        angle_diff = angle_difference(target_angle, observer_angle)
+        
+        # 检查是否在视角范围内
+        return angle_diff <= FIELD_OF_VIEW / 2
+
+    def get_vision_polygon(self):
+        """获取视角范围的多边形顶点"""
+        half_fov = FIELD_OF_VIEW / 2
+        start_angle = self.angle - half_fov
+        end_angle = self.angle + half_fov
+        
+        # 扇形的顶点
+        points = [self.pos]  # 起始点（玩家位置）
+        
+        # 添加扇形弧上的点
+        num_points = 20  # 扇形弧的点数
+        for i in range(num_points + 1):
+            angle = start_angle + (end_angle - start_angle) * i / num_points
+            angle_rad = math.radians(angle)
+            point = self.pos + pygame.Vector2(
+                math.cos(angle_rad) * VISION_RANGE,
+                -math.sin(angle_rad) * VISION_RANGE
+            )
+            points.append(point)
+            
+        return points
+
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
         room_id = random.randint(0, 8)  # 0-8九个房间
@@ -911,7 +978,14 @@ class Player:
                     'data': {str(self.id): player_data}
                 })
 
-    def draw(self, surface, camera_offset):
+    def draw(self, surface, camera_offset, local_player=None, show_vision=False):
+        """绘制玩家，考虑视角限制"""
+        # 如果有本地玩家且当前玩家不是本地玩家，检查是否在视角范围内
+        if (local_player and local_player.id != self.id and 
+            not local_player.is_dead and not self.is_dead):
+            if not local_player.is_in_field_of_view(self.pos):
+                return  # 不在视角范围内，不绘制
+        
         if self.is_dead:
             # 死亡状态绘制灰色圆圈和复活倒计时
             pygame.draw.circle(
@@ -958,6 +1032,30 @@ class Player:
         name_surface = font.render(self.name, True, WHITE)
         surface.blit(name_surface, (screen_points[0][0] - name_surface.get_width() // 2,
                                    screen_points[0][1] - 35))
+        
+        # 绘制视角范围（可选，用于调试）
+        if show_vision and local_player and local_player.id == self.id:
+            self.draw_vision_field(surface, camera_offset)
+
+    def draw_vision_field(self, surface, camera_offset):
+        """绘制视角范围"""
+        # 创建带透明度的表面
+        vision_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        
+        # 获取视角多边形的屏幕坐标
+        vision_points = self.get_vision_polygon()
+        screen_points = [(p.x - camera_offset.x, p.y - camera_offset.y) for p in vision_points]
+        
+        # 只绘制在屏幕范围内的部分
+        valid_points = []
+        for point in screen_points:
+            x, y = point
+            if -VISION_RANGE <= x <= SCREEN_WIDTH + VISION_RANGE and -VISION_RANGE <= y <= SCREEN_HEIGHT + VISION_RANGE:
+                valid_points.append((max(0, min(SCREEN_WIDTH, x)), max(0, min(SCREEN_HEIGHT, y))))
+        
+        if len(valid_points) >= 3:
+            pygame.draw.polygon(vision_surface, VISION_COLOR, valid_points)
+            surface.blit(vision_surface, (0, 0))
 
 class Map:
     def __init__(self):
@@ -1097,7 +1195,7 @@ class Game:
         self.running = True  
         self.clock = pygame.time.Clock()  
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("多人射击游戏")
+        pygame.display.set_caption("多人射击游戏 - 视角系统")
         
         # 初始化玩家
         self.player_id = self.get_player_id()  
@@ -1123,8 +1221,9 @@ class Game:
         self.last_sync_time = 0
         self.sync_interval = 0.05  # 同步间隔50ms
         
-        # 调试模式
+        # 调试模式和视角显示
         self.debug_mode = True
+        self.show_vision = False  # 是否显示视角范围
 
     def get_player_id(self):
         input_text = ""
@@ -1171,6 +1270,8 @@ class Game:
                     self.player.reload_start = time.time()
                 elif event.key == K_F3:  # 切换调试模式
                     self.debug_mode = not self.debug_mode
+                elif event.key == K_F4:  # 切换视角显示
+                    self.show_vision = not self.show_vision
             elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
                     self.player.shooting = True
@@ -1268,12 +1369,12 @@ class Game:
         for bullet in self.bullets:
             bullet.draw(self.screen, self.camera_offset)
         
-        # 绘制其他玩家
+        # 绘制其他玩家（考虑视角限制）
         for player in self.other_players.values():
-            player.draw(self.screen, self.camera_offset)
+            player.draw(self.screen, self.camera_offset, self.player, self.show_vision)
         
         # 绘制本地玩家
-        self.player.draw(self.screen, self.camera_offset)
+        self.player.draw(self.screen, self.camera_offset, self.player, self.show_vision)
         
         # 绘制UI
         health_text = f"生命: {self.player.health}/{self.player.max_health}"
@@ -1306,9 +1407,13 @@ class Game:
         damage_text = f"子弹伤害: {BULLET_DAMAGE}"
         self.screen.blit(font.render(damage_text, True, WHITE), (20, 110))
         
+        # 视角相关信息
+        vision_text = f"视角: {FIELD_OF_VIEW}° 范围: {VISION_RANGE}px"
+        self.screen.blit(font.render(vision_text, True, YELLOW), (20, 140))
+        
         # 调试信息
         if self.debug_mode:
-            debug_y = 140
+            debug_y = 170
             self.screen.blit(font.render(f"玩家ID: {self.player_id}", True, YELLOW), (20, debug_y))
             debug_y += 25
             self.screen.blit(font.render(f"服务器: {'是' if self.network_manager.is_server else '否'}", True, YELLOW), (20, debug_y))
@@ -1317,7 +1422,9 @@ class Game:
             debug_y += 25
             self.screen.blit(font.render(f"子弹数: {len(self.bullets)} 网络: {len(self.network_manager.get_bullets())}", True, YELLOW), (20, debug_y))
             debug_y += 25
-            self.screen.blit(font.render(f"按F3切换调试模式", True, YELLOW), (20, debug_y))
+            self.screen.blit(font.render(f"按F3切换调试模式 F4切换视角显示", True, YELLOW), (20, debug_y))
+            debug_y += 25
+            self.screen.blit(font.render(f"视角显示: {'开' if self.show_vision else '关'}", True, YELLOW), (20, debug_y))
         
         # 小地图
         self.render_minimap()
@@ -1360,18 +1467,37 @@ class Game:
                     rel_y + rel_height > 0 and rel_y < minimap_height):
                     pygame.draw.rect(minimap_surface, door.get_color(), (rel_x, rel_y, rel_width, rel_height))
         
-        # 绘制其他玩家
+        # 绘制其他玩家（只显示在视角范围内的）
         for player in self.other_players.values():
             rel_x = (player.pos.x - self.player.pos.x) * minimap_scale + minimap_center_x
             rel_y = (player.pos.y - self.player.pos.y) * minimap_scale + minimap_center_y
             
             if 0 <= rel_x < minimap_width and 0 <= rel_y < minimap_height:
-                color = DEAD_COLOR if player.is_dead else player.color
-                pygame.draw.circle(minimap_surface, color, (int(rel_x), int(rel_y)), 3)
+                # 检查是否在视角范围内（死亡玩家不检查视角）
+                if (self.player.is_dead or player.is_dead or 
+                    self.player.is_in_field_of_view(player.pos)):
+                    color = DEAD_COLOR if player.is_dead else player.color
+                    pygame.draw.circle(minimap_surface, color, (int(rel_x), int(rel_y)), 3)
 
         # 绘制本地玩家 - 始终在小地图中心
         player_color = DEAD_COLOR if self.player.is_dead else self.player.color
         pygame.draw.circle(minimap_surface, player_color, (int(minimap_center_x), int(minimap_center_y)), 4)
+
+        # 绘制视角范围指示（在小地图上）
+        if not self.player.is_dead:
+            # 绘制视角方向线
+            half_fov = FIELD_OF_VIEW / 2
+            for angle_offset in [-half_fov, 0, half_fov]:
+                angle = self.player.angle + angle_offset
+                angle_rad = math.radians(angle)
+                end_x = minimap_center_x + math.cos(angle_rad) * (VISION_RANGE * minimap_scale * 0.5)
+                end_y = minimap_center_y - math.sin(angle_rad) * (VISION_RANGE * minimap_scale * 0.5)
+                
+                color = WHITE if angle_offset == 0 else YELLOW
+                if (0 <= end_x < minimap_width and 0 <= end_y < minimap_height):
+                    pygame.draw.line(minimap_surface, color, 
+                                   (minimap_center_x, minimap_center_y), 
+                                   (end_x, end_y), 1)
 
         # 绘制小地图边框
         pygame.draw.rect(minimap_surface, WHITE, (0, 0, minimap_width, minimap_height), 2)
