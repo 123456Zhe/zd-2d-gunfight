@@ -6,7 +6,6 @@ import socket
 import threading
 import json
 import time
-import uuid
 from pygame.locals import *
 
 # 初始化pygame
@@ -40,7 +39,6 @@ BULLET_DAMAGE = 20  # 子弹伤害
 RESPAWN_TIME = 3.0  # 复活时间（秒）
 SERVER_PORT = 5555
 BUFFER_SIZE = 4096
-MAX_BULLETS = 100  # 最大子弹数量限制
 
 # 颜色定义
 WHITE = (255, 255, 255)
@@ -65,8 +63,7 @@ class Door:
         self.animation_progress = 0.0  # 动画进度 (0.0 - 1.0)
         self.interaction_cooldown = 0.5  # 交互冷却时间(秒)
         self.last_interaction_time = 0  # 上次交互时间
-        self.last_update_time = 0  # 上次更新时间
-        self.door_id = f"door_{x}_{y}"  # 门的唯一ID
+        self.state_version = 0  # 门状态版本号，用于同步
     
     def update(self, dt):
         """更新门的状态和动画"""
@@ -86,7 +83,6 @@ class Door:
         
         # 更新门的大小和位置
         self.update_rect()
-        self.last_update_time = time.time()
     
     def update_rect(self):
         """根据动画进度更新门的矩形"""
@@ -110,7 +106,7 @@ class Door:
             return False
         
         # 检查玩家是否在交互区域内
-        interaction_range = PLAYER_RADIUS * 3  # 增大交互范围
+        interaction_range = PLAYER_RADIUS * 3  # 交互范围
         door_center = pygame.Vector2(self.original_rect.centerx, self.original_rect.centery)
         distance = (door_center - player_pos).length()
         
@@ -123,6 +119,7 @@ class Door:
             else:
                 self.open()
             
+            self.state_version += 1  # 增加版本号
             return True
         
         return False
@@ -132,7 +129,6 @@ class Door:
         if not self.is_open and not self.is_opening:
             self.is_opening = True
             self.is_closing = False
-            print(f"[门操作] 打开门 {self.door_id}")
             return True
         return False
     
@@ -141,7 +137,6 @@ class Door:
         if self.is_open and not self.is_closing:
             self.is_closing = True
             self.is_opening = False
-            print(f"[门操作] 关闭门 {self.door_id}")
             return True
         return False
     
@@ -170,43 +165,28 @@ class Door:
             )
             pygame.draw.rect(surface, self.get_color(), door_rect)
     
-    def to_network_data(self, door_index):
-        """将门状态转换为网络传输格式"""
+    def get_state(self):
+        """获取当前门状态"""
         return {
-            'i': door_index,
-            'did': self.door_id,
-            'o': int(self.is_opening),
-            'c': int(self.is_closing),
-            'f': int(self.is_open),
-            'p': self.animation_progress,
-            't': time.time()  # 添加时间戳
+            'is_open': self.is_open,
+            'is_opening': self.is_opening,
+            'is_closing': self.is_closing,
+            'animation_progress': self.animation_progress,
+            'version': self.state_version
         }
     
-    def from_network_data(self, data):
-        """从网络数据更新门状态"""
-        # 检查时间戳，只接受更新的数据
-        if 't' in data and data['t'] <= self.last_update_time:
-            return False  # 拒绝旧数据
-            
-        if 'o' in data:
-            self.is_opening = bool(data['o'])
-        if 'c' in data:
-            self.is_closing = bool(data['c'])
-        if 'f' in data:
-            self.is_open = bool(data['f'])
-        if 'p' in data:
-            self.animation_progress = float(data['p'])
-            
-        # 立即更新门的大小和位置，确保视觉上同步
-        self.update_rect()
-        
-        # 更新时间戳
-        if 't' in data:
-            self.last_update_time = data['t']
-        else:
-            self.last_update_time = time.time()
-            
-        return True  # 成功应用更新
+    def set_state(self, state):
+        """设置门状态"""
+        # 只有版本号更高的状态才会被应用
+        if 'version' in state and state['version'] > self.state_version:
+            self.is_open = state.get('is_open', False)
+            self.is_opening = state.get('is_opening', False)
+            self.is_closing = state.get('is_closing', False)
+            self.animation_progress = state.get('animation_progress', 0.0)
+            self.state_version = state['version']
+            self.update_rect()
+            return True
+        return False
     
     def check_collision(self, rect):
         """检查与门的碰撞，如果门打开则不碰撞"""
@@ -220,17 +200,17 @@ class NetworkManager:
         self.is_server = (player_id == 1)  # 判断是否是服务器
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.players = {}
-        self.bullets = []
-        self.doors = {}  # 改为字典存储门状态
+        self.doors = {}  # 存储门状态
         self.lock = threading.Lock()
         self.running = True
         self.clients = set()  # 存储连接的客户端地址
         self.client_addresses = {}  # 玩家ID到地址的映射
         self.last_damage_time = {}  # 防止重复处理伤害
         self.last_broadcast = 0  # 上次广播时间
-        self.door_last_update = {}  # 门状态最后更新时间
-        self.bullet_ids = set()  # 已处理的子弹ID集合
-        self.door_sync_timer = 0  # 门状态同步计时器
+        
+        # 简化的子弹管理
+        self.active_bullets = []  # 当前活动的子弹
+        self.next_bullet_id = 1
         
         if self.is_server:
             self.socket.bind(('0.0.0.0', SERVER_PORT))
@@ -245,6 +225,7 @@ class NetworkManager:
                 'is_reloading': False,
                 'shooting': False,
                 'is_dead': False,
+                'death_time': 0,
                 'respawn_time': 0,
                 'is_respawning': False
             }
@@ -276,35 +257,37 @@ class NetworkManager:
                     
                 try:
                     message = json.loads(message_str)
-                    if not isinstance(message, dict) or 't' not in message:
+                    if not isinstance(message, dict) or 'type' not in message:
                         continue
                 except json.JSONDecodeError:
-                    print(f"无效的JSON数据: {message_str[:50]}...")
                     continue
                 
                 with self.lock:
-                    # 消息类型映射
-                    msg_handlers = {
-                        'c': lambda: self._handle_connect(message['d'], addr) if 'd' in message else None,
-                        'p': lambda: self._update_players(message['d']) if isinstance(message.get('d'), dict) else None,
-                        'i': lambda: self._init_players(message['d']) if isinstance(message.get('d'), dict) else None,
-                        'b': lambda: self._update_bullets(message['d']) if isinstance(message.get('d'), list) else None,
-                        'd': lambda: self._update_door(message['d']) if isinstance(message.get('d'), dict) else None,
-                        'r': lambda: self._handle_respawn(message['d']) if isinstance(message.get('d'), dict) else None,
-                        'h': lambda: self._handle_damage(message['d']) if isinstance(message.get('d'), dict) else None
-                    }
+                    msg_type = message['type']
+                    msg_data = message.get('data', {})
                     
-                    if message['t'] in msg_handlers:
-                        msg_handlers[message['t']]()
+                    if msg_type == 'player_update':
+                        self._update_players(msg_data)
+                    elif msg_type == 'init_players':
+                        self._init_players(msg_data)
+                    elif msg_type == 'door_update':
+                        self._update_door(msg_data)
+                    elif msg_type == 'request_bullet':
+                        self._handle_bullet_request(msg_data)
+                    elif msg_type == 'bullets_update':
+                        self._update_bullets(msg_data)
+                    elif msg_type == 'hit_damage':
+                        self._handle_damage(msg_data)
+                    elif msg_type == 'respawn':
+                        self._handle_respawn(msg_data)
                         
                     # 记录新客户端
                     if self.is_server and addr not in self.clients:
                         self.clients.add(addr)
-                        print(f"[服务端] 新客户端已添加: {addr}")
                         
             except Exception as e:
                 print(f"接收数据错误: {e}")
-                continue  # 忽略无效数据包
+                continue
 
     def _handle_connect(self, data, addr):
         """处理新客户端连接"""
@@ -326,97 +309,44 @@ class NetworkManager:
                         'is_reloading': False,
                         'shooting': False,
                         'is_dead': False,
+                        'death_time': 0,
                         'respawn_time': 0,
                         'is_respawning': False
                     }
                 
                 # 立即发送当前游戏状态给新玩家
-                init_packet = {
-                    't': 'i',  # init_players
-                    'd': self.players
-                }
-                self.socket.sendto(json.dumps(init_packet).encode(), addr)
-                print(f"[服务端] 发送初始玩家数据到 {addr}")
+                self.send_to_client({
+                    'type': 'init_players',
+                    'data': self.players
+                }, addr)
                 
                 # 发送门状态
                 for door_id, door_state in self.doors.items():
-                    door_packet = {
-                        't': 'd',  # door_update
-                        'd': door_state
-                    }
-                    self.socket.sendto(json.dumps(door_packet).encode(), addr)
-                    print(f"[服务端] 发送门{door_id}状态到 {addr}")
+                    self.send_to_client({
+                        'type': 'door_update',
+                        'data': {'door_id': door_id, 'state': door_state}
+                    }, addr)
                     
             except ValueError as e:
                 print(f"处理连接失败: {e}")
-                
-    def _update_bullets(self, bullet_data):
-        """处理子弹数据更新"""
-        if not isinstance(bullet_data, list):
-            return
-            
-        valid_bullets = []
-        for bullet in bullet_data:
-            try:
-                if all(key in bullet for key in ['pos', 'direction', 'owner_id']):
-                    # 检查子弹ID是否存在，防止重复处理
-                    bullet_id = bullet.get('id', f"{bullet['owner_id']}_{bullet['pos'][0]}_{bullet['pos'][1]}")
-                    
-                    # 如果没有处理过这个子弹，添加到列表
-                    if bullet_id not in self.bullet_ids:
-                        self.bullet_ids.add(bullet_id)
-                        valid_bullets.append({
-                            'id': bullet_id,
-                            'pos': bullet['pos'],
-                            'direction': bullet['direction'],
-                            'owner_id': int(bullet['owner_id']),
-                            'time': bullet.get('time', time.time())
-                        })
-            except (ValueError, TypeError) as e:
-                print(f"子弹数据无效: {e}")
-                continue
-                
-        # 合并有效子弹到当前列表
-        if valid_bullets:
-            # 限制子弹总数，防止过多
-            self.bullets.extend(valid_bullets)
-            if len(self.bullets) > MAX_BULLETS:
-                # 保留最新的子弹
-                self.bullets = self.bullets[-MAX_BULLETS:]
-                
-            # 如果是服务端，广播新子弹给所有客户端
-            if self.is_server:
-                self.send_data({
-                    'type': 'bullet_create',
-                    'data': valid_bullets
-                })
 
     def _update_players(self, player_data):
-        """更新玩家数据 - 修复服务端玩家移动问题"""
+        """更新玩家数据"""
         if not isinstance(player_data, dict):
             return
             
         for pid_str, pdata in player_data.items():
             try:
                 pid = int(pid_str)
-                required_keys = ['pos', 'angle', 'health', 'ammo', 'is_reloading', 'shooting', 'is_dead']
-                if not all(key in pdata for key in required_keys):
-                    continue
-                    
-                # 确保有复活相关字段
-                if 'respawn_time' not in pdata:
-                    pdata['respawn_time'] = 0
-                if 'is_respawning' not in pdata:
-                    pdata['is_respawning'] = False
-                
                 if self.is_server:
-                    # 服务端：接受客户端的位置和输入数据，但保持权威生命值
+                    # 服务端：接受客户端的位置和输入数据，但保持权威生命值和死亡状态
                     if pid in self.players:
                         # 保存当前权威数据
                         current_health = self.players[pid]['health']
                         current_is_dead = self.players[pid]['is_dead']
-                        current_respawn_time = self.players[pid]['respawn_time']
-                        current_is_respawning = self.players[pid]['is_respawning']
+                        current_death_time = self.players[pid].get('death_time', 0)
+                        current_respawn_time = self.players[pid].get('respawn_time', 0)
+                        current_is_respawning = self.players[pid].get('is_respawning', False)
                         
                         # 更新客户端发来的数据
                         self.players[pid].update(pdata)
@@ -424,6 +354,7 @@ class NetworkManager:
                         # 恢复服务端权威数据
                         self.players[pid]['health'] = current_health
                         self.players[pid]['is_dead'] = current_is_dead
+                        self.players[pid]['death_time'] = current_death_time
                         self.players[pid]['respawn_time'] = current_respawn_time
                         self.players[pid]['is_respawning'] = current_is_respawning
                     else:
@@ -432,13 +363,12 @@ class NetworkManager:
                     # 客户端：完全接受服务端数据
                     self.players[pid] = pdata
             except (ValueError, TypeError) as e:
-                print(f"更新玩家数据错误: {e}")
                 continue
 
     def _init_players(self, player_data):
         """初始化玩家数据"""
         if not self.is_server and isinstance(player_data, dict):
-            print(f"[客户端] 接收到初始玩家数据: {player_data}")
+            print(f"[客户端] 接收到初始玩家数据")
             self.players = {}
             for pid_str, pdata in player_data.items():
                 try:
@@ -449,76 +379,43 @@ class NetworkManager:
 
     def _update_door(self, door_data):
         """更新门状态"""
-        if isinstance(door_data, dict) and 'i' in door_data:
-            door_index = door_data['i']
-            current_time = time.time()
+        if isinstance(door_data, dict) and 'door_id' in door_data and 'state' in door_data:
+            door_id = door_data['door_id']
+            new_state = door_data['state']
             
-            # 检查是否是更新的门状态
-            is_newer = True
-            if door_index in self.door_last_update:
-                if current_time - self.door_last_update[door_index] < 0.1:
-                    is_newer = False
+            # 更新本地门状态
+            self.doors[door_id] = new_state
             
-            if is_newer:
-                # 为数据添加时间戳
-                if 't' not in door_data:
-                    door_data['t'] = current_time
-                    
-                self.door_last_update[door_index] = current_time
-                self.doors[door_index] = door_data
-                print(f"[门同步] 更新门{door_index}状态: {door_data}")
-                
-                # 服务端收到门状态更新后，直接广播给所有客户端
-                if self.is_server:
-                    self._broadcast_door_state(door_data)
-    
-    def _broadcast_door_state(self, door_data):
-        """广播门状态到所有客户端"""
-        try:
-            # 确保时间戳存在
-            if 't' not in door_data:
-                door_data['t'] = time.time()
-                
-            # 直接使用原始数据包格式广播
-            door_packet = {
-                't': 'd',  # door_update
-                'd': door_data
+            # 如果是服务端，转发给所有客户端
+            if self.is_server:
+                for addr in self.clients:
+                    try:
+                        self.send_to_client({
+                            'type': 'door_update',
+                            'data': door_data
+                        }, addr)
+                    except:
+                        pass
+
+    def _handle_bullet_request(self, bullet_data):
+        """处理子弹发射请求 - 只有服务端处理"""
+        if self.is_server and isinstance(bullet_data, dict):
+            # 创建新子弹
+            new_bullet = {
+                'id': self.next_bullet_id,
+                'pos': bullet_data.get('pos'),
+                'dir': bullet_data.get('dir'),  # 简化为dir
+                'owner': bullet_data.get('owner'),
+                'time': time.time()
             }
-            packet_data = json.dumps(door_packet).encode()
-            
-            # 发送到所有客户端
-            for addr in self.clients:
-                try:
-                    self.socket.sendto(packet_data, addr)
-                except Exception as e:
-                    print(f"发送门状态到 {addr} 失败: {e}")
-            
-            print(f"[服务端] 广播门{door_data['i']}状态到所有客户端")
-        except Exception as e:
-            print(f"广播门状态失败: {e}")
-    
-    def _handle_respawn(self, respawn_data):
-        """处理复活事件"""
-        if isinstance(respawn_data, dict) and 'player_id' in respawn_data and 'pos' in respawn_data:
-            player_id = respawn_data['player_id']
-            if player_id in self.players:
-                print(f"[复活] 玩家{player_id}复活到位置{respawn_data['pos']}")
-                self.players[player_id].update({
-                    'pos': respawn_data['pos'],
-                    'health': 100,
-                    'ammo': MAGAZINE_SIZE,
-                    'is_dead': False,
-                    'respawn_time': 0,
-                    'is_reloading': False,
-                    'is_respawning': False
-                })
-                
-                # 如果是服务端，广播复活事件给所有客户端
-                if self.is_server:
-                    self.send_data({
-                        'type': 'player_update',
-                        'data': {str(player_id): self.players[player_id]}
-                    })
+            self.next_bullet_id += 1
+            self.active_bullets.append(new_bullet)
+            print(f"[服务端] 创建子弹 ID:{new_bullet['id']} 来自玩家{new_bullet['owner']}")
+
+    def _update_bullets(self, bullets_data):
+        """更新子弹数据 - 客户端接收服务端的子弹"""
+        if not self.is_server and isinstance(bullets_data, list):
+            self.active_bullets = bullets_data
 
     def _handle_damage(self, damage_data):
         """处理伤害事件 - 只有服务端处理"""
@@ -532,8 +429,8 @@ class NetworkManager:
                 attacker_id = int(damage_data['attacker_id'])
                 
                 # 防止重复处理相同的伤害事件
-                damage_key = f"{attacker_id}_{target_id}_{pygame.time.get_ticks()//100}"
-                current_time = pygame.time.get_ticks() / 1000
+                damage_key = f"{attacker_id}_{target_id}_{int(time.time() * 10)}"
+                current_time = time.time()
                 
                 if damage_key in self.last_damage_time and current_time - self.last_damage_time[damage_key] < 0.1:
                     return
@@ -546,29 +443,36 @@ class NetworkManager:
                     print(f"[伤害处理] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
                     
                     if self.players[target_id]['health'] <= 0:
+                        # 服务端计算死亡和复活时间
                         self.players[target_id]['health'] = 0
                         self.players[target_id]['is_dead'] = True
+                        self.players[target_id]['death_time'] = current_time
                         self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
-                        print(f"[死亡] 玩家{target_id}死亡，{RESPAWN_TIME}秒后复活")
-                    
-                    # 立即广播更新后的玩家状态
-                    self.send_data({
-                        'type': 'player_update',
-                        'data': {str(target_id): self.players[target_id]}
-                    })
+                        print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
             except ValueError as e:
                 print(f"处理伤害数据错误: {e}")
-    
-    def send_data(self, data):
-        """发送数据"""
-        # 精简数据格式
-        packet = {
-            't': data['type'][0],  # 消息类型首字母
-            'd': data['data']      # 原始数据
-        }
 
+    def _handle_respawn(self, respawn_data):
+        """处理复活事件"""
+        if isinstance(respawn_data, dict) and 'player_id' in respawn_data and 'pos' in respawn_data:
+            player_id = respawn_data['player_id']
+            if player_id in self.players:
+                print(f"[复活] 玩家{player_id}复活到位置{respawn_data['pos']}")
+                self.players[player_id].update({
+                    'pos': respawn_data['pos'],
+                    'health': 100,
+                    'ammo': MAGAZINE_SIZE,
+                    'is_dead': False,
+                    'death_time': 0,
+                    'respawn_time': 0,
+                    'is_reloading': False,
+                    'is_respawning': False
+                })
+
+    def send_data(self, data):
+        """发送数据到服务端或所有客户端"""
         try:
-            serialized = json.dumps(packet).encode()
+            serialized = json.dumps(data).encode()
             if self.is_server:
                 # 服务端广播
                 for addr in list(self.clients):
@@ -576,34 +480,90 @@ class NetworkManager:
                         self.socket.sendto(serialized, addr)
                     except:
                         self.clients.discard(addr)
-                        print(f"[服务端] 客户端 {addr} 连接失败，已移除")
             else:
                 # 客户端发送到服务端
                 self.socket.sendto(serialized, (self.server_address, SERVER_PORT))
         except Exception as e:
             print(f"[网络错误] 发送数据失败: {e}")
 
+    def send_to_client(self, data, addr):
+        """发送数据到指定客户端"""
+        try:
+            serialized = json.dumps(data).encode()
+            self.socket.sendto(serialized, addr)
+        except Exception as e:
+            print(f"[网络错误] 发送到{addr}失败: {e}")
+
+    def request_fire_bullet(self, pos, direction, owner_id):
+        """请求发射子弹"""
+        if self.is_server:
+            # 服务端直接创建子弹
+            new_bullet = {
+                'id': self.next_bullet_id,
+                'pos': pos,
+                'dir': direction,
+                'owner': owner_id,
+                'time': time.time()
+            }
+            self.next_bullet_id += 1
+            with self.lock:
+                self.active_bullets.append(new_bullet)
+            print(f"[服务端] 直接创建子弹 ID:{new_bullet['id']}")
+        else:
+            # 客户端发送请求给服务端
+            self.send_data({
+                'type': 'request_bullet',
+                'data': {
+                    'pos': pos,
+                    'dir': direction,
+                    'owner': owner_id
+                }
+            })
+
+    def update_door(self, door_id, door_state):
+        """更新门状态"""
+        self.doors[door_id] = door_state
+        self.send_data({
+            'type': 'door_update',
+            'data': {'door_id': door_id, 'state': door_state}
+        })
+
     def update_and_broadcast(self):
         """服务端定期广播游戏状态"""
         if self.is_server:
             current_time = time.time()
-            
-            # 广播玩家状态
             if current_time - self.last_broadcast > 0.05:  # 20Hz
+                # 广播玩家状态
                 self.send_data({
                     'type': 'player_update', 
                     'data': {str(pid): pdata for pid, pdata in self.players.items()}
                 })
+                
+                # 清理过期子弹（3秒后）
+                with self.lock:
+                    self.active_bullets = [
+                        b for b in self.active_bullets 
+                        if current_time - b['time'] < 3.0
+                    ]
+                
+                # 广播子弹状态
+                self.send_data({
+                    'type': 'bullets_update',
+                    'data': self.active_bullets
+                })
+                
                 self.last_broadcast = current_time
-            
-            # 定期同步所有门状态(每5秒一次)
-            if current_time - self.door_sync_timer > 5.0:
-                self.door_sync_timer = current_time
-                for door_id, door_state in self.doors.items():
-                    # 更新时间戳
-                    door_state['t'] = current_time
-                    self._broadcast_door_state(door_state)
-                print(f"[服务端] 执行完整门状态同步")
+
+    def get_bullets(self):
+        """获取当前活动的子弹"""
+        with self.lock:
+            return list(self.active_bullets)
+
+    def remove_bullet(self, bullet_id):
+        """移除指定子弹"""
+        if self.is_server:
+            with self.lock:
+                self.active_bullets = [b for b in self.active_bullets if b['id'] != bullet_id]
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -619,20 +579,6 @@ class NetworkManager:
         
         return [spawn_x, spawn_y]
     
-    def clear_old_bullets(self):
-        """清理旧子弹"""
-        current_time = time.time()
-        # 子弹存在超过3秒就清理
-        self.bullets = [b for b in self.bullets if 'time' not in b or current_time - b['time'] < 3.0]
-        
-        # 限制子弹数量
-        if len(self.bullets) > MAX_BULLETS:
-            self.bullets = self.bullets[-MAX_BULLETS:]
-        
-        # 超过1000个的子弹ID清理
-        if len(self.bullet_ids) > 1000:
-            self.bullet_ids = set(list(self.bullet_ids)[-1000:])
-    
     def stop(self):
         self.running = False
         try:
@@ -641,24 +587,19 @@ class NetworkManager:
             pass
 
 class Bullet:
-    def __init__(self, pos, direction, owner_id, bullet_id=None):
-        self.pos = pygame.Vector2(pos)
-        self.direction = pygame.Vector2(direction).normalize()
-        self.owner_id = owner_id
+    def __init__(self, bullet_data):
+        self.id = bullet_data['id']
+        self.pos = pygame.Vector2(bullet_data['pos'])
+        self.direction = pygame.Vector2(bullet_data['dir']).normalize()
+        self.owner_id = bullet_data['owner']
         self.speed = BULLET_SPEED
         self.radius = BULLET_RADIUS
-        self.lifetime = 3.0
+        self.creation_time = bullet_data['time']
         self.has_hit = set()
-        self.creation_time = time.time()
-        self.bullet_id = bullet_id or f"{owner_id}_{self.creation_time}_{uuid.uuid4().hex[:8]}"
 
     def update(self, dt, game_map, players, network_manager=None):
         self.pos += self.direction * self.speed * dt
-        self.lifetime -= dt
         
-        if self.lifetime <= 0:
-            return True
-            
         bullet_rect = pygame.Rect(
             self.pos.x - self.radius,
             self.pos.y - self.radius,
@@ -683,14 +624,11 @@ class Bullet:
                     self.has_hit.add(player.id)
                     
                     if network_manager:
-                        # 无论是服务器还是客户端，都发送伤害事件
                         damage_data = {
                             'target_id': player.id,
                             'damage': BULLET_DAMAGE,
                             'attacker_id': self.owner_id
                         }
-                        # 记录发送的伤害数据
-                        print(f"[发送伤害事件] 从{self.owner_id}到{player.id}, 伤害:{BULLET_DAMAGE}")
                         network_manager.send_data({
                             'type': 'hit_damage',
                             'data': damage_data
@@ -716,16 +654,6 @@ class Bullet:
             (int(self.pos.x - camera_offset.x), int(self.pos.y - camera_offset.y)),
             self.radius
         )
-        
-    def to_network_data(self):
-        """转换为网络数据格式"""
-        return {
-            'id': self.bullet_id,
-            'pos': [self.pos.x, self.pos.y],
-            'direction': [self.direction.x, self.direction.y],
-            'owner_id': self.owner_id,
-            'time': self.creation_time
-        }
 
 class Player:
     def __init__(self, player_id, x, y):
@@ -748,19 +676,6 @@ class Player:
         self.is_respawning = False
         self.last_respawn_check = 0
         self.last_door_interaction = 0
-
-    def take_damage(self, damage):
-        """受到伤害 - 现在主要用于本地显示，实际伤害由服务端处理"""
-        if not self.is_dead:
-            print(f"本地玩家{self.id}受到{damage}点伤害")
-
-    def die(self):
-        """死亡"""
-        self.is_dead = True
-        self.death_time = pygame.time.get_ticks() / 1000
-        self.respawn_time = self.death_time + RESPAWN_TIME
-        self.velocity = pygame.Vector2(0, 0)
-        print(f"玩家{self.id}死亡，将在{RESPAWN_TIME}秒后复活")
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -815,20 +730,21 @@ class Player:
                     'health': self.max_health,
                     'ammo': MAGAZINE_SIZE,
                     'is_dead': False,
+                    'death_time': 0,
                     'respawn_time': 0,
                     'is_reloading': False,
                     'is_respawning': False
                 })
         
-        self.last_respawn_check = pygame.time.get_ticks() / 1000
+        self.last_respawn_check = time.time()
 
     def update(self, dt, game_map, bullets, network_manager=None, all_players=None):
-        current_time = pygame.time.get_ticks() / 1000
+        current_time = time.time()
         
         # 重置复活状态
         if self.is_respawning and current_time - self.last_respawn_check > 1.0:
             self.is_respawning = False
-            self.last_door_interaction = 0  # 确保复活后可以与门交互
+            self.last_door_interaction = 0
         
         # 只有本地玩家才处理输入
         is_local_player = network_manager and network_manager.player_id == self.id
@@ -870,20 +786,15 @@ class Player:
                                               -math.sin(math.radians(self.angle)))
                     bullet_pos = self.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
                     
-                    # 创建新子弹
-                    new_bullet = Bullet(bullet_pos, bullet_dir, self.id)
-                    bullets.append(new_bullet)
+                    # 请求发射子弹
+                    network_manager.request_fire_bullet(
+                        [bullet_pos.x, bullet_pos.y],
+                        [bullet_dir.x, bullet_dir.y],
+                        self.id
+                    )
                     
                     self.ammo -= 1
                     self.last_shot = current_time
-                    
-                    if network_manager:
-                        # 发送子弹创建事件
-                        bullet_data = new_bullet.to_network_data()
-                        network_manager.send_data({
-                            'type': 'bullet_create',
-                            'data': [bullet_data]  # 修改为列表包装
-                        })
             
             # 换弹控制
             if (keys[K_r] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE:
@@ -931,35 +842,33 @@ class Player:
         # 门交互检测（只有本地玩家）
         if (is_local_player and not self.is_dead and not self.is_respawning):
             keys = pygame.key.get_pressed()
-            if keys[K_e] and current_time - self.last_door_interaction > 0.5:  # 添加交互冷却
+            if keys[K_e] and current_time - self.last_door_interaction > 0.5:
                 self.last_door_interaction = current_time
                 for i, door in enumerate(game_map.doors):
                     if door.try_interact(self.pos):
-                        door_data = door.to_network_data(i)
-                        print(f"[门交互] 玩家{self.id}与门{i}交互，发送数据: {door_data}")
-                        network_manager.send_data({
-                            'type': 'door_update',
-                            'data': door_data
-                        })
+                        # 发送门状态更新
+                        door_state = door.get_state()
+                        network_manager.update_door(i, door_state)
                         break
 
-        # 从网络同步健康状态（只有本地玩家）
+        # 从网络同步生命值和死亡状态（只有本地玩家）
         if is_local_player and self.id in network_manager.players:
             server_data = network_manager.players[self.id]
             
-            # 健康同步
+            # 同步生命值
             if self.health != server_data['health']:
                 old_health = self.health
                 self.health = server_data['health']
                 if old_health > self.health:
                     print(f"[同步] 玩家{self.id}生命值从{old_health}同步为{self.health}")
             
-            # 死亡状态同步
+            # 同步死亡状态
             if self.is_dead != server_data['is_dead']:
                 self.is_dead = server_data['is_dead']
                 if self.is_dead:
                     print(f"[同步] 玩家{self.id}死亡状态同步")
-                    self.respawn_time = server_data['respawn_time']
+                    self.death_time = server_data.get('death_time', current_time)
+                    self.respawn_time = server_data.get('respawn_time', current_time + RESPAWN_TIME)
 
         # 发送玩家更新（只有本地玩家）
         if is_local_player:
@@ -971,6 +880,7 @@ class Player:
                 'is_reloading': self.is_reloading,
                 'shooting': self.shooting,
                 'is_dead': self.is_dead,
+                'death_time': self.death_time,
                 'respawn_time': self.respawn_time,
                 'is_respawning': self.is_respawning
             }
@@ -982,6 +892,7 @@ class Player:
                     server_data = network_manager.players[self.id]
                     self.health = server_data.get('health', self.health)
                     self.is_dead = server_data.get('is_dead', self.is_dead)
+                    self.death_time = server_data.get('death_time', self.death_time)
                     self.respawn_time = server_data.get('respawn_time', self.respawn_time)
                     
                     # 更新服务端数据（位置等输入数据）
@@ -989,6 +900,7 @@ class Player:
                     # 保持权威数据
                     network_manager.players[self.id]['health'] = self.health
                     network_manager.players[self.id]['is_dead'] = self.is_dead
+                    network_manager.players[self.id]['death_time'] = self.death_time
                     network_manager.players[self.id]['respawn_time'] = self.respawn_time
                 else:
                     network_manager.players[self.id] = player_data
@@ -1009,7 +921,7 @@ class Player:
             )
             
             # 显示复活倒计时
-            current_time = pygame.time.get_ticks() / 1000
+            current_time = time.time()
             remaining_time = max(0, self.respawn_time - current_time)
             if remaining_time > 0:
                 respawn_text = f"{remaining_time:.1f}s"
@@ -1167,9 +1079,8 @@ class Map:
             
             # 从网络管理器同步门状态
             if i in network_manager.doors:
-                door_updated = door.from_network_data(network_manager.doors[i])
-                if door_updated:
-                    print(f"[门更新] 门{i}状态从网络同步成功")
+                door_state = network_manager.doors[i]
+                door.set_state(door_state)
     
     def draw(self, surface, camera_offset):
         # 绘制墙壁
@@ -1206,7 +1117,7 @@ class Game:
         
         # 初始化游戏地图（使用九宫格地图）
         self.game_map = Map()
-        self.bullets = []
+        self.bullets = []  # 本地子弹对象
         self.camera_offset = pygame.Vector2(0, 0)
         
         self.last_sync_time = 0
@@ -1214,9 +1125,6 @@ class Game:
         
         # 调试模式
         self.debug_mode = True
-        
-        # 初始化子弹清理计时器
-        self.bullet_cleanup_timer = 0
 
     def get_player_id(self):
         input_text = ""
@@ -1260,7 +1168,7 @@ class Game:
                     self.running = False
                 elif event.key == K_r and not self.player.is_reloading and not self.player.is_dead:
                     self.player.is_reloading = True
-                    self.player.reload_start = pygame.time.get_ticks() / 1000
+                    self.player.reload_start = time.time()
                 elif event.key == K_F3:  # 切换调试模式
                     self.debug_mode = not self.debug_mode
             elif event.type == MOUSEBUTTONDOWN:
@@ -1306,56 +1214,23 @@ class Game:
                     other_player.is_reloading = pdata['is_reloading']
                     other_player.shooting = pdata['shooting']
                     other_player.is_dead = pdata.get('is_dead', False)
+                    other_player.death_time = pdata.get('death_time', 0)
                     other_player.respawn_time = pdata.get('respawn_time', 0)
                     other_player.is_respawning = pdata.get('is_respawning', False)
             
             # 服务端定期广播
             self.network_manager.update_and_broadcast()
+            
+            # 同步子弹
+            self.sync_bullets()
         
         # 更新子弹
-        for bullet in self.bullets[:]:
+        for bullet in list(self.bullets):
             if bullet.update(dt, self.game_map, all_players, self.network_manager):
                 self.bullets.remove(bullet)
-        
-        # 同步网络子弹
-        with self.network_manager.lock:
-            network_bullets = []
-            existing_bullet_ids = {b.bullet_id for b in self.bullets}
-            
-            for bullet_data in self.network_manager.bullets:
-                # 只添加不是自己创建的子弹且不重复的子弹
-                bullet_id = bullet_data.get('id', f"{bullet_data['owner_id']}_{bullet_data['pos'][0]}_{bullet_data['pos'][1]}")
-                
-                if bullet_data['owner_id'] != self.player_id and bullet_id not in existing_bullet_ids:
-                    bullet = Bullet(
-                        bullet_data['pos'], 
-                        bullet_data['direction'], 
-                        bullet_data['owner_id'],
-                        bullet_id
-                    )
-                    network_bullets.append(bullet)
-            
-            # 添加新子弹
-            if network_bullets:
-                self.bullets.extend(network_bullets)
-                print(f"[子弹同步] 从网络添加了{len(network_bullets)}个子弹")
-                
-            # 限制子弹数量
-            if len(self.bullets) > MAX_BULLETS:
-                old_count = len(self.bullets)
-                self.bullets = self.bullets[-MAX_BULLETS:]
-                print(f"[子弹限制] 子弹数量超限，从{old_count}减至{len(self.bullets)}")
-        
-        # 定期清理子弹
-        if current_time - self.bullet_cleanup_timer > 1.0:
-            self.bullet_cleanup_timer = current_time
-            self.network_manager.clear_old_bullets()
-            
-            # 清理超时的本地子弹
-            old_count = len(self.bullets)
-            self.bullets = [b for b in self.bullets if b.lifetime > 0]
-            if old_count > len(self.bullets):
-                print(f"[子弹清理] 清理了{old_count - len(self.bullets)}个过期子弹")
+                # 通知服务器移除子弹
+                if self.network_manager.is_server:
+                    self.network_manager.remove_bullet(bullet.id)
         
         # 更新门
         self.game_map.update_doors(dt, self.network_manager)
@@ -1367,6 +1242,23 @@ class Game:
                 self.player.pos.y - SCREEN_HEIGHT / 2
             )
             self.camera_offset += (target_offset - self.camera_offset) * 0.1
+
+    def sync_bullets(self):
+        """同步子弹 - 完全基于服务器数据"""
+        network_bullets = self.network_manager.get_bullets()
+        
+        # 获取当前子弹ID集合
+        current_bullet_ids = {b.id for b in self.bullets}
+        network_bullet_ids = {b['id'] for b in network_bullets}
+        
+        # 移除不在网络列表中的子弹
+        self.bullets = [b for b in self.bullets if b.id in network_bullet_ids]
+        
+        # 添加新子弹
+        for bullet_data in network_bullets:
+            if bullet_data['id'] not in current_bullet_ids:
+                new_bullet = Bullet(bullet_data)
+                self.bullets.append(new_bullet)
     
     def render(self):
         self.screen.fill(BLACK)
@@ -1391,13 +1283,13 @@ class Game:
         
         if self.player.is_dead:
             # 显示死亡状态
-            current_time = pygame.time.get_ticks() / 1000
+            current_time = time.time()
             remaining_time = max(0, self.player.respawn_time - current_time)
             death_text = f"已死亡 - 复活倒计时: {remaining_time:.1f}s"
             death_surface = font.render(death_text, True, RED)
             self.screen.blit(death_surface, (SCREEN_WIDTH//2 - death_surface.get_width()//2, SCREEN_HEIGHT//2))
         elif self.player.is_reloading:
-            reload_time = max(0, RELOAD_TIME - (pygame.time.get_ticks() / 1000 - self.player.reload_start))
+            reload_time = max(0, RELOAD_TIME - (time.time() - self.player.reload_start))
             reload_text = f"换弹中: {reload_time:.1f}s"
             self.screen.blit(font.render(reload_text, True, YELLOW), (20, 80))
         
@@ -1423,7 +1315,7 @@ class Game:
             debug_y += 25
             self.screen.blit(font.render(f"门状态: {len(self.network_manager.doors)}个已同步", True, YELLOW), (20, debug_y))
             debug_y += 25
-            self.screen.blit(font.render(f"子弹数: {len(self.bullets)} (网络:{len(self.network_manager.bullets)})", True, YELLOW), (20, debug_y))
+            self.screen.blit(font.render(f"子弹数: {len(self.bullets)} 网络: {len(self.network_manager.get_bullets())}", True, YELLOW), (20, debug_y))
             debug_y += 25
             self.screen.blit(font.render(f"按F3切换调试模式", True, YELLOW), (20, debug_y))
         
@@ -1439,7 +1331,7 @@ class Game:
         minimap_surface.fill(BLACK)
         
         # 设置小地图的缩放比例
-        minimap_scale = 0.08  # 调整比例以适应九宫格
+        minimap_scale = 0.08
         # 使玩家位于小地图中心
         minimap_center_x = minimap_width / 2
         minimap_center_y = minimap_height / 2
@@ -1467,17 +1359,6 @@ class Game:
                 if (rel_x + rel_width > 0 and rel_x < minimap_width and 
                     rel_y + rel_height > 0 and rel_y < minimap_height):
                     pygame.draw.rect(minimap_surface, door.get_color(), (rel_x, rel_y, rel_width, rel_height))
-        
-        # 绘制房间边界（可选）
-        for room in self.game_map.rooms:
-            rel_x = (room.x - self.player.pos.x) * minimap_scale + minimap_center_x
-            rel_y = (room.y - self.player.pos.y) * minimap_scale + minimap_center_y
-            rel_width = room.width * minimap_scale
-            rel_height = room.height * minimap_scale
-            
-            if (rel_x + rel_width > 0 and rel_x < minimap_width and 
-                rel_y + rel_height > 0 and rel_y < minimap_height):
-                pygame.draw.rect(minimap_surface, (50, 50, 50), (rel_x, rel_y, rel_width, rel_height), 1)
         
         # 绘制其他玩家
         for player in self.other_players.values():
