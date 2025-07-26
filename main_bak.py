@@ -1,3 +1,4 @@
+# 该文件为拆分前的游戏代码，仅供备份，之后不会随版本更新修改
 import pygame
 import math
 import random
@@ -9,11 +10,6 @@ import time
 import subprocess
 import ipaddress
 from pygame.locals import *
-from constants import *
-from player import Player
-from map import Map, Door
-from network import NetworkManager
-from weapons import MeleeWeapon, Bullet
 
 # 初始化pygame
 pygame.init()
@@ -36,14 +32,77 @@ except:
         small_font = pygame.font.Font(None, 18)
         large_font = pygame.font.Font(None, 32)
         title_font = pygame.font.Font(None, 48)
-'''
 
-        }
-      ]
-    }
-  }
+# 游戏配置
+SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
+FPS = 60
+PLAYER_SPEED = 200
+AIMING_SPEED_MULTIPLIER = 0.5  # 瞄准时速度倍率
+BULLET_SPEED = 500
+BULLET_COOLDOWN = 0.15  # 连发间隔
+RELOAD_TIME = 2.0
+MAGAZINE_SIZE = 30
+PLAYER_RADIUS = 20
+BULLET_RADIUS = 5
+ROOM_SIZE = 600
+WALL_THICKNESS = 20
+DOOR_SIZE = 80
+DOOR_ANIMATION_SPEED = 2.0  # 门动画速度
+BULLET_DAMAGE = 20  # 子弹伤害
+RESPAWN_TIME = 3.0  # 复活时间（秒）
+SERVER_PORT = 5555
+BUFFER_SIZE = 4096
 
-```'''
+# 近战武器配置
+MELEE_DAMAGE = 40  # 近战伤害
+MELEE_RANGE = 60  # 近战攻击范围
+MELEE_COOLDOWN = 0.8  # 近战攻击冷却时间
+MELEE_ANIMATION_TIME = 0.3  # 近战攻击动画时间
+MELEE_ANGLE = 90  # 近战攻击角度范围（度）
+
+# 瞄准配置
+AIM_CAMERA_RANGE = 150  # 瞄准时相机可以偏移的最大距离
+AIM_SENSITIVITY = 0.3  # 瞄准时鼠标灵敏度
+
+# 网络配置
+HEARTBEAT_INTERVAL = 1.0  # 心跳间隔（秒）
+CLIENT_TIMEOUT = 5.0  # 客户端超时时间（秒）
+CONNECTION_TIMEOUT = 10.0  # 连接超时时间（秒）
+SCAN_TIMEOUT = 1.0  # 扫描单个IP的超时时间 - 增加到1秒
+
+# 视角配置
+FIELD_OF_VIEW = 120  # 视角角度（度）
+VISION_RANGE = 300   # 视角范围（像素）- 优化：减少视角范围
+
+# 聊天配置
+MAX_CHAT_MESSAGES = 10  # 最大显示聊天消息数
+CHAT_DISPLAY_TIME = 10.0  # 聊天消息显示时间（秒）
+MAX_CHAT_LENGTH = 50  # 最大聊天消息长度
+
+# 颜色定义
+WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+BLACK = (0, 0, 0)
+GRAY = (100, 100, 100)
+DARK_GRAY = (50, 50, 50)  # 迷雾中的墙壁颜色
+LIGHT_GRAY = (140, 140, 140)  # 可见地面颜色
+VISION_GROUND = (80, 80, 80)  # 视野内地面颜色（优化：使用更暗的颜色）
+YELLOW = (255, 255, 0)
+DOOR_COLOR = (139, 69, 19)
+DARK_DOOR_COLOR = (69, 34, 9)  # 迷雾中的门颜色
+DEAD_COLOR = (128, 128, 128)  # 死亡状态颜色
+VISION_COLOR = (255, 255, 0, 30)  # 视角范围颜色（半透明黄色）
+FOG_COLOR = (20, 20, 20, 180)  # 战争迷雾颜色（深灰色，半透明）
+LIGHT_GRAY_TRANSPARENT = (200, 200, 200, 80)  # 半透明浅灰色
+LIGHT_BLUE = (173, 216, 230)  # 浅蓝色
+DARK_BLUE = (0, 100, 200)  # 深蓝色
+ORANGE = (255, 165, 0)  # 橙色
+PURPLE = (128, 0, 128)  # 紫色
+MELEE_COLOR = (255, 100, 100)  # 近战攻击颜色
+MELEE_RANGE_COLOR = (255, 0, 0, 80)  # 近战范围指示颜色
+AIM_COLOR = (0, 255, 255)  # 瞄准指示颜色
 
 def get_local_ip():
     """获取本机内网IP"""
@@ -316,6 +375,102 @@ def create_vision_fan_points(player_pos, player_angle, fov_degrees, vision_range
     
     return points
 
+class MeleeWeapon:
+    """近战武器类"""
+    def __init__(self, owner_id):
+        self.owner_id = owner_id
+        self.damage = MELEE_DAMAGE
+        self.range = MELEE_RANGE
+        self.angle = MELEE_ANGLE
+        self.cooldown = MELEE_COOLDOWN
+        self.animation_time = MELEE_ANIMATION_TIME
+        
+        # 攻击状态
+        self.is_attacking = False
+        self.attack_start_time = 0
+        self.last_attack_time = 0
+        self.attack_direction = 0  # 攻击方向
+        
+        # 已击中的目标（防止一次攻击击中多次）
+        self.hit_targets = set()
+    
+    def can_attack(self):
+        """检查是否可以攻击"""
+        current_time = time.time()
+        return current_time - self.last_attack_time >= self.cooldown
+    
+    def start_attack(self, direction):
+        """开始攻击"""
+        if not self.can_attack():
+            return False
+        
+        current_time = time.time()
+        self.is_attacking = True
+        self.attack_start_time = current_time
+        self.last_attack_time = current_time
+        self.attack_direction = direction
+        self.hit_targets.clear()
+        return True
+    
+    def update(self, dt):
+        """更新武器状态"""
+        if self.is_attacking:
+            current_time = time.time()
+            if current_time - self.attack_start_time >= self.animation_time:
+                self.is_attacking = False
+    
+    def get_attack_progress(self):
+        """获取攻击动画进度 (0.0 - 1.0)"""
+        if not self.is_attacking:
+            return 0.0
+        
+        current_time = time.time()
+        elapsed = current_time - self.attack_start_time
+        return min(elapsed / self.animation_time, 1.0)
+    
+    def check_hit(self, attacker_pos, targets):
+        """检查攻击是否击中目标"""
+        if not self.is_attacking:
+            return []
+        
+        hit_list = []
+        for target_id, target_pos in targets.items():
+            if (target_id != self.owner_id and 
+                target_id not in self.hit_targets and
+                is_in_melee_range(attacker_pos, self.attack_direction, target_pos, self.range, self.angle)):
+                
+                self.hit_targets.add(target_id)
+                hit_list.append(target_id)
+        
+        return hit_list
+    
+    def get_attack_arc_points(self, attacker_pos, screen_offset):
+        """获取攻击弧形的绘制点"""
+        if not self.is_attacking:
+            return []
+        
+        progress = self.get_attack_progress()
+        current_angle = self.angle * progress  # 随着动画进度增加攻击角度
+        
+        points = []
+        half_angle = current_angle / 2
+        
+        # 生成攻击弧形的点
+        for i in range(int(current_angle) + 1):
+            angle = self.attack_direction - half_angle + i
+            angle_rad = math.radians(angle)
+            
+            # 计算弧形上的点
+            end_x = attacker_pos.x + math.cos(angle_rad) * self.range
+            end_y = attacker_pos.y - math.sin(angle_rad) * self.range
+            
+            # 转换为屏幕坐标
+            screen_x = end_x - screen_offset.x
+            screen_y = end_y - screen_offset.y
+            points.append((screen_x, screen_y))
+        
+        return points
+
 class ChatMessage:
     """聊天消息类"""
     def __init__(self, player_id, player_name, message, timestamp=None):
@@ -333,6 +488,89 @@ class ChatMessage:
     def is_expired(self, current_time):
         """检查消息是否过期"""
         return current_time - self.timestamp > CHAT_DISPLAY_TIME
+
+class Door:
+    """门类，管理门的状态、动画和交互"""
+    def __init__(self, x, y, width, height, is_vertical=False):
+        self.original_rect = pygame.Rect(x, y, width, height)
+        self.rect = pygame.Rect(x, y, width, height)
+        self.is_vertical = is_vertical  # 是否是垂直门
+        self.is_open = False  # 门是否完全打开
+        self.is_opening = False  # 门是否正在打开
+        self.is_closing = False  # 门是否正在关闭
+        self.animation_progress = 0.0  # 动画进度 (0.0 - 1.0)
+        self.interaction_cooldown = 0.5  # 交互冷却时间(秒)
+        self.last_interaction_time = 0  # 上次交互时间
+        self.state_version = 0  # 门状态版本号，用于同步
+    
+    def update(self, dt):
+        """更新门的状态和动画"""
+        # 处理动画
+        if self.is_opening:
+            self.animation_progress += dt * DOOR_ANIMATION_SPEED
+            if self.animation_progress >= 1.0:
+                self.animation_progress = 1.0
+                self.is_opening = False
+                self.is_open = True
+        elif self.is_closing:
+            self.animation_progress -= dt * DOOR_ANIMATION_SPEED
+            if self.animation_progress <= 0.0:
+                self.animation_progress = 0.0
+                self.is_closing = False
+                self.is_open = False
+        
+        # 更新门的大小和位置
+        self.update_rect()
+    
+    def update_rect(self):
+        """根据动画进度更新门的矩形"""
+        if self.is_vertical:
+            # 垂直门 - 上下方向打开
+            new_height = int(self.original_rect.height * (1 - self.animation_progress))
+            self.rect.height = max(1, new_height)
+            self.rect.y = self.original_rect.y + (self.original_rect.height - new_height) // 2
+        else:
+            # 水平门 - 左右方向打开
+            new_width = int(self.original_rect.width * (1 - self.animation_progress))
+            self.rect.width = max(1, new_width)
+            self.rect.x = self.original_rect.x + (self.original_rect.width - new_width) // 2
+    
+    def try_interact(self, player_pos):
+        """尝试与门交互，返回是否成功交互"""
+        current_time = pygame.time.get_ticks() / 1000
+        
+        # 检查是否在冷却时间内
+        if current_time - self.last_interaction_time < self.interaction_cooldown:
+            return False
+        
+        # 检查玩家是否在交互区域内
+        interaction_range = PLAYER_RADIUS * 3  # 交互范围
+        door_center = pygame.Vector2(self.original_rect.centerx, self.original_rect.centery)
+        distance = (door_center - player_pos).length()
+        
+        if distance <= interaction_range + max(self.original_rect.width, self.original_rect.height) / 2:
+            self.last_interaction_time = current_time
+            
+            # 切换门的状态
+            if self.is_open or self.is_opening:
+                self.close()
+            else:
+                self.open()
+            
+            self.state_version += 1  # 增加版本号
+            return True
+        
+        return False
+    
+    def open(self):
+        """打开门"""
+        if not self.is_open and not self.is_opening:
+            self.is_opening = True
+            self.is_closing = False
+            return True
+        return False
+    
+    def close(self):
         """关闭门"""
         if self.is_open and not self.is_closing:
             self.is_closing = True
@@ -918,15 +1156,6 @@ class NetworkManager:
                         self.players[target_id]['death_time'] = current_time
                         self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
                         print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
-                        
-                        # 发送死亡信息到聊天框
-                        attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
-                        target_name = f"玩家{target_id}" if target_id in self.players else f"玩家{target_id}"
-                        death_message = f"{attacker_name} 击杀了 {target_name}！"
-                        death_chat = ChatMessage(0, "[系统]", death_message, current_time)
-                        self.chat_messages.append(death_chat)
-                        if self.is_server:
-                            self.broadcast_chat_message(death_chat)
             except ValueError as e:
                 print(f"处理伤害数据错误: {e}")
 
