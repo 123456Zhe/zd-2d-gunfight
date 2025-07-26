@@ -36,6 +36,7 @@ except:
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 FPS = 60
 PLAYER_SPEED = 200
+AIMING_SPEED_MULTIPLIER = 0.5  # 瞄准时速度倍率
 BULLET_SPEED = 500
 BULLET_COOLDOWN = 0.15  # 连发间隔
 RELOAD_TIME = 2.0
@@ -51,6 +52,17 @@ RESPAWN_TIME = 3.0  # 复活时间（秒）
 SERVER_PORT = 5555
 BUFFER_SIZE = 4096
 
+# 近战武器配置
+MELEE_DAMAGE = 40  # 近战伤害
+MELEE_RANGE = 60  # 近战攻击范围
+MELEE_COOLDOWN = 0.8  # 近战攻击冷却时间
+MELEE_ANIMATION_TIME = 0.3  # 近战攻击动画时间
+MELEE_ANGLE = 90  # 近战攻击角度范围（度）
+
+# 瞄准配置
+AIM_CAMERA_RANGE = 150  # 瞄准时相机可以偏移的最大距离
+AIM_SENSITIVITY = 0.3  # 瞄准时鼠标灵敏度
+
 # 网络配置
 HEARTBEAT_INTERVAL = 1.0  # 心跳间隔（秒）
 CLIENT_TIMEOUT = 5.0  # 客户端超时时间（秒）
@@ -59,7 +71,7 @@ SCAN_TIMEOUT = 1.0  # 扫描单个IP的超时时间 - 增加到1秒
 
 # 视角配置
 FIELD_OF_VIEW = 120  # 视角角度（度）
-VISION_RANGE = 500   # 视角范围（像素）- 现在只用于小地图显示
+VISION_RANGE = 300   # 视角范围（像素）- 优化：减少视角范围
 
 # 聊天配置
 MAX_CHAT_MESSAGES = 10  # 最大显示聊天消息数
@@ -74,17 +86,22 @@ BLUE = (0, 0, 255)
 BLACK = (0, 0, 0)
 GRAY = (100, 100, 100)
 DARK_GRAY = (50, 50, 50)  # 迷雾中的墙壁颜色
+LIGHT_GRAY = (140, 140, 140)  # 可见地面颜色
+VISION_GROUND = (80, 80, 80)  # 视野内地面颜色（优化：使用更暗的颜色）
 YELLOW = (255, 255, 0)
 DOOR_COLOR = (139, 69, 19)
 DARK_DOOR_COLOR = (69, 34, 9)  # 迷雾中的门颜色
 DEAD_COLOR = (128, 128, 128)  # 死亡状态颜色
-VISION_COLOR = (255, 255, 0, 50)  # 视角范围颜色（半透明黄色）
+VISION_COLOR = (255, 255, 0, 30)  # 视角范围颜色（半透明黄色）
 FOG_COLOR = (20, 20, 20, 180)  # 战争迷雾颜色（深灰色，半透明）
 LIGHT_GRAY_TRANSPARENT = (200, 200, 200, 80)  # 半透明浅灰色
 LIGHT_BLUE = (173, 216, 230)  # 浅蓝色
 DARK_BLUE = (0, 100, 200)  # 深蓝色
 ORANGE = (255, 165, 0)  # 橙色
 PURPLE = (128, 0, 128)  # 紫色
+MELEE_COLOR = (255, 100, 100)  # 近战攻击颜色
+MELEE_RANGE_COLOR = (255, 0, 0, 80)  # 近战范围指示颜色
+AIM_COLOR = (0, 255, 255)  # 瞄准指示颜色
 
 def get_local_ip():
     """获取本机内网IP"""
@@ -261,6 +278,22 @@ def is_in_field_of_view(player_pos, player_angle, target_pos, fov_degrees):
     # 检查是否在视野范围内
     return angle_diff <= fov_degrees / 2
 
+def is_in_melee_range(attacker_pos, attacker_angle, target_pos, melee_range, melee_angle):
+    """检查目标是否在近战攻击范围内"""
+    # 计算距离
+    distance = (target_pos - attacker_pos).length()
+    if distance > melee_range:
+        return False
+    
+    # 计算角度
+    dx = target_pos.x - attacker_pos.x
+    dy = target_pos.y - attacker_pos.y
+    target_angle = math.degrees(math.atan2(-dy, dx))
+    
+    # 检查是否在攻击角度范围内
+    angle_diff = angle_difference(attacker_angle, target_angle)
+    return angle_diff <= melee_angle / 2
+
 def line_intersects_rect(start, end, rect):
     """检查线段是否与矩形相交"""
     # 获取矩形的四条边
@@ -323,6 +356,119 @@ def is_visible(player_pos, player_angle, target_pos, fov_degrees, walls, doors):
     
     # 然后检查是否有视线
     return has_line_of_sight(player_pos, target_pos, walls, doors)
+
+def create_vision_fan_points(player_pos, player_angle, fov_degrees, vision_range, num_points=30):
+    """创建视角扇形的点集合 - 优化版本"""
+    points = [player_pos]  # 扇形的中心点
+    
+    half_fov = fov_degrees / 2
+    angle_step = fov_degrees / num_points
+    
+    # 生成扇形边界上的点
+    for i in range(num_points + 1):
+        angle = player_angle - half_fov + (angle_step * i)
+        angle_rad = math.radians(angle)
+        end_x = player_pos[0] + math.cos(angle_rad) * vision_range
+        end_y = player_pos[1] - math.sin(angle_rad) * vision_range
+        points.append((end_x, end_y))
+    
+    return points
+
+class MeleeWeapon:
+    """近战武器类"""
+    def __init__(self, owner_id):
+        self.owner_id = owner_id
+        self.damage = MELEE_DAMAGE
+        self.range = MELEE_RANGE
+        self.angle = MELEE_ANGLE
+        self.cooldown = MELEE_COOLDOWN
+        self.animation_time = MELEE_ANIMATION_TIME
+        
+        # 攻击状态
+        self.is_attacking = False
+        self.attack_start_time = 0
+        self.last_attack_time = 0
+        self.attack_direction = 0  # 攻击方向
+        
+        # 已击中的目标（防止一次攻击击中多次）
+        self.hit_targets = set()
+    
+    def can_attack(self):
+        """检查是否可以攻击"""
+        current_time = time.time()
+        return current_time - self.last_attack_time >= self.cooldown
+    
+    def start_attack(self, direction):
+        """开始攻击"""
+        if not self.can_attack():
+            return False
+        
+        current_time = time.time()
+        self.is_attacking = True
+        self.attack_start_time = current_time
+        self.last_attack_time = current_time
+        self.attack_direction = direction
+        self.hit_targets.clear()
+        return True
+    
+    def update(self, dt):
+        """更新武器状态"""
+        if self.is_attacking:
+            current_time = time.time()
+            if current_time - self.attack_start_time >= self.animation_time:
+                self.is_attacking = False
+    
+    def get_attack_progress(self):
+        """获取攻击动画进度 (0.0 - 1.0)"""
+        if not self.is_attacking:
+            return 0.0
+        
+        current_time = time.time()
+        elapsed = current_time - self.attack_start_time
+        return min(elapsed / self.animation_time, 1.0)
+    
+    def check_hit(self, attacker_pos, targets):
+        """检查攻击是否击中目标"""
+        if not self.is_attacking:
+            return []
+        
+        hit_list = []
+        for target_id, target_pos in targets.items():
+            if (target_id != self.owner_id and 
+                target_id not in self.hit_targets and
+                is_in_melee_range(attacker_pos, self.attack_direction, target_pos, self.range, self.angle)):
+                
+                self.hit_targets.add(target_id)
+                hit_list.append(target_id)
+        
+        return hit_list
+    
+    def get_attack_arc_points(self, attacker_pos, screen_offset):
+        """获取攻击弧形的绘制点"""
+        if not self.is_attacking:
+            return []
+        
+        progress = self.get_attack_progress()
+        current_angle = self.angle * progress  # 随着动画进度增加攻击角度
+        
+        points = []
+        half_angle = current_angle / 2
+        
+        # 生成攻击弧形的点
+        for i in range(int(current_angle) + 1):
+            angle = self.attack_direction - half_angle + i
+            angle_rad = math.radians(angle)
+            
+            # 计算弧形上的点
+            end_x = attacker_pos.x + math.cos(angle_rad) * self.range
+            end_y = attacker_pos.y - math.sin(angle_rad) * self.range
+            
+            # 转换为屏幕坐标
+            screen_x = end_x - screen_offset.x
+            screen_y = end_y - screen_offset.y
+            points.append((screen_x, screen_y))
+        
+        return points
 
 class ChatMessage:
     """聊天消息类"""
@@ -433,8 +579,8 @@ class Door:
     
     def get_color(self, in_fog=False):
         """根据门的状态返回颜色"""
-        base_color = DARK_DOOR_COLOR if in_fog else DOOR_COLOR
-        bright_color = DARK_DOOR_COLOR if in_fog else GREEN
+        base_color = DOOR_COLOR
+        bright_color = GREEN
         
         if self.is_open:
             return bright_color
@@ -527,7 +673,11 @@ class NetworkManager:
                     'death_time': 0,
                     'respawn_time': 0,
                     'is_respawning': False,
-                    'name': f'玩家{self.player_id}'
+                    'name': f'玩家{self.player_id}',
+                    'melee_attacking': False,
+                    'melee_direction': 0,
+                    'weapon_type': 'gun',  # 新增：武器类型
+                    'is_aiming': False  # 新增：瞄准状态
                 }
                 self.connected = True
                 
@@ -755,6 +905,8 @@ class NetworkManager:
                         self._update_bullets(msg_data)
                     elif msg_type == 'hit_damage':
                         self._handle_damage(msg_data)
+                    elif msg_type == 'melee_attack':
+                        self._handle_melee_attack(msg_data)
                     elif msg_type == 'respawn':
                         self._handle_respawn(msg_data)
                     elif msg_type == 'chat_message':
@@ -803,7 +955,11 @@ class NetworkManager:
                 'death_time': 0,
                 'respawn_time': 0,
                 'is_respawning': False,
-                'name': f'玩家{new_player_id}'
+                'name': f'玩家{new_player_id}',
+                'melee_attacking': False,
+                'melee_direction': 0,
+                'weapon_type': 'gun',  # 新增：武器类型
+                'is_aiming': False  # 新增：瞄准状态
             }
             
             print(f"[服务端] 玩家{new_player_id}已连接，地址：{addr}，当前玩家数: {len(self.players)}")
@@ -976,9 +1132,10 @@ class NetworkManager:
                 target_id = int(damage_data['target_id'])
                 damage = damage_data['damage']
                 attacker_id = int(damage_data['attacker_id'])
+                damage_type = damage_data.get('type', 'bullet')  # 添加伤害类型
                 
                 # 防止重复处理相同的伤害事件
-                damage_key = f"{attacker_id}_{target_id}_{int(time.time() * 10)}"
+                damage_key = f"{attacker_id}_{target_id}_{damage_type}_{int(time.time() * 10)}"
                 current_time = time.time()
                 
                 if damage_key in self.last_damage_time and current_time - self.last_damage_time[damage_key] < 0.1:
@@ -989,7 +1146,7 @@ class NetworkManager:
                 if target_id in self.players and not self.players[target_id]['is_dead']:
                     old_health = self.players[target_id]['health']
                     self.players[target_id]['health'] = max(0, old_health - damage)
-                    print(f"[伤害处理] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
+                    print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
                     
                     if self.players[target_id]['health'] <= 0:
                         # 服务端计算死亡和复活时间
@@ -1000,6 +1157,33 @@ class NetworkManager:
                         print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
             except ValueError as e:
                 print(f"处理伤害数据错误: {e}")
+
+    def _handle_melee_attack(self, melee_data):
+        """处理近战攻击事件 - 只有服务端处理"""
+        if not self.is_server:
+            return
+            
+        if isinstance(melee_data, dict) and all(key in melee_data for key in ['attacker_id', 'direction', 'targets']):
+            try:
+                attacker_id = int(melee_data['attacker_id'])
+                direction = melee_data['direction']
+                targets = melee_data['targets']
+                
+                print(f"[近战攻击] 玩家{attacker_id}发起近战攻击，方向{direction}°，目标{targets}")
+                
+                # 处理每个被击中的目标
+                for target_id in targets:
+                    if target_id != attacker_id and target_id in self.players:
+                        damage_data = {
+                            'target_id': target_id,
+                            'damage': MELEE_DAMAGE,
+                            'attacker_id': attacker_id,
+                            'type': 'melee'
+                        }
+                        self._handle_damage(damage_data)
+                        
+            except (ValueError, TypeError) as e:
+                print(f"处理近战攻击数据错误: {e}")
 
     def _handle_respawn(self, respawn_data):
         """处理复活事件"""
@@ -1015,7 +1199,11 @@ class NetworkManager:
                     'death_time': 0,
                     'respawn_time': 0,
                     'is_reloading': False,
-                    'is_respawning': False
+                    'is_respawning': False,
+                    'melee_attacking': False,
+                    'melee_direction': 0,
+                    'weapon_type': 'gun',  # 重置为枪械
+                    'is_aiming': False  # 重置瞄准状态
                 })
     
     def _handle_chat_message(self, chat_data):
@@ -1168,6 +1356,27 @@ class NetworkManager:
                 }
             })
 
+    def request_melee_attack(self, attacker_id, direction, hit_targets):
+        """请求近战攻击"""
+        if self.is_server:
+            # 服务端直接处理近战攻击
+            melee_data = {
+                'attacker_id': attacker_id,
+                'direction': direction,
+                'targets': hit_targets
+            }
+            self._handle_melee_attack(melee_data)
+        else:
+            # 客户端发送请求给服务端
+            self.send_data({
+                'type': 'melee_attack',
+                'data': {
+                    'attacker_id': attacker_id,
+                    'direction': direction,
+                    'targets': hit_targets
+                }
+            })
+
     def update_door(self, door_id, door_state):
         """更新门状态"""
         self.doors[door_id] = door_state
@@ -1280,7 +1489,8 @@ class Bullet:
                         damage_data = {
                             'target_id': player.id,
                             'damage': BULLET_DAMAGE,
-                            'attacker_id': self.owner_id
+                            'attacker_id': self.owner_id,
+                            'type': 'bullet'
                         }
                         network_manager.send_data({
                             'type': 'hit_damage',
@@ -1340,6 +1550,18 @@ class Player:
         self.is_respawning = False
         self.last_respawn_check = 0
         self.last_door_interaction = 0
+        
+        # 近战武器
+        self.melee_weapon = MeleeWeapon(player_id)
+        
+        # 新增：武器系统
+        self.weapon_type = "gun"  # "gun" 或 "melee"
+        self.last_weapon_switch = 0
+        self.weapon_switch_cooldown = 0.5  # 武器切换冷却时间
+        
+        # 新增：瞄准系统
+        self.is_aiming = False
+        self.aim_offset = pygame.Vector2(0, 0)  # 瞄准时的相机偏移
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -1357,6 +1579,47 @@ class Player:
         
         return pygame.Vector2(spawn_x, spawn_y)
 
+    def can_switch_weapon(self):
+        """检查是否可以切换武器"""
+        current_time = time.time()
+        return current_time - self.last_weapon_switch >= self.weapon_switch_cooldown
+
+    def switch_weapon(self):
+        """切换武器"""
+        if not self.can_switch_weapon() or self.is_dead or self.is_respawning:
+            return False
+        
+        current_time = time.time()
+        if self.weapon_type == "gun":
+            self.weapon_type = "melee"
+        else:
+            self.weapon_type = "gun"
+        
+        self.last_weapon_switch = current_time
+        print(f"玩家{self.id}切换到{'近战武器' if self.weapon_type == 'melee' else '枪械'}")
+        return True
+
+    def update_aim_offset(self, mouse_pos, screen_center):
+        """更新瞄准偏移"""
+        if self.is_aiming:
+            # 计算鼠标相对于屏幕中心的偏移
+            mouse_offset = pygame.Vector2(
+                mouse_pos[0] - screen_center[0],
+                mouse_pos[1] - screen_center[1]
+            )
+            
+            # 限制偏移距离
+            if mouse_offset.length() > AIM_CAMERA_RANGE:
+                mouse_offset = mouse_offset.normalize() * AIM_CAMERA_RANGE
+            
+            # 应用灵敏度
+            self.aim_offset = mouse_offset * AIM_SENSITIVITY
+        else:
+            # 平滑回到中心
+            self.aim_offset *= 0.9
+            if self.aim_offset.length() < 1:
+                self.aim_offset = pygame.Vector2(0, 0)
+
     def respawn(self, network_manager=None):
         """复活"""
         if self.is_respawning:
@@ -1373,6 +1636,14 @@ class Player:
         self.respawn_time = 0
         self.velocity = pygame.Vector2(0, 0)
         self.last_door_interaction = 0  # 重置门交互冷却
+        
+        # 重置武器和瞄准状态
+        self.weapon_type = "gun"
+        self.is_aiming = False
+        self.aim_offset = pygame.Vector2(0, 0)
+        
+        # 重置近战武器
+        self.melee_weapon = MeleeWeapon(self.id)
         
         print(f"玩家{self.id}在位置({new_pos.x:.0f}, {new_pos.y:.0f})复活")
         
@@ -1397,7 +1668,11 @@ class Player:
                     'death_time': 0,
                     'respawn_time': 0,
                     'is_reloading': False,
-                    'is_respawning': False
+                    'is_respawning': False,
+                    'melee_attacking': False,
+                    'melee_direction': 0,
+                    'weapon_type': 'gun',
+                    'is_aiming': False
                 })
         
         self.last_respawn_check = time.time()
@@ -1409,6 +1684,9 @@ class Player:
         if self.is_respawning and current_time - self.last_respawn_check > 1.0:
             self.is_respawning = False
             self.last_door_interaction = 0
+        
+        # 更新近战武器
+        self.melee_weapon.update(dt)
         
         # 只有本地玩家才处理输入
         is_local_player = network_manager and network_manager.player_id == self.id
@@ -1426,6 +1704,9 @@ class Player:
             rel_y = mouse_y - SCREEN_HEIGHT / 2
             self.angle = (180 / math.pi) * -math.atan2(rel_y, rel_x)
             
+            # 更新瞄准偏移
+            self.update_aim_offset((mouse_x, mouse_y), (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2))
+            
             # 键盘控制移动
             keys = pygame.key.get_pressed()
             move_dir = pygame.Vector2(0, 0)
@@ -1435,33 +1716,68 @@ class Player:
             if keys[K_d]: move_dir.x += 1
             
             if move_dir.length() > 0:
-                move_dir = move_dir.normalize() * PLAYER_SPEED
+                # 计算移动速度（瞄准时减速）
+                current_speed = PLAYER_SPEED
+                if self.is_aiming:
+                    current_speed *= AIMING_SPEED_MULTIPLIER
+                
+                move_dir = move_dir.normalize() * current_speed
                 self.velocity += move_dir * dt * 5
             else:
                 self.velocity *= 0.9
                 
-            if self.velocity.length() > PLAYER_SPEED:
-                self.velocity = self.velocity.normalize() * PLAYER_SPEED
+            # 限制最大速度
+            max_speed = PLAYER_SPEED
+            if self.is_aiming:
+                max_speed *= AIMING_SPEED_MULTIPLIER
+                
+            if self.velocity.length() > max_speed:
+                self.velocity = self.velocity.normalize() * max_speed
 
-            # 射击控制
-            if self.shooting and not self.is_reloading and self.ammo > 0:
-                if current_time - self.last_shot > BULLET_COOLDOWN:
-                    bullet_dir = pygame.Vector2(math.cos(math.radians(self.angle)),
-                                              -math.sin(math.radians(self.angle)))
-                    bullet_pos = self.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
-                    
-                    # 请求发射子弹
-                    network_manager.request_fire_bullet(
-                        [bullet_pos.x, bullet_pos.y],
-                        [bullet_dir.x, bullet_dir.y],
-                        self.id
+            # 左键攻击控制（根据武器类型）
+            if self.shooting and not self.is_dead:
+                if self.weapon_type == "gun":
+                    # 枪械射击
+                    if not self.is_reloading and self.ammo > 0:
+                        if current_time - self.last_shot > BULLET_COOLDOWN:
+                            bullet_dir = pygame.Vector2(math.cos(math.radians(self.angle)),
+                                                      -math.sin(math.radians(self.angle)))
+                            bullet_pos = self.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
+                            
+                            # 请求发射子弹
+                            network_manager.request_fire_bullet(
+                                [bullet_pos.x, bullet_pos.y],
+                                [bullet_dir.x, bullet_dir.y],
+                                self.id
+                            )
+                            
+                            self.ammo -= 1
+                            self.last_shot = current_time
+                elif self.weapon_type == "melee":
+                    # 近战攻击
+                    if self.melee_weapon.can_attack():
+                        self.start_melee_attack()
+            
+            # 近战攻击检测
+            if self.melee_weapon.is_attacking:
+                # 检查近战攻击是否击中目标
+                targets = {}
+                if all_players:
+                    for pid, player in all_players.items():
+                        if pid != self.id and not player.is_dead:
+                            targets[pid] = player.pos
+                
+                hit_targets = self.melee_weapon.check_hit(self.pos, targets)
+                if hit_targets:
+                    # 发送近战攻击请求
+                    network_manager.request_melee_attack(
+                        self.id,
+                        self.melee_weapon.attack_direction,
+                        hit_targets
                     )
-                    
-                    self.ammo -= 1
-                    self.last_shot = current_time
             
             # 换弹控制
-            if (keys[K_r] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE:
+            if (keys[K_r] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE and self.weapon_type == "gun":
                 self.is_reloading = True
                 self.reload_start = current_time
                 
@@ -1547,7 +1863,11 @@ class Player:
                 'death_time': self.death_time,
                 'respawn_time': self.respawn_time,
                 'is_respawning': self.is_respawning,
-                'name': self.name
+                'name': self.name,
+                'melee_attacking': self.melee_weapon.is_attacking,
+                'melee_direction': self.melee_weapon.attack_direction,
+                'weapon_type': self.weapon_type,  # 新增
+                'is_aiming': self.is_aiming  # 新增
             }
             
             # 更新网络管理器中的玩家数据
@@ -1575,6 +1895,12 @@ class Player:
                     'type': 'player_update',
                     'data': {str(self.id): player_data}
                 })
+
+    def start_melee_attack(self):
+        """开始近战攻击"""
+        if not self.is_dead and not self.is_respawning and self.weapon_type == "melee":
+            return self.melee_weapon.start_attack(self.angle)
+        return False
 
     def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False):
         """绘制玩家（考虑视线遮挡）"""
@@ -1608,6 +1934,14 @@ class Player:
             
             return
         
+        # 绘制近战攻击效果（仅当使用近战武器时）
+        if self.weapon_type == "melee" and self.melee_weapon.is_attacking:
+            self.draw_melee_attack(surface, camera_offset)
+        
+        # 绘制瞄准状态指示
+        if is_local_player and self.is_aiming:
+            self.draw_aim_indicator(surface, player_screen_pos)
+        
         # 正常绘制
         points = [
             self.pos + pygame.Vector2(math.cos(math.radians(self.angle)) * PLAYER_RADIUS,
@@ -1619,7 +1953,14 @@ class Player:
         ]
         
         screen_points = [(p.x - camera_offset.x, p.y - camera_offset.y) for p in points]
-        pygame.draw.polygon(surface, self.color, screen_points)
+        
+        # 根据武器类型改变颜色
+        player_color = self.color
+        if self.weapon_type == "melee":
+            # 近战武器时显示为偏红色
+            player_color = (min(255, self.color[0] + 50), max(0, self.color[1] - 30), max(0, self.color[2] - 30))
+        
+        pygame.draw.polygon(surface, player_color, screen_points)
         
         # 绘制血条和名字
         health_bar_width = 40
@@ -1634,6 +1975,80 @@ class Player:
         name_surface = font.render(self.name, True, WHITE)
         surface.blit(name_surface, (screen_points[0][0] - name_surface.get_width() // 2,
                                    screen_points[0][1] - 35))
+
+    def draw_aim_indicator(self, surface, player_screen_pos):
+        """绘制瞄准指示器"""
+        # 绘制瞄准圈
+        pygame.draw.circle(surface, AIM_COLOR, 
+                         (int(player_screen_pos.x), int(player_screen_pos.y)), 
+                         PLAYER_RADIUS + 10, 2)
+        
+        # 绘制准星
+        crosshair_size = 15
+        pygame.draw.line(surface, AIM_COLOR,
+                        (player_screen_pos.x - crosshair_size, player_screen_pos.y),
+                        (player_screen_pos.x + crosshair_size, player_screen_pos.y), 2)
+        pygame.draw.line(surface, AIM_COLOR,
+                        (player_screen_pos.x, player_screen_pos.y - crosshair_size),
+                        (player_screen_pos.x, player_screen_pos.y + crosshair_size), 2)
+
+    def draw_melee_attack(self, surface, camera_offset):
+        """绘制近战攻击效果"""
+        player_screen_pos = pygame.Vector2(
+            self.pos.x - camera_offset.x,
+            self.pos.y - camera_offset.y
+        )
+        
+        progress = self.melee_weapon.get_attack_progress()
+        
+        # 绘制攻击弧形
+        half_angle = MELEE_ANGLE / 2
+        current_angle = MELEE_ANGLE * progress
+        
+        # 创建攻击弧形的点
+        arc_points = [player_screen_pos]
+        
+        for i in range(int(current_angle) + 1):
+            angle = self.melee_weapon.attack_direction - half_angle + i
+            angle_rad = math.radians(angle)
+            
+            end_x = player_screen_pos.x + math.cos(angle_rad) * MELEE_RANGE
+            end_y = player_screen_pos.y - math.sin(angle_rad) * MELEE_RANGE
+            arc_points.append((end_x, end_y))
+        
+        # 绘制半透明的攻击扇形
+        if len(arc_points) >= 3:
+            try:
+                attack_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                attack_color = (*MELEE_COLOR, int(150 * (1 - progress)))  # 随着动画进度淡出
+                pygame.draw.polygon(attack_surface, attack_color, arc_points)
+                surface.blit(attack_surface, (0, 0))
+            except:
+                # 如果绘制失败，画一个简单的圆弧
+                pygame.draw.arc(surface, MELEE_COLOR, 
+                               (player_screen_pos.x - MELEE_RANGE, player_screen_pos.y - MELEE_RANGE,
+                                MELEE_RANGE * 2, MELEE_RANGE * 2),
+                               math.radians(self.melee_weapon.attack_direction - half_angle),
+                               math.radians(self.melee_weapon.attack_direction + half_angle),
+                               5)
+
+    def sync_from_network(self, network_data):
+        """从网络数据同步其他玩家的状态"""
+        if 'melee_attacking' in network_data:
+            if network_data['melee_attacking'] and not self.melee_weapon.is_attacking:
+                # 开始近战攻击动画
+                self.melee_weapon.start_attack(network_data.get('melee_direction', 0))
+            elif not network_data['melee_attacking']:
+                # 停止近战攻击动画
+                self.melee_weapon.is_attacking = False
+        
+        # 同步武器类型
+        if 'weapon_type' in network_data:
+            self.weapon_type = network_data['weapon_type']
+        
+        # 同步瞄准状态
+        if 'is_aiming' in network_data:
+            self.is_aiming = network_data['is_aiming']
 
 class Map:
     def __init__(self):
@@ -1763,7 +2178,7 @@ class Game:
         self.running = True  
         self.clock = pygame.time.Clock()  
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("多人射击游戏 - 视角系统（含遮挡）")
+        pygame.display.set_caption("多人射击游戏 - 武器切换 + 瞄准系统")
         
         # 游戏状态
         self.state = "MENU"  # MENU, SCANNING, CONNECTING, PLAYING, ERROR
@@ -1932,7 +2347,7 @@ class Game:
             self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 50))
             
             # 副标题
-            subtitle = font.render("战争迷雾 + 实时聊天 + 智能ID回收", True, LIGHT_BLUE)
+            subtitle = font.render("武器切换 + 瞄准系统", True, LIGHT_BLUE)
             self.screen.blit(subtitle, (SCREEN_WIDTH//2 - subtitle.get_width()//2, 100))
             
             # 左侧控制面板
@@ -2193,6 +2608,9 @@ class Game:
                 elif event.key == K_y and not self.chat_active:  # 按Y开启聊天
                     self.chat_active = True
                     self.chat_input = ""
+                elif event.key == K_3 and not self.chat_active:  # 按3切换武器
+                    if self.player and not self.player.is_dead:
+                        self.player.switch_weapon()
                 elif self.chat_active:
                     # 聊天模式下的按键处理
                     if event.key == K_RETURN:
@@ -2207,7 +2625,7 @@ class Game:
                             self.chat_input += event.unicode
                 elif not self.chat_active:
                     # 非聊天模式下的按键处理
-                    if event.key == K_r and not self.player.is_reloading and not self.player.is_dead:
+                    if event.key == K_r and not self.player.is_reloading and not self.player.is_dead and self.player.weapon_type == "gun":
                         self.player.is_reloading = True
                         self.player.reload_start = time.time()
                     elif event.key == K_F3:  # 切换调试模式
@@ -2217,9 +2635,13 @@ class Game:
             elif event.type == MOUSEBUTTONDOWN and not self.chat_active:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
                     self.player.shooting = True
+                elif event.button == 3 and not self.player.is_dead:  # 右键按下 - 瞄准
+                    self.player.is_aiming = True
             elif event.type == MOUSEBUTTONUP and not self.chat_active:
                 if event.button == 1:  # 左键释放
                     self.player.shooting = False
+                elif event.button == 3:  # 右键释放 - 停止瞄准
+                    self.player.is_aiming = False
     
     def update(self, dt):
         # 检查网络连接状态
@@ -2284,6 +2706,9 @@ class Game:
                     other_player.respawn_time = pdata.get('respawn_time', 0)
                     other_player.is_respawning = pdata.get('is_respawning', False)
                     other_player.name = pdata.get('name', f'玩家{pid}')
+                    
+                    # 同步状态（包括武器类型和瞄准状态）
+                    other_player.sync_from_network(pdata)
             
             # 服务端定期广播
             self.network_manager.update_and_broadcast()
@@ -2302,12 +2727,16 @@ class Game:
         # 更新门
         self.game_map.update_doors(dt, self.network_manager)
         
-        # 更新相机（死亡或复活时不移动相机）
+        # 更新相机（考虑瞄准偏移）
         if not self.player.is_dead and not self.player.is_respawning:
             target_offset = pygame.Vector2(
                 self.player.pos.x - SCREEN_WIDTH / 2,
                 self.player.pos.y - SCREEN_HEIGHT / 2
             )
+            
+            # 添加瞄准偏移
+            target_offset += self.player.aim_offset
+            
             self.camera_offset += (target_offset - self.camera_offset) * 0.1
         
         # 更新聊天光标闪烁
@@ -2335,18 +2764,18 @@ class Game:
                 self.bullets.append(new_bullet)
     
     def render(self):
-        # 清空屏幕为黑色
+        # 清空屏幕为黑色（默认背景）
         self.screen.fill(BLACK)
         
-        # 先绘制暗色版本的完整地图
-        self.render_dark_map(self.screen)
-        
-        # 如果启用视角系统，在视野内绘制明亮版本
+        # 如果启用视角系统且玩家未死亡，绘制可见的扇形区域
         if self.show_vision and not self.player.is_dead:
-            self.render_bright_vision_area()
+            self.render_vision_fan()
         else:
-            # 不使用视角系统时，直接绘制明亮版本的所有内容
-            self.render_bright_map(self.screen)
+            # 不使用视角系统时，绘制灰色地面
+            self.render_full_ground()
+        
+        # 绘制墙壁和门（始终显示）
+        self.render_walls_and_doors()
         
         # 绘制游戏对象
         for bullet in self.bullets:
@@ -2384,86 +2813,76 @@ class Game:
         
         pygame.display.flip()
     
-    def render_bright_vision_area(self):
-        """绘制视野内的明亮区域（考虑视线遮挡）"""
-        # 创建临时表面用于绘制视野内容
-        temp_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        temp_surface.fill((0, 0, 0, 0))
+    def render_vision_fan(self):
+        """绘制视野扇形 - 优化版本"""
+        # 创建扇形点集合
+        fan_points = create_vision_fan_points(
+            self.player.pos, 
+            self.player.angle, 
+            FIELD_OF_VIEW, 
+            VISION_RANGE,
+            num_points=20  # 减少点数以提高性能
+        )
         
-        # 绘制视野范围的半透明覆盖
-        half_fov = FIELD_OF_VIEW / 2
-        vision_points = [
-            (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2),  # 玩家位置（屏幕中心）
-        ]
+        # 转换为屏幕坐标
+        screen_points = []
+        for point in fan_points:
+            screen_x = point[0] - self.camera_offset.x
+            screen_y = point[1] - self.camera_offset.y
+            screen_points.append((screen_x, screen_y))
         
-        # 创建扇形的边界点
-        for i in range(61):  # 61个点创建平滑的扇形
-            angle = self.player.angle - half_fov + (FIELD_OF_VIEW * i / 60)
-            angle_rad = math.radians(angle)
-            # 使用一个很大的距离确保覆盖整个屏幕
-            distance = max(SCREEN_WIDTH, SCREEN_HEIGHT) * 2
-            end_x = SCREEN_WIDTH / 2 + math.cos(angle_rad) * distance
-            end_y = SCREEN_HEIGHT / 2 - math.sin(angle_rad) * distance
-            vision_points.append((end_x, end_y))
-        
-        # 绘制半透明扇形
-        pygame.draw.polygon(temp_surface, LIGHT_GRAY_TRANSPARENT, vision_points)
-        
-        # 将视野区域叠加到屏幕
-        self.screen.blit(temp_surface, (0, 0))
-        
-        # 在视野区域内绘制明亮的地图元素（考虑遮挡）
-        self.render_bright_elements_in_fov()
+        # 绘制扇形（如果有足够的点）
+        if len(screen_points) >= 3:
+            try:
+                # 创建一个透明表面
+                fan_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                pygame.draw.polygon(fan_surface, (*VISION_GROUND, 120), screen_points)
+                self.screen.blit(fan_surface, (0, 0))
+            except:
+                # 如果绘制失败，降级到简单的圆形
+                player_screen_pos = (
+                    self.player.pos.x - self.camera_offset.x,
+                    self.player.pos.y - self.camera_offset.y
+                )
+                if 0 <= player_screen_pos[0] <= SCREEN_WIDTH and 0 <= player_screen_pos[1] <= SCREEN_HEIGHT:
+                    pygame.draw.circle(self.screen, VISION_GROUND, 
+                                     (int(player_screen_pos[0]), int(player_screen_pos[1])), 
+                                     min(VISION_RANGE, 200), 0)
     
-    def render_bright_elements_in_fov(self):
-        """绘制视野内的明亮地图元素（考虑遮挡）"""
-        # 绘制视野内的明亮墙壁
+    def render_full_ground(self):
+        """绘制完整的灰色地面（不使用视角系统时）"""
+        # 绘制一个大的灰色矩形作为地面
+        ground_rect = pygame.Rect(
+            -self.camera_offset.x,
+            -self.camera_offset.y,
+            ROOM_SIZE * 3,
+            ROOM_SIZE * 3
+        )
+        pygame.draw.rect(self.screen, LIGHT_GRAY, ground_rect)
+    
+    def render_walls_and_doors(self):
+        """绘制所有墙壁和门（始终显示）"""
+        # 绘制所有墙壁
         for wall in self.game_map.walls:
-            # 检查墙壁的每个角点
-            wall_corners = [
-                pygame.Vector2(wall.left, wall.top),
-                pygame.Vector2(wall.right, wall.top),
-                pygame.Vector2(wall.right, wall.bottom),
-                pygame.Vector2(wall.left, wall.bottom)
-            ]
-            
-            # 如果墙壁任何一个角点可见，则绘制墙壁
-            for corner in wall_corners:
-                if is_visible(self.player.pos, self.player.angle, corner, FIELD_OF_VIEW, [], []):
-                    wall_rect = pygame.Rect(
-                        wall.x - self.camera_offset.x,
-                        wall.y - self.camera_offset.y,
-                        wall.width,
-                        wall.height
-                    )
-                    pygame.draw.rect(self.screen, GRAY, wall_rect)
-                    break
+            wall_rect = pygame.Rect(
+                wall.x - self.camera_offset.x,
+                wall.y - self.camera_offset.y,
+                wall.width,
+                wall.height
+            )
+            pygame.draw.rect(self.screen, GRAY, wall_rect)
         
-        # 绘制视野内的明亮门
+        # 绘制所有门
         for door in self.game_map.doors:
-            if door.animation_progress < 1.0:
-                door_center = pygame.Vector2(door.rect.centerx, door.rect.centery)
-                
-                # 检查门的每个角点
-                door_corners = [
-                    pygame.Vector2(door.rect.left, door.rect.top),
-                    pygame.Vector2(door.rect.right, door.rect.top),
-                    pygame.Vector2(door.rect.right, door.rect.bottom),
-                    pygame.Vector2(door.rect.left, door.rect.bottom)
-                ]
-                
-                # 如果门任何一个角点可见，则绘制门
-                for corner in door_corners:
-                    if is_visible(self.player.pos, self.player.angle, corner, FIELD_OF_VIEW, [], []):
-                        door_rect = pygame.Rect(
-                            door.rect.x - self.camera_offset.x,
-                            door.rect.y - self.camera_offset.y,
-                            door.rect.width,
-                            door.rect.height
-                        )
-                        pygame.draw.rect(self.screen, door.get_color(False), door_rect)
-                        break
-    
+            if door.animation_progress < 1.0:  # 只绘制未完全打开的门
+                door_rect = pygame.Rect(
+                    door.rect.x - self.camera_offset.x,
+                    door.rect.y - self.camera_offset.y,
+                    door.rect.width,
+                    door.rect.height
+                )
+                pygame.draw.rect(self.screen, door.get_color(False), door_rect)
+
     def draw_fov_indicator(self):
         """绘制视角指示线"""
         half_fov = FIELD_OF_VIEW / 2
@@ -2483,58 +2902,38 @@ class Game:
         end_y = player_screen_pos[1] - math.sin(angle_rad) * 80
         pygame.draw.line(self.screen, WHITE, player_screen_pos, (end_x, end_y), 3)
     
-    def render_dark_map(self, surface):
-        """绘制暗色版本的地图（迷雾中）"""
-        # 绘制暗色墙壁
-        for wall in self.game_map.walls:
-            wall_rect = pygame.Rect(
-                wall.x - self.camera_offset.x,
-                wall.y - self.camera_offset.y,
-                wall.width,
-                wall.height
-            )
-            pygame.draw.rect(surface, DARK_GRAY, wall_rect)
-        
-        # 绘制暗色门
-        for door in self.game_map.doors:
-            if door.animation_progress < 1.0:  # 只绘制未完全打开的门
-                door_rect = pygame.Rect(
-                    door.rect.x - self.camera_offset.x,
-                    door.rect.y - self.camera_offset.y,
-                    door.rect.width,
-                    door.rect.height
-                )
-                pygame.draw.rect(surface, door.get_color(True), door_rect)
-
-    def render_bright_map(self, surface):
-        """绘制明亮版本的地图（可见区域）"""
-        # 绘制明亮墙壁
-        for wall in self.game_map.walls:
-            wall_rect = pygame.Rect(
-                wall.x - self.camera_offset.x,
-                wall.y - self.camera_offset.y,
-                wall.width,
-                wall.height
-            )
-            pygame.draw.rect(surface, GRAY, wall_rect)
-        
-        # 绘制明亮门
-        for door in self.game_map.doors:
-            if door.animation_progress < 1.0:  # 只绘制未完全打开的门
-                door_rect = pygame.Rect(
-                    door.rect.x - self.camera_offset.x,
-                    door.rect.y - self.camera_offset.y,
-                    door.rect.width,
-                    door.rect.height
-                )
-                pygame.draw.rect(surface, door.get_color(False), door_rect)
-    
     def render_ui(self):
         """绘制UI元素"""
         health_text = f"生命: {self.player.health}/{self.player.max_health}"
-        ammo_text = f"弹药: {self.player.ammo}/{MAGAZINE_SIZE}"
+        weapon_text = f"武器: {'近战' if self.player.weapon_type == 'melee' else '枪械'}"
         self.screen.blit(font.render(health_text, True, WHITE), (20, 20))
-        self.screen.blit(font.render(ammo_text, True, WHITE), (20, 50))
+        self.screen.blit(font.render(weapon_text, True, YELLOW if self.player.weapon_type == 'melee' else GREEN), (20, 50))
+        
+        # 根据武器类型显示不同信息
+        if self.player.weapon_type == "gun":
+            ammo_text = f"弹药: {self.player.ammo}/{MAGAZINE_SIZE}"
+            self.screen.blit(font.render(ammo_text, True, WHITE), (20, 80))
+            
+            if self.player.is_reloading:
+                reload_time = max(0, RELOAD_TIME - (time.time() - self.player.reload_start))
+                reload_text = f"换弹中: {reload_time:.1f}s"
+                self.screen.blit(font.render(reload_text, True, YELLOW), (20, 110))
+        else:
+            # 近战武器状态
+            if self.player.melee_weapon.can_attack():
+                melee_text = "近战武器: 就绪"
+                melee_color = GREEN
+            else:
+                remaining_cooldown = MELEE_COOLDOWN - (time.time() - self.player.melee_weapon.last_attack_time)
+                melee_text = f"近战武器: {remaining_cooldown:.1f}s"
+                melee_color = RED
+            
+            self.screen.blit(font.render(melee_text, True, melee_color), (20, 80))
+        
+        # 瞄准状态
+        if self.player.is_aiming:
+            aim_text = "瞄准中"
+            self.screen.blit(font.render(aim_text, True, AIM_COLOR), (20, 110))
         
         if self.player.is_dead:
             # 显示死亡状态
@@ -2543,10 +2942,6 @@ class Game:
             death_text = f"已死亡 - 复活倒计时: {remaining_time:.1f}s"
             death_surface = font.render(death_text, True, RED)
             self.screen.blit(death_surface, (SCREEN_WIDTH//2 - death_surface.get_width()//2, SCREEN_HEIGHT//2))
-        elif self.player.is_reloading:
-            reload_time = max(0, RELOAD_TIME - (time.time() - self.player.reload_start))
-            reload_text = f"换弹中: {reload_time:.1f}s"
-            self.screen.blit(font.render(reload_text, True, YELLOW), (20, 80))
         
         player_count = len(self.other_players) + 1
         count_text = f"玩家数: {player_count}"
@@ -2560,6 +2955,19 @@ class Game:
         if not self.player.is_dead and not self.player.is_respawning:
             interact_text = "按E键开/关门"
             self.screen.blit(font.render(interact_text, True, WHITE),
+                             (SCREEN_WIDTH - 150, SCREEN_HEIGHT - 120))
+            
+            # 武器控制提示
+            if self.player.weapon_type == "gun":
+                weapon_text = "左键射击 右键瞄准"
+            else:
+                weapon_text = "左键近战攻击"
+            self.screen.blit(font.render(weapon_text, True, WHITE),
+                             (SCREEN_WIDTH - 200, SCREEN_HEIGHT - 90))
+            
+            # 切换武器提示
+            switch_text = "按3切换武器"
+            self.screen.blit(font.render(switch_text, True, WHITE),
                              (SCREEN_WIDTH - 150, SCREEN_HEIGHT - 60))
         
         # 聊天提示
@@ -2568,19 +2976,25 @@ class Game:
                          (SCREEN_WIDTH - 150, SCREEN_HEIGHT - 30))
         
         # 显示伤害信息
-        damage_text = f"子弹伤害: {BULLET_DAMAGE}"
-        self.screen.blit(font.render(damage_text, True, WHITE), (20, 110))
+        damage_text = f"射击伤害: {BULLET_DAMAGE} 近战伤害: {MELEE_DAMAGE}"
+        self.screen.blit(font.render(damage_text, True, WHITE), (20, 140))
         
         # 视角相关信息
-        vision_text = f"视角: {FIELD_OF_VIEW}° (含视线遮挡)"
-        self.screen.blit(font.render(vision_text, True, YELLOW), (20, 140))
+        vision_text = f"视角: {FIELD_OF_VIEW}° (武器+瞄准版)"
+        self.screen.blit(font.render(vision_text, True, YELLOW), (20, 170))
         
         # 调试信息
         if self.debug_mode:
-            debug_y = 170
+            debug_y = 200
             self.screen.blit(font.render(f"玩家ID: {self.player.id}", True, YELLOW), (20, debug_y))
             debug_y += 25
             self.screen.blit(font.render(f"服务器: {'是' if self.network_manager.is_server else '否'}", True, YELLOW), (20, debug_y))
+            debug_y += 25
+            self.screen.blit(font.render(f"武器类型: {self.player.weapon_type}", True, YELLOW), (20, debug_y))
+            debug_y += 25
+            self.screen.blit(font.render(f"瞄准状态: {'是' if self.player.is_aiming else '否'}", True, YELLOW), (20, debug_y))
+            debug_y += 25
+            self.screen.blit(font.render(f"瞄准偏移: ({self.player.aim_offset.x:.1f}, {self.player.aim_offset.y:.1f})", True, YELLOW), (20, debug_y))
             debug_y += 25
             self.screen.blit(font.render(f"门状态: {len(self.network_manager.doors)}个已同步", True, YELLOW), (20, debug_y))
             debug_y += 25
@@ -2626,7 +3040,7 @@ class Game:
             # 显示最近的消息（从下往上）
             for i, msg in enumerate(reversed(recent_messages[-5:])):  # 最多显示5条消息
                 message_y = chat_y_start - i * 25
-                if message_y < 200:  # 不要覆盖UI元素
+                if message_y < 250:  # 不要覆盖UI元素
                     break
                 
                 # 创建消息文本
@@ -2680,6 +3094,8 @@ class Game:
         
         # 绘制本地玩家 - 始终在小地图中心
         player_color = DEAD_COLOR if self.player.is_dead else self.player.color
+        if self.player.weapon_type == "melee":
+            player_color = MELEE_COLOR
         pygame.draw.circle(minimap_surface, player_color, (int(minimap_center_x), int(minimap_center_y)), 4)
 
         # 绘制视角范围指示（在小地图上）
@@ -2697,6 +3113,20 @@ class Game:
                     pygame.draw.line(minimap_surface, color, 
                                    (minimap_center_x, minimap_center_y), 
                                    (end_x, end_y), 1)
+
+        # 绘制瞄准指示
+        if not self.player.is_dead and self.player.is_aiming:
+            # 绘制瞄准圈
+            pygame.draw.circle(minimap_surface, AIM_COLOR, 
+                             (int(minimap_center_x), int(minimap_center_y)), 
+                             8, 1)
+
+        # 绘制近战攻击范围指示
+        if not self.player.is_dead and self.player.weapon_type == "melee" and self.player.melee_weapon.can_attack():
+            # 绘制近战攻击范围
+            pygame.draw.circle(minimap_surface, MELEE_COLOR, 
+                             (int(minimap_center_x), int(minimap_center_y)), 
+                             int(MELEE_RANGE * minimap_scale), 1)
 
         # 绘制小地图边框
         pygame.draw.rect(minimap_surface, WHITE, (0, 0, minimap_width, minimap_height), 2)
