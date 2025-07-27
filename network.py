@@ -122,7 +122,6 @@ class NetworkManager:
         """客户端处理消息"""
         if message_type == "connect_response":
             self.player_id = message.get("client_id", -1)
-            self.server_name = message.get("server_name", "默认服务器")
             self.last_heartbeat_received = time.time()
         elif message_type == "heartbeat_response":
             self.last_heartbeat_received = time.time()

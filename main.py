@@ -2532,24 +2532,6 @@ class Game:
                                (name_cursor_x, name_input_box.y + 5), 
                                (name_cursor_x, name_input_box.y + name_input_box.height - 5), 2)
             
-            # 服务器名称输入框
-            server_name_input_color = YELLOW if server_name_input_active else WHITE
-            pygame.draw.rect(self.screen, BLACK, server_name_input_box)
-            pygame.draw.rect(self.screen, server_name_input_color, server_name_input_box, 2)
-            
-            server_name_label = font.render("服务器名称:", True, WHITE)
-            self.screen.blit(server_name_label, (server_name_input_box.x, server_name_input_box.y - 30))
-            
-            server_name_input_surface = font.render(server_name_input_text, True, WHITE)
-            self.screen.blit(server_name_input_surface, (server_name_input_box.x + 10, server_name_input_box.y + 7))
-            
-            # 服务器名称输入光标
-            if server_name_input_active and pygame.time.get_ticks() % 1000 < 500:
-                server_name_cursor_x = server_name_input_box.x + 10 + server_name_input_surface.get_width()
-                pygame.draw.line(self.screen, WHITE, 
-                               (server_name_cursor_x, server_name_input_box.y + 5), 
-                               (server_name_cursor_x, server_name_input_box.y + server_name_input_box.height - 5), 2)
-            
             # IP输入框
             input_color = YELLOW if input_active else WHITE
             pygame.draw.rect(self.screen, BLACK, input_box)
