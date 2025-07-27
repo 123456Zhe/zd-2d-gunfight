@@ -32,6 +32,21 @@ def is_in_melee_range(attacker_pos, attacker_angle, target_pos, melee_range, mel
     angle_diff = angle_difference(attacker_angle, target_angle)
     return angle_diff <= melee_angle / 2
 
+def ray_cast(start_pos, direction, max_distance, obstacles):
+    """射线检测函数"""
+    # 创建射线终点
+    end_pos = pygame.Vector2(
+        start_pos.x + math.cos(math.radians(direction)) * max_distance,
+        start_pos.y - math.sin(math.radians(direction)) * max_distance
+    )
+    
+    # 检查与障碍物的碰撞
+    for obstacle in obstacles:
+        if obstacle.clipline((start_pos, end_pos)):
+            return True
+    
+    return False
+
 class MeleeWeapon:
     """近战武器类"""
     def __init__(self, owner_id):
@@ -121,7 +136,7 @@ class MeleeWeapon:
         else:
             return self.range, self.angle
     
-    def check_hit(self, attacker_pos, targets):
+    def check_hit(self, attacker_pos, targets, obstacles=None):
         """检查攻击是否击中目标"""
         if not self.is_attacking:
             return []
@@ -132,11 +147,25 @@ class MeleeWeapon:
         hit_list = []
         for target_id, target_pos in targets.items():
             if (target_id != self.owner_id and 
-                target_id not in self.hit_targets and
-                is_in_melee_range(attacker_pos, self.attack_direction, target_pos, current_range, current_angle)):
+                target_id not in self.hit_targets):
                 
-                self.hit_targets.add(target_id)
-                hit_list.append(target_id)
+                # 首先检查角度和距离
+                if is_in_melee_range(attacker_pos, self.attack_direction, target_pos, current_range, current_angle):
+                    # 如果有障碍物，进行射线检测
+                    if obstacles is not None:
+                        # 计算到目标的角度
+                        dx = target_pos.x - attacker_pos.x
+                        dy = target_pos.y - attacker_pos.y
+                        target_angle = math.degrees(math.atan2(-dy, dx))
+                        
+                        # 进行射线检测
+                        if not ray_cast(attacker_pos, target_angle, current_range, obstacles):
+                            self.hit_targets.add(target_id)
+                            hit_list.append(target_id)
+                    else:
+                        # 没有障碍物时直接命中
+                        self.hit_targets.add(target_id)
+                        hit_list.append(target_id)
         
         return hit_list
     

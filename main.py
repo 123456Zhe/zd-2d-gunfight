@@ -36,14 +36,219 @@ except:
         small_font = pygame.font.Font(None, 18)
         large_font = pygame.font.Font(None, 32)
         title_font = pygame.font.Font(None, 48)
-'''
 
-        }
-      ]
-    }
-  }
-
-```'''
+# 射线类
+class Ray:
+    def __init__(self, start_pos, direction, owner_id, game_map, players):
+        self.start_pos = pygame.Vector2(start_pos)
+        self.direction = pygame.Vector2(direction).normalize()
+        self.owner_id = owner_id
+        self.game_map = game_map
+        self.players = players
+        self.speed = BULLET_SPEED
+        self.damage = BULLET_DAMAGE
+        self.max_distance = 500  # 射线最大距离
+        self.distance_traveled = 0
+        self.end_pos = self.start_pos  # 射线终点
+        self.hit_player = None  # 被击中的玩家
+        self.hit_wall = False  # 是否击中墙壁
+        
+        # 曳光弹效果
+        self.trail_points = [self.start_pos]  # 轨迹点
+        self.trail_lifetime = 0.5  # 轨迹持续时间
+        self.trail_creation_time = time.time()
+        
+        # 执行射线检测
+        self.cast_ray()
+    
+    def cast_ray(self):
+        """执行射线检测"""
+        # 计算射线终点
+        self.end_pos = self.start_pos + self.direction * self.max_distance
+        
+        # 检查与玩家的碰撞
+        closest_hit = None
+        closest_distance = float('inf')
+        
+        for player in self.players.values():
+            if player.id != self.owner_id and not player.is_dead:
+                # 计算射线与玩家的交点
+                player_center = player.pos
+                player_radius = PLAYER_RADIUS
+                
+                # 使用向量投影计算最近点
+                to_player = player_center - self.start_pos
+                projection = to_player.dot(self.direction)
+                
+                # 确保交点在射线上
+                if 0 <= projection <= self.max_distance:
+                    closest_point = self.start_pos + self.direction * projection
+                    distance_to_player = closest_point.distance_to(player_center)
+                    
+                    # 检查是否击中玩家
+                    if distance_to_player <= player_radius:
+                        if projection < closest_distance:
+                            closest_distance = projection
+                            closest_hit = player
+        
+        # 检查与墙壁的碰撞
+        for wall in self.game_map.walls:
+            if self.line_intersects_rect(self.start_pos, self.end_pos, wall):
+                # 计算交点
+                intersection = self.get_line_rect_intersection(self.start_pos, self.end_pos, wall)
+                if intersection:
+                    distance = self.start_pos.distance_to(intersection)
+                    if distance < closest_distance:
+                        closest_distance = distance
+                        closest_hit = None  # 击中墙壁
+        
+        # 检查与门的碰撞
+        for door in self.game_map.doors:
+            if not door.is_open and self.line_intersects_rect(self.start_pos, self.end_pos, door.rect):
+                intersection = self.get_line_rect_intersection(self.start_pos, self.end_pos, door.rect)
+                if intersection:
+                    distance = self.start_pos.distance_to(intersection)
+                    if distance < closest_distance:
+                        closest_distance = distance
+                        closest_hit = None  # 击中门
+        
+        # 设置射线终点
+        if closest_distance < float('inf'):
+            self.end_pos = self.start_pos + self.direction * closest_distance
+            if closest_hit:
+                self.hit_player = closest_hit
+        else:
+            self.hit_wall = True
+        
+        # 更新轨迹点
+        self.trail_points = [self.start_pos, self.end_pos]
+    
+    def line_intersects_rect(self, start, end, rect):
+        """检查线段是否与矩形相交"""
+        # 获取矩形的四条边
+        left = rect.left
+        right = rect.right
+        top = rect.top
+        bottom = rect.bottom
+        
+        # 检查线段是否与矩形的四条边相交
+        # 左边
+        if self.line_intersects_line(start, end, (left, top), (left, bottom)):
+            return True
+        # 右边
+        if self.line_intersects_line(start, end, (right, top), (right, bottom)):
+            return True
+        # 上边
+        if self.line_intersects_line(start, end, (left, top), (right, top)):
+            return True
+        # 下边
+        if self.line_intersects_line(start, end, (left, bottom), (right, bottom)):
+            return True
+        
+        return False
+    
+    def line_intersects_line(self, p1, p2, p3, p4):
+        """检查两条线段是否相交"""
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+        x4, y4 = p4
+        
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(denom) < 0.0001:
+            return False
+        
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+        
+        return 0 <= t <= 1 and 0 <= u <= 1
+    
+    def get_line_rect_intersection(self, start, end, rect):
+        """获取线段与矩形的交点"""
+        # 检查与四条边的交点
+        edges = [
+            ((rect.left, rect.top), (rect.left, rect.bottom)),  # 左边
+            ((rect.right, rect.top), (rect.right, rect.bottom)),  # 右边
+            ((rect.left, rect.top), (rect.right, rect.top)),  # 上边
+            ((rect.left, rect.bottom), (rect.right, rect.bottom))  # 下边
+        ]
+        
+        closest_point = None
+        min_distance = float('inf')
+        
+        for edge in edges:
+            intersection = self.get_line_line_intersection(start, end, edge[0], edge[1])
+            if intersection:
+                distance = start.distance_to(intersection)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_point = intersection
+        
+        return closest_point
+    
+    def get_line_line_intersection(self, p1, p2, p3, p4):
+        """获取两条线段的交点"""
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+        x4, y4 = p4
+        
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(denom) < 0.0001:
+            return None
+        
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+        
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            return pygame.Vector2(x, y)
+        
+        return None
+    
+    def get_hit_player(self):
+        """获取被击中的玩家"""
+        return self.hit_player
+    
+    def is_expired(self):
+        """检查轨迹是否过期"""
+        return time.time() - self.trail_creation_time > self.trail_lifetime
+    
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None):
+        """绘制射线和曳光弹效果"""
+        # 计算屏幕坐标
+        start_screen = pygame.Vector2(
+            self.start_pos.x - camera_offset.x,
+            self.start_pos.y - camera_offset.y
+        )
+        end_screen = pygame.Vector2(
+            self.end_pos.x - camera_offset.x,
+            self.end_pos.y - camera_offset.y
+        )
+        
+        # 检查射线是否可见（在视野内且无遮挡）
+        if player_pos and player_angle and walls and doors:
+            if not is_visible(player_pos, player_angle, self.start_pos, FIELD_OF_VIEW, walls, doors):
+                return  # 不可见，不绘制
+        
+        # 绘制曳光弹轨迹
+        if len(self.trail_points) >= 2:
+            # 计算轨迹点的屏幕坐标
+            screen_points = []
+            for point in self.trail_points:
+                screen_point = pygame.Vector2(
+                    point.x - camera_offset.x,
+                    point.y - camera_offset.y
+                )
+                screen_points.append(screen_point)
+            
+            # 绘制轨迹线
+            pygame.draw.lines(surface, YELLOW, False, [(int(p.x), int(p.y)) for p in screen_points], 3)
+        
+        # 绘制射线终点的光晕效果
+        pygame.draw.circle(surface, YELLOW, (int(end_screen.x), int(end_screen.y)), 8, 1)
+        pygame.draw.circle(surface, (255, 255, 200), (int(end_screen.x), int(end_screen.y)), 4)
 
 def get_local_ip():
     """获取本机内网IP"""
@@ -1589,7 +1794,18 @@ class Player:
                         if pid != self.id and not player.is_dead:
                             targets[pid] = player.pos
                 
-                hit_targets = self.melee_weapon.check_hit(self.pos, targets)
+                # 收集障碍物（墙壁和门）
+                obstacles = []
+                if game_map:
+                    # 添加墙壁作为障碍物
+                    for wall in game_map.walls:
+                        obstacles.append(wall)
+                    # 添加门作为障碍物
+                    for door in game_map.doors:
+                        if door.state == 1:  # 只有关闭的门才作为障碍物
+                            obstacles.append(door.rect)
+                
+                hit_targets = self.melee_weapon.check_hit(self.pos, targets, obstacles)
                 if hit_targets:
                     # 发送近战攻击请求
                     network_manager.request_melee_attack(
@@ -2763,22 +2979,7 @@ class Game:
 
     def draw_fov_indicator(self):
         """绘制视角指示线"""
-        half_fov = FIELD_OF_VIEW / 2
-        player_screen_pos = (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2)
-        
-        # 绘制视角边界线
-        for angle_offset in [-half_fov, half_fov]:
-            angle = self.player.angle + angle_offset
-            angle_rad = math.radians(angle)
-            end_x = player_screen_pos[0] + math.cos(angle_rad) * 100
-            end_y = player_screen_pos[1] - math.sin(angle_rad) * 100
-            pygame.draw.line(self.screen, YELLOW, player_screen_pos, (end_x, end_y), 2)
-        
-        # 绘制中心指向线
-        angle_rad = math.radians(self.player.angle)
-        end_x = player_screen_pos[0] + math.cos(angle_rad) * 80
-        end_y = player_screen_pos[1] - math.sin(angle_rad) * 80
-        pygame.draw.line(self.screen, WHITE, player_screen_pos, (end_x, end_y), 3)
+        # 移除了视角边缘线和中心线的绘制
     
     def render_ui(self):
         """绘制UI元素"""
@@ -2976,21 +3177,7 @@ class Game:
             player_color = MELEE_COLOR
         pygame.draw.circle(minimap_surface, player_color, (int(minimap_center_x), int(minimap_center_y)), 4)
 
-        # 绘制视角范围指示（在小地图上）
-        if not self.player.is_dead and self.show_vision:
-            # 绘制视角方向线
-            half_fov = FIELD_OF_VIEW / 2
-            for angle_offset in [-half_fov, 0, half_fov]:
-                angle = self.player.angle + angle_offset
-                angle_rad = math.radians(angle)
-                end_x = minimap_center_x + math.cos(angle_rad) * 60
-                end_y = minimap_center_y - math.sin(angle_rad) * 60
-                
-                color = WHITE if angle_offset == 0 else YELLOW
-                if (0 <= end_x < minimap_width and 0 <= end_y < minimap_height):
-                    pygame.draw.line(minimap_surface, color, 
-                                   (minimap_center_x, minimap_center_y), 
-                                   (end_x, end_y), 1)
+        # 移除了小地图上的视角方向线绘制
 
         # 绘制瞄准指示
         if not self.player.is_dead and self.player.is_aiming:

@@ -138,9 +138,9 @@ class Player:
             
         return self.melee_weapon.start_attack(self.angle, is_heavy)
     
-    def check_melee_hit(self, targets):
+    def check_melee_hit(self, targets, obstacles=None):
         """检查近战攻击是否击中目标"""
-        return self.melee_weapon.check_hit(self.position, targets)
+        return self.melee_weapon.check_hit(self.position, targets, obstacles)
     
     def get_melee_arc_points(self, screen_offset):
         """获取近战攻击弧形的绘制点"""
