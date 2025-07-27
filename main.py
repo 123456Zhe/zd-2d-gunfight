@@ -215,7 +215,7 @@ class Ray:
         """检查轨迹是否过期"""
         return time.time() - self.trail_creation_time > self.trail_lifetime
     
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_aiming=False):
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None):
         """绘制射线和曳光弹效果"""
         # 计算屏幕坐标
         start_screen = pygame.Vector2(
@@ -227,12 +227,9 @@ class Ray:
             self.end_pos.y - camera_offset.y
         )
         
-        # 根据瞄准状态选择视野角度
-        current_fov = 30 if is_aiming else 120
-        
         # 检查射线是否可见（在视野内且无遮挡）
         if player_pos and player_angle and walls and doors:
-            if not is_visible(player_pos, player_angle, self.start_pos, current_fov, walls, doors):
+            if not is_visible(player_pos, player_angle, self.start_pos, FIELD_OF_VIEW, walls, doors):
                 return  # 不可见，不绘制
         
         # 绘制曳光弹轨迹
@@ -1538,19 +1535,16 @@ class Bullet:
                 
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_aiming=False):
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None):
         """绘制子弹（考虑视线遮挡）"""
         bullet_screen_pos = pygame.Vector2(
             self.pos.x - camera_offset.x,
             self.pos.y - camera_offset.y
         )
         
-        # 根据瞄准状态选择视野角度
-        current_fov = 30 if is_aiming else 120
-        
         # 检查子弹是否可见（在视野内且无遮挡）
         if player_pos and player_angle and walls and doors:
-            if not is_visible(player_pos, player_angle, self.pos, current_fov, walls, doors):
+            if not is_visible(player_pos, player_angle, self.pos, FIELD_OF_VIEW, walls, doors):
                 return  # 不可见，不绘制
         
         pygame.draw.circle(
@@ -1956,7 +1950,7 @@ class Player:
             return self.melee_weapon.start_attack(self.angle, is_heavy)
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False, is_aiming=False):
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False):
         """绘制玩家（考虑视线遮挡）"""
         player_screen_pos = pygame.Vector2(
             self.pos.x - camera_offset.x,
@@ -1965,9 +1959,7 @@ class Player:
         
         # 如果不是本地玩家，检查是否可见
         if not is_local_player and player_pos and player_angle and walls and doors:
-            # 根据瞄准状态选择视野角度
-            current_fov = 30 if is_aiming else 120
-            if not is_visible(player_pos, player_angle, self.pos, current_fov, walls, doors):
+            if not is_visible(player_pos, player_angle, self.pos, FIELD_OF_VIEW, walls, doors):
                 return  # 不可见，不绘制
         
         if self.is_dead:
@@ -2877,17 +2869,16 @@ class Game:
             if self.show_vision and not self.player.is_dead:
                 bullet.draw(self.screen, self.camera_offset, 
                           self.player.pos, self.player.angle, 
-                          self.game_map.walls, self.game_map.doors, 
-                          self.player.is_aiming)
+                          self.game_map.walls, self.game_map.doors)
             else:
                 bullet.draw(self.screen, self.camera_offset)
-
+        
         for player in self.other_players.values():
             if self.show_vision and not self.player.is_dead:
                 player.draw(self.screen, self.camera_offset, 
                          self.player.pos, self.player.angle, 
                          self.game_map.walls, self.game_map.doors, 
-                         is_local_player=False, is_aiming=self.player.is_aiming)
+                         is_local_player=False)
             else:
                 player.draw(self.screen, self.camera_offset, None, None, None, None, is_local_player=False)
         
@@ -2918,14 +2909,11 @@ class Game:
     
     def render_vision_fan(self):
         """绘制视野扇形 - 优化版本"""
-        # 根据瞄准状态选择视野角度
-        current_fov = 30 if self.player.is_aiming else 120
-        
         # 创建扇形点集合
         fan_points = create_vision_fan_points(
             self.player.pos, 
             self.player.angle, 
-            current_fov, 
+            FIELD_OF_VIEW, 
             VISION_RANGE,
             num_points=20  # 减少点数以提高性能
         )
@@ -3071,8 +3059,7 @@ class Game:
         self.screen.blit(font.render(damage_text, True, WHITE), (20, 140))
         
         # 视角相关信息
-        current_fov = 30 if self.player.is_aiming else 120
-        vision_text = f"视角: {current_fov}° {'(瞄准)' if self.player.is_aiming else '(正常)'})"
+        vision_text = f"视角: {FIELD_OF_VIEW}° (武器+瞄准版)"
         self.screen.blit(font.render(vision_text, True, YELLOW), (20, 170))
         
         # 调试信息
