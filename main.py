@@ -215,7 +215,7 @@ class Ray:
         """检查轨迹是否过期"""
         return time.time() - self.trail_creation_time > self.trail_lifetime
     
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None):
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_aiming=False):
         """绘制射线和曳光弹效果"""
         # 计算屏幕坐标
         start_screen = pygame.Vector2(
@@ -227,9 +227,12 @@ class Ray:
             self.end_pos.y - camera_offset.y
         )
         
+        # 根据瞄准状态选择视野角度
+        current_fov = 30 if is_aiming else 120
+        
         # 检查射线是否可见（在视野内且无遮挡）
         if player_pos and player_angle and walls and doors:
-            if not is_visible(player_pos, player_angle, self.start_pos, FIELD_OF_VIEW, walls, doors):
+            if not is_visible(player_pos, player_angle, self.start_pos, current_fov, walls, doors):
                 return  # 不可见，不绘制
         
         # 绘制曳光弹轨迹
@@ -710,9 +713,14 @@ class NetworkManager:
         try:
             print(f"正在连接到服务器 {self.server_address}:{SERVER_PORT}...")
             
-            # 发送连接请求
-            connect_msg = "connect_request"
-            self.socket.sendto(connect_msg.encode(), (self.server_address, SERVER_PORT))
+            # 发送连接请求，包含玩家名称
+            connect_msg = {
+                'type': 'connect_request',
+                'data': {
+                    'name': getattr(self, 'player_name', f'玩家{int(time.time() * 1000) % 10000}')
+                }
+            }
+            self.socket.sendto(json.dumps(connect_msg).encode(), (self.server_address, SERVER_PORT))
             
             # 等待服务器响应
             start_time = time.time()
@@ -847,6 +855,15 @@ class NetworkManager:
                     self._handle_connection_request(addr)
                     continue
                 
+                # 处理包含玩家名称的连接请求（仅服务端）
+                try:
+                    message = json.loads(message_str)
+                    if isinstance(message, dict) and message.get('type') == 'connect_request':
+                        self._handle_connection_request(addr, message.get('data', {}))
+                        continue
+                except json.JSONDecodeError:
+                    pass
+                
                 # 处理连接响应（仅客户端）
                 if message_str.startswith("connect_accepted:") and not self.is_server:
                     continue  # 已在connect_to_server中处理
@@ -897,7 +914,7 @@ class NetworkManager:
                     self.running = False
                 continue
 
-    def _handle_connection_request(self, addr):
+    def _handle_connection_request(self, addr, data=None):
         """处理连接请求（仅服务端）"""
         try:
             # 检查是否已经连接
@@ -906,6 +923,9 @@ class NetworkManager:
             
             # 分配玩家ID（使用新的ID管理系统）
             new_player_id = self.allocate_player_id()
+            
+            # 获取玩家名称
+            player_name = data.get('name', f'玩家{new_player_id}') if data else f'玩家{new_player_id}'
             
             # 记录客户端
             self.clients[addr] = new_player_id
@@ -924,14 +944,14 @@ class NetworkManager:
                 'death_time': 0,
                 'respawn_time': 0,
                 'is_respawning': False,
-                'name': f'玩家{new_player_id}',
+                'name': player_name,
                 'melee_attacking': False,
                 'melee_direction': 0,
                 'weapon_type': 'gun',  # 新增：武器类型
                 'is_aiming': False  # 新增：瞄准状态
             }
             
-            print(f"[服务端] 玩家{new_player_id}已连接，地址：{addr}，当前玩家数: {len(self.players)}")
+            print(f"[服务端] 玩家{new_player_id}({player_name})已连接，地址：{addr}，当前玩家数: {len(self.players)}")
             
             # 发送连接确认
             response = f"connect_accepted:{new_player_id}"
@@ -967,7 +987,7 @@ class NetworkManager:
             # 广播新玩家加入消息
             join_msg = ChatMessage(
                 0, "系统", 
-                f"玩家{new_player_id} 加入了游戏", 
+                f"{player_name} 加入了游戏", 
                 time.time()
             )
             self.chat_messages.append(join_msg)
@@ -1535,16 +1555,19 @@ class Bullet:
                 
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None):
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_aiming=False):
         """绘制子弹（考虑视线遮挡）"""
         bullet_screen_pos = pygame.Vector2(
             self.pos.x - camera_offset.x,
             self.pos.y - camera_offset.y
         )
         
+        # 根据瞄准状态选择视野角度
+        current_fov = 30 if is_aiming else 120
+        
         # 检查子弹是否可见（在视野内且无遮挡）
         if player_pos and player_angle and walls and doors:
-            if not is_visible(player_pos, player_angle, self.pos, FIELD_OF_VIEW, walls, doors):
+            if not is_visible(player_pos, player_angle, self.pos, current_fov, walls, doors):
                 return  # 不可见，不绘制
         
         pygame.draw.circle(
@@ -1802,7 +1825,7 @@ class Player:
                         obstacles.append(wall)
                     # 添加门作为障碍物
                     for door in game_map.doors:
-                        if door.state == 1:  # 只有关闭的门才作为障碍物
+                        if not door.is_open:  # 只有关闭的门才作为障碍物
                             obstacles.append(door.rect)
                 
                 hit_targets = self.melee_weapon.check_hit(self.pos, targets, obstacles)
@@ -1950,7 +1973,7 @@ class Player:
             return self.melee_weapon.start_attack(self.angle, is_heavy)
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False):
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False, is_aiming=False):
         """绘制玩家（考虑视线遮挡）"""
         player_screen_pos = pygame.Vector2(
             self.pos.x - camera_offset.x,
@@ -1959,7 +1982,9 @@ class Player:
         
         # 如果不是本地玩家，检查是否可见
         if not is_local_player and player_pos and player_angle and walls and doors:
-            if not is_visible(player_pos, player_angle, self.pos, FIELD_OF_VIEW, walls, doors):
+            # 根据瞄准状态选择视野角度
+            current_fov = 30 if is_aiming else 120
+            if not is_visible(player_pos, player_angle, self.pos, current_fov, walls, doors):
                 return  # 不可见，不绘制
         
         if self.is_dead:
@@ -2305,6 +2330,10 @@ class Game:
         """显示主菜单"""
         # 菜单状态
         selected_option = 0  # 0=创建服务器, 1=加入游戏, 2=刷新服务器
+        name_input_text = "玩家" + str(int(time.time() * 1000) % 10000)
+        name_input_active = False
+        server_name_input_text = "默认服务器"
+        server_name_input_active = False
         input_text = ""
         input_active = False
         
@@ -2320,8 +2349,10 @@ class Game:
         
         button_create = pygame.Rect(50, start_y, button_width, button_height)
         button_refresh = pygame.Rect(50, start_y + button_height + button_spacing, button_width, button_height)
-        input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 10, button_width, 35)
-        button_connect = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 60, button_width, 40)
+        name_input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 10, button_width, 35)
+        server_name_input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 50, button_width, 35)
+        input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 4 + 90, button_width, 35)
+        button_connect = pygame.Rect(50, start_y + (button_height + button_spacing) * 4 + 140, button_width, 40)
         
         # 服务器列表区域
         server_list_x = 300
@@ -2341,13 +2372,15 @@ class Game:
                     elif event.key == K_UP:
                         selected_option = max(0, selected_option - 1)
                         input_active = False
+                        name_input_active = False
                     elif event.key == K_DOWN:
                         selected_option = min(2, selected_option + 1)
                         input_active = False
+                        name_input_active = False
                     elif event.key == K_RETURN:
                         if selected_option == 0:
                             # 创建服务器
-                            self.connection_info = {'is_server': True}
+                            self.connection_info = {'is_server': True, 'server_name': server_name_input_text}
                             self.state = "CONNECTING"
                             self.connecting_start_time = time.time()
                             return
@@ -2357,12 +2390,30 @@ class Game:
                                 'is_server': False,
                                 'server_ip': input_text.strip()
                             }
+                            # 保存玩家名称到网络管理器
+                            if self.network_manager:
+                                self.network_manager.player_name = name_input_text
+                            else:
+                                # 如果网络管理器尚未创建，先保存到游戏实例
+                                self.player_name = name_input_text
                             self.state = "CONNECTING"
                             self.connecting_start_time = time.time()
                             return
                         elif selected_option == 2:
                             # 刷新服务器列表
                             self.start_server_scan()
+                    elif name_input_active:
+                        if event.key == K_BACKSPACE:
+                            name_input_text = name_input_text[:-1]
+                        else:
+                            if len(name_input_text) < 20:
+                                name_input_text += event.unicode
+                    elif server_name_input_active:
+                        if event.key == K_BACKSPACE:
+                            server_name_input_text = server_name_input_text[:-1]
+                        else:
+                            if len(server_name_input_text) < 30:
+                                server_name_input_text += event.unicode
                     elif input_active:
                         if event.key == K_BACKSPACE:
                             input_text = input_text[:-1]
@@ -2373,18 +2424,33 @@ class Game:
                     if button_create.collidepoint(event.pos):
                         selected_option = 0
                         input_active = False
+                        server_name_input_active = False
                         # 创建服务器
-                        self.connection_info = {'is_server': True}
+                        self.connection_info = {'is_server': True, 'server_name': server_name_input_text}
                         self.state = "CONNECTING"
                         self.connecting_start_time = time.time()
                         return
                     elif button_refresh.collidepoint(event.pos):
                         selected_option = 2
                         input_active = False
+                        name_input_active = False
+                        server_name_input_active = False
                         # 刷新服务器列表
                         self.start_server_scan()
+                    elif name_input_box.collidepoint(event.pos):
+                        name_input_active = True
+                        input_active = False
+                        server_name_input_active = False
+                        selected_option = 1
+                    elif server_name_input_box.collidepoint(event.pos):
+                        server_name_input_active = True
+                        input_active = False
+                        name_input_active = False
+                        selected_option = 0
                     elif input_box.collidepoint(event.pos):
                         input_active = True
+                        name_input_active = False
+                        server_name_input_active = False
                         selected_option = 1
                     elif button_connect.collidepoint(event.pos) and input_text.strip():
                         # 手动连接按钮
@@ -2392,6 +2458,12 @@ class Game:
                             'is_server': False,
                             'server_ip': input_text.strip()
                         }
+                        # 保存玩家名称到网络管理器
+                        if self.network_manager:
+                            self.network_manager.player_name = name_input_text
+                        else:
+                            # 如果网络管理器尚未创建，先保存到游戏实例
+                            self.player_name = name_input_text
                         self.state = "CONNECTING"
                         self.connecting_start_time = time.time()
                         return
@@ -2441,6 +2513,42 @@ class Game:
             refresh_text = font.render("刷新服务器列表", True, WHITE)
             self.screen.blit(refresh_text, (button_refresh.x + (button_refresh.width - refresh_text.get_width())//2,
                                           button_refresh.y + (button_refresh.height - refresh_text.get_height())//2))
+            
+            # 玩家名称输入框
+            name_input_color = YELLOW if name_input_active else WHITE
+            pygame.draw.rect(self.screen, BLACK, name_input_box)
+            pygame.draw.rect(self.screen, name_input_color, name_input_box, 2)
+            
+            name_label = font.render("玩家名称:", True, WHITE)
+            self.screen.blit(name_label, (name_input_box.x, name_input_box.y - 30))
+            
+            name_input_surface = font.render(name_input_text, True, WHITE)
+            self.screen.blit(name_input_surface, (name_input_box.x + 10, name_input_box.y + 7))
+            
+            # 玩家名称输入光标
+            if name_input_active and pygame.time.get_ticks() % 1000 < 500:
+                name_cursor_x = name_input_box.x + 10 + name_input_surface.get_width()
+                pygame.draw.line(self.screen, WHITE, 
+                               (name_cursor_x, name_input_box.y + 5), 
+                               (name_cursor_x, name_input_box.y + name_input_box.height - 5), 2)
+            
+            # 服务器名称输入框
+            server_name_input_color = YELLOW if server_name_input_active else WHITE
+            pygame.draw.rect(self.screen, BLACK, server_name_input_box)
+            pygame.draw.rect(self.screen, server_name_input_color, server_name_input_box, 2)
+            
+            server_name_label = font.render("服务器名称:", True, WHITE)
+            self.screen.blit(server_name_label, (server_name_input_box.x, server_name_input_box.y - 30))
+            
+            server_name_input_surface = font.render(server_name_input_text, True, WHITE)
+            self.screen.blit(server_name_input_surface, (server_name_input_box.x + 10, server_name_input_box.y + 7))
+            
+            # 服务器名称输入光标
+            if server_name_input_active and pygame.time.get_ticks() % 1000 < 500:
+                server_name_cursor_x = server_name_input_box.x + 10 + server_name_input_surface.get_width()
+                pygame.draw.line(self.screen, WHITE, 
+                               (server_name_cursor_x, server_name_input_box.y + 5), 
+                               (server_name_cursor_x, server_name_input_box.y + server_name_input_box.height - 5), 2)
             
             # IP输入框
             input_color = YELLOW if input_active else WHITE
@@ -2626,7 +2734,8 @@ class Game:
             if not self.network_manager:
                 # 初始化网络管理器
                 if self.connection_info['is_server']:
-                    self.network_manager = NetworkManager(is_server=True, game_instance=self)
+                    server_name = self.connection_info.get('server_name', '默认服务器')
+                    self.network_manager = NetworkManager(is_server=True, server_name=server_name, game_instance=self)
                 else:
                     self.network_manager = NetworkManager(
                         is_server=False,
@@ -2869,16 +2978,17 @@ class Game:
             if self.show_vision and not self.player.is_dead:
                 bullet.draw(self.screen, self.camera_offset, 
                           self.player.pos, self.player.angle, 
-                          self.game_map.walls, self.game_map.doors)
+                          self.game_map.walls, self.game_map.doors, 
+                          self.player.is_aiming)
             else:
                 bullet.draw(self.screen, self.camera_offset)
-        
+
         for player in self.other_players.values():
             if self.show_vision and not self.player.is_dead:
                 player.draw(self.screen, self.camera_offset, 
                          self.player.pos, self.player.angle, 
                          self.game_map.walls, self.game_map.doors, 
-                         is_local_player=False)
+                         is_local_player=False, is_aiming=self.player.is_aiming)
             else:
                 player.draw(self.screen, self.camera_offset, None, None, None, None, is_local_player=False)
         
@@ -2909,11 +3019,14 @@ class Game:
     
     def render_vision_fan(self):
         """绘制视野扇形 - 优化版本"""
+        # 根据瞄准状态选择视野角度
+        current_fov = 30 if self.player.is_aiming else 120
+        
         # 创建扇形点集合
         fan_points = create_vision_fan_points(
             self.player.pos, 
             self.player.angle, 
-            FIELD_OF_VIEW, 
+            current_fov, 
             VISION_RANGE,
             num_points=20  # 减少点数以提高性能
         )
@@ -3059,7 +3172,8 @@ class Game:
         self.screen.blit(font.render(damage_text, True, WHITE), (20, 140))
         
         # 视角相关信息
-        vision_text = f"视角: {FIELD_OF_VIEW}° (武器+瞄准版)"
+        current_fov = 30 if self.player.is_aiming else 120
+        vision_text = f"视角: {current_fov}° {'(瞄准)' if self.player.is_aiming else '(正常)'})"
         self.screen.blit(font.render(vision_text, True, YELLOW), (20, 170))
         
         # 调试信息

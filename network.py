@@ -8,8 +8,9 @@ from constants import SERVER_PORT, BUFFER_SIZE, HEARTBEAT_INTERVAL, CLIENT_TIMEO
 
 class NetworkManager:
     """网络管理类，处理客户端和服务器的网络通信"""
-    def __init__(self, is_server=False):
+    def __init__(self, is_server=False, server_name="默认服务器"):
         self.is_server = is_server
+        self.server_name = server_name  # 服务器名称
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(0.1)  # 设置超时时间
         
@@ -121,6 +122,7 @@ class NetworkManager:
         """客户端处理消息"""
         if message_type == "connect_response":
             self.player_id = message.get("client_id", -1)
+            self.server_name = message.get("server_name", "默认服务器")
             self.last_heartbeat_received = time.time()
         elif message_type == "heartbeat_response":
             self.last_heartbeat_received = time.time()
@@ -146,6 +148,7 @@ class NetworkManager:
         response = {
             "type": "connect_response",
             "client_id": client_id,
+            "server_name": self.server_name,
             "server_time": time.time()
         }
         self.send_message(response, addr)
