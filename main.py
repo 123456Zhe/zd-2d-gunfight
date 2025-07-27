@@ -2332,8 +2332,6 @@ class Game:
         selected_option = 0  # 0=创建服务器, 1=加入游戏, 2=刷新服务器
         name_input_text = "玩家" + str(int(time.time() * 1000) % 10000)
         name_input_active = False
-        server_name_input_text = "默认服务器"
-        server_name_input_active = False
         input_text = ""
         input_active = False
         
@@ -2350,9 +2348,8 @@ class Game:
         button_create = pygame.Rect(50, start_y, button_width, button_height)
         button_refresh = pygame.Rect(50, start_y + button_height + button_spacing, button_width, button_height)
         name_input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 10, button_width, 35)
-        server_name_input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 50, button_width, 35)
-        input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 4 + 90, button_width, 35)
-        button_connect = pygame.Rect(50, start_y + (button_height + button_spacing) * 4 + 140, button_width, 40)
+        input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 50, button_width, 35)
+        button_connect = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 100, button_width, 40)
         
         # 服务器列表区域
         server_list_x = 300
@@ -2380,7 +2377,7 @@ class Game:
                     elif event.key == K_RETURN:
                         if selected_option == 0:
                             # 创建服务器
-                            self.connection_info = {'is_server': True, 'server_name': server_name_input_text}
+                            self.connection_info = {'is_server': True}
                             self.state = "CONNECTING"
                             self.connecting_start_time = time.time()
                             return
@@ -2408,12 +2405,6 @@ class Game:
                         else:
                             if len(name_input_text) < 20:
                                 name_input_text += event.unicode
-                    elif server_name_input_active:
-                        if event.key == K_BACKSPACE:
-                            server_name_input_text = server_name_input_text[:-1]
-                        else:
-                            if len(server_name_input_text) < 30:
-                                server_name_input_text += event.unicode
                     elif input_active:
                         if event.key == K_BACKSPACE:
                             input_text = input_text[:-1]
@@ -2424,9 +2415,8 @@ class Game:
                     if button_create.collidepoint(event.pos):
                         selected_option = 0
                         input_active = False
-                        server_name_input_active = False
                         # 创建服务器
-                        self.connection_info = {'is_server': True, 'server_name': server_name_input_text}
+                        self.connection_info = {'is_server': True}
                         self.state = "CONNECTING"
                         self.connecting_start_time = time.time()
                         return
@@ -2434,23 +2424,15 @@ class Game:
                         selected_option = 2
                         input_active = False
                         name_input_active = False
-                        server_name_input_active = False
                         # 刷新服务器列表
                         self.start_server_scan()
                     elif name_input_box.collidepoint(event.pos):
                         name_input_active = True
                         input_active = False
-                        server_name_input_active = False
                         selected_option = 1
-                    elif server_name_input_box.collidepoint(event.pos):
-                        server_name_input_active = True
-                        input_active = False
-                        name_input_active = False
-                        selected_option = 0
                     elif input_box.collidepoint(event.pos):
                         input_active = True
                         name_input_active = False
-                        server_name_input_active = False
                         selected_option = 1
                     elif button_connect.collidepoint(event.pos) and input_text.strip():
                         # 手动连接按钮
@@ -2716,8 +2698,7 @@ class Game:
             if not self.network_manager:
                 # 初始化网络管理器
                 if self.connection_info['is_server']:
-                    server_name = self.connection_info.get('server_name', '默认服务器')
-                    self.network_manager = NetworkManager(is_server=True, server_name=server_name, game_instance=self)
+                    self.network_manager = NetworkManager(is_server=True, game_instance=self)
                 else:
                     self.network_manager = NetworkManager(
                         is_server=False,
