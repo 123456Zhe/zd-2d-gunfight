@@ -387,7 +387,7 @@ class ChatMessage:
         return self.rect.colliderect(rect)
 
 class NetworkManager:
-    def __init__(self, is_server=False, server_address=None):
+    def __init__(self, is_server=False, server_address=None, game_instance=None):
         self.is_server = is_server
         self.player_id = None  # 将在连接时分配
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -399,6 +399,7 @@ class NetworkManager:
         self.running = True
         self.connected = False
         self.connection_error = None
+        self.game_instance = game_instance  # 添加game_instance属性
         
         # 服务端特有属性 - 改进的ID管理
         self.clients = {}  # 客户端地址到玩家ID的映射
@@ -886,10 +887,7 @@ class NetworkManager:
             self.active_bullets = bullets_data
 
     def _handle_damage(self, damage_data):
-        """处理伤害事件 - 只有服务端处理"""
-        if not self.is_server:
-            return
-            
+        """处理伤害事件"""
         if isinstance(damage_data, dict) and all(key in damage_data for key in ['target_id', 'damage', 'attacker_id']):
             try:
                 target_id = int(damage_data['target_id'])
@@ -906,27 +904,64 @@ class NetworkManager:
                 
                 self.last_damage_time[damage_key] = current_time
                 
-                if target_id in self.players and not self.players[target_id]['is_dead']:
-                    old_health = self.players[target_id]['health']
-                    self.players[target_id]['health'] = max(0, old_health - damage)
-                    print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
-                    
-                    if self.players[target_id]['health'] <= 0:
-                        # 服务端计算死亡和复活时间
-                        self.players[target_id]['health'] = 0
-                        self.players[target_id]['is_dead'] = True
-                        self.players[target_id]['death_time'] = current_time
-                        self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
-                        print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
-                        
-                        # 发送死亡信息到聊天框
-                        attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
-                        target_name = f"玩家{target_id}" if target_id in self.players else f"玩家{target_id}"
-                        death_message = f"{attacker_name} 击杀了 {target_name}！"
-                        death_chat = ChatMessage(0, "[系统]", death_message, current_time)
-                        self.chat_messages.append(death_chat)
-                        if self.is_server:
-                            self.broadcast_chat_message(death_chat)
+                # 如果受伤的是本地玩家，触发红色滤镜效果
+                if target_id == self.player_id:
+                    # 触发红色滤镜效果
+                    if hasattr(self, 'game_instance') and self.game_instance:
+                        self.game_instance.trigger_hit_effect()
+                
+                # 服务端处理
+                if self.is_server:
+                    if target_id in self.players and not self.players[target_id]['is_dead']:
+                        # 获取玩家实例
+                        game_instance = getattr(self, 'game_instance', None)
+                        if game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
+                            player = game_instance.players[target_id]
+                            # 调用玩家的take_damage方法
+                            is_dead = player.take_damage(damage)
+                            
+                            # 同步玩家状态到网络
+                            self.players[target_id]['health'] = player.health
+                            self.players[target_id]['is_dead'] = player.is_dead
+                            if is_dead:
+                                self.players[target_id]['death_time'] = current_time
+                                self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
+                            
+                            print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{player.health + damage}->{player.health}")
+                            
+                            if is_dead:
+                                print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
+                                
+                                # 发送死亡信息到聊天框
+                                attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
+                                target_name = f"玩家{target_id}" if target_id in self.players else f"玩家{target_id}"
+                                death_message = f"{attacker_name} 击杀了 {target_name}！"
+                                death_chat = ChatMessage(0, "[系统]", death_message, current_time)
+                                self.chat_messages.append(death_chat)
+                                if self.is_server:
+                                    self.broadcast_chat_message(death_chat)
+                        else:
+                            # 如果没有玩家实例，使用原来的逻辑
+                            old_health = self.players[target_id]['health']
+                            self.players[target_id]['health'] = max(0, old_health - damage)
+                            print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
+                            
+                            if self.players[target_id]['health'] <= 0:
+                                # 服务端计算死亡和复活时间
+                                self.players[target_id]['health'] = 0
+                                self.players[target_id]['is_dead'] = True
+                                self.players[target_id]['death_time'] = current_time
+                                self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
+                                print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
+                                
+                                # 发送死亡信息到聊天框
+                                attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
+                                target_name = f"玩家{target_id}" if target_id in self.players else f"玩家{target_id}"
+                                death_message = f"{attacker_name} 击杀了 {target_name}！"
+                                death_chat = ChatMessage(0, "[系统]", death_message, current_time)
+                                self.chat_messages.append(death_chat)
+                                if self.is_server:
+                                    self.broadcast_chat_message(death_chat)
             except ValueError as e:
                 print(f"处理伤害数据错误: {e}")
 
@@ -1340,6 +1375,9 @@ class Player:
         # 新增：瞄准系统
         self.is_aiming = False
         self.aim_offset = pygame.Vector2(0, 0)  # 瞄准时的相机偏移
+        
+        # 被击中减速效果
+        self.hit_slowdown_end_time = 0  # 减速结束时间
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -1566,7 +1604,16 @@ class Player:
         
         # 更新位置（所有玩家）
         if self.velocity.length() > 0 and not self.is_respawning and not self.is_dead:
-            new_pos = self.pos + self.velocity * dt
+            # 检查是否处于被击中减速状态
+            current_time = time.time()
+            is_slowed = current_time < self.hit_slowdown_end_time
+            
+            # 计算实际速度
+            actual_velocity = pygame.Vector2(self.velocity)
+            if is_slowed:
+                actual_velocity *= HIT_SLOWDOWN_FACTOR
+            
+            new_pos = self.pos + actual_velocity * dt
             player_rect = pygame.Rect(
                 new_pos.x - PLAYER_RADIUS,
                 new_pos.y - PLAYER_RADIUS,
@@ -1828,6 +1875,22 @@ class Player:
         # 同步瞄准状态
         if 'is_aiming' in network_data:
             self.is_aiming = network_data['is_aiming']
+    
+    def take_damage(self, damage):
+        """玩家受到伤害"""
+        current_time = time.time()
+        self.health -= damage
+        
+        # 触发被击中减速效果
+        self.hit_slowdown_end_time = current_time + HIT_SLOWDOWN_DURATION
+        
+        if self.health <= 0:
+            self.health = 0
+            self.is_dead = True
+            self.respawn_time = time.time() + RESPAWN_TIME
+            return True
+        
+        return False
 
 class Map:
     def __init__(self):
@@ -1970,25 +2033,33 @@ class Game:
         self.found_servers = []
         self.scan_thread = None
         
+        # 网络管理器
+        self.network_manager = None
+        
+        # 网络同步
+        self.last_sync_time = 0
+        self.sync_interval = 0.05  # 50ms同步间隔
+        
         # 聊天系统
         self.chat_active = False
         self.chat_input = ""
         self.chat_cursor_blink = 0
         self.last_chat_cursor_blink = 0
         
-        # 调试模式和视角显示
-        self.debug_mode = True
+        # 红色滤镜效果
+        self.hit_effect_time = 0
+        self.hit_effect_duration = 0.3  # 0.3秒的红色滤镜效果
+        
+        # 视角显示
         self.show_vision = True  # 默认开启视角系统
         
-        # 延迟初始化其他组件
-        self.network_manager = None
-        self.player = None
-        self.other_players = {}
-        self.game_map = None
-        self.bullets = []
-        self.camera_offset = pygame.Vector2(0, 0)
-        self.last_sync_time = 0
-        self.sync_interval = 0.05
+        # 调试模式
+        self.debug_mode = True
+    
+    def trigger_hit_effect(self):
+        """触发被击中时的红色滤镜效果"""
+        print("[受击效果] 触发红色滤镜效果")
+        self.hit_effect_time = self.hit_effect_duration
     
     def start_server_scan(self):
         """启动服务器扫描"""
@@ -2263,7 +2334,7 @@ class Game:
                 return
             
             # 检查是否出现错误
-            if self.network_manager and self.network_manager.connection_error:
+            if self.network_manager is not None and self.network_manager.connection_error:
                 self.error_message = self.network_manager.connection_error
                 self.state = "ERROR"
                 return
@@ -2333,11 +2404,12 @@ class Game:
             if not self.network_manager:
                 # 初始化网络管理器
                 if self.connection_info['is_server']:
-                    self.network_manager = NetworkManager(is_server=True)
+                    self.network_manager = NetworkManager(is_server=True, game_instance=self)
                 else:
                     self.network_manager = NetworkManager(
                         is_server=False,
-                        server_address=self.connection_info['server_ip']
+                        server_address=self.connection_info['server_ip'],
+                        game_instance=self
                     )
             
             # 检查连接是否成功
@@ -2532,6 +2604,12 @@ class Game:
             if current_time - self.last_chat_cursor_blink > 500:
                 self.chat_cursor_blink = not self.chat_cursor_blink
                 self.last_chat_cursor_blink = current_time
+        
+        # 更新红色滤镜效果
+        if self.hit_effect_time > 0:
+            self.hit_effect_time -= dt
+            if self.hit_effect_time < 0:
+                self.hit_effect_time = 0
 
     def sync_bullets(self):
         """同步子弹 - 完全基于服务器数据"""
@@ -2597,6 +2675,13 @@ class Game:
         
         # 聊天系统
         self.render_chat()
+        
+        # 绘制红色滤镜效果
+        if self.hit_effect_time > 0:
+            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            alpha = min(100, int((self.hit_effect_time / self.hit_effect_duration) * 100))
+            overlay.fill((255, 0, 0, alpha))
+            self.screen.blit(overlay, (0, 0))
         
         pygame.display.flip()
     

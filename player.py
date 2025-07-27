@@ -20,6 +20,9 @@ class Player:
         self.last_damage_time = 0
         self.damage_cooldown = 0.5  # 伤害冷却时间
         
+        # 被击中减速效果
+        self.hit_slowdown_end_time = 0  # 减速结束时间
+        
         # 武器系统
         self.current_weapon = 0  # 0: 主武器, 1: 近战武器
         self.weapons = [
@@ -54,8 +57,17 @@ class Player:
     def update(self, dt):
         """更新玩家状态"""
         if not self.is_dead:
+            # 检查是否处于被击中减速状态
+            current_time = time.time()
+            is_slowed = current_time < self.hit_slowdown_end_time
+            
+            # 计算实际速度
+            actual_velocity = pygame.Vector2(self.velocity)
+            if is_slowed:
+                actual_velocity *= HIT_SLOWDOWN_FACTOR
+            
             # 更新位置
-            self.position += self.velocity * dt
+            self.position += actual_velocity * dt
             
             # 更新武器状态
             self.update_weapons(dt)
@@ -95,6 +107,9 @@ class Player:
         self.last_damage_time = current_time
         self.health -= damage
         
+        # 触发被击中减速效果
+        self.hit_slowdown_end_time = current_time + HIT_SLOWDOWN_DURATION
+        
         if self.health <= 0:
             self.health = 0
             self.is_dead = True
@@ -116,12 +131,12 @@ class Player:
             weapon['ammo'] = weapon['max_ammo']
             weapon['reloading'] = False
     
-    def start_melee_attack(self):
+    def start_melee_attack(self, is_heavy=False):
         """开始近战攻击"""
         if self.is_dead or self.current_weapon != 1:
             return False
             
-        return self.melee_weapon.start_attack(self.angle)
+        return self.melee_weapon.start_attack(self.angle, is_heavy)
     
     def check_melee_hit(self, targets):
         """检查近战攻击是否击中目标"""

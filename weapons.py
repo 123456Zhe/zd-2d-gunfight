@@ -78,7 +78,7 @@ class MeleeWeapon:
         self.last_attack_time = current_time
         self.attack_direction = direction
         
-        # 重击使用不同的属性
+        # 根据攻击类型设置属性
         if is_heavy:
             self.animation_time = self.heavy_animation_time
             self.range = self.heavy_range
@@ -114,14 +114,20 @@ class MeleeWeapon:
         else:
             return self.damage
     
+    def _get_current_attack_params(self):
+        """获取当前攻击的参数（范围和角度）"""
+        if self.is_heavy_attack:
+            return self.heavy_range, self.heavy_angle
+        else:
+            return self.range, self.angle
+    
     def check_hit(self, attacker_pos, targets):
         """检查攻击是否击中目标"""
         if not self.is_attacking:
             return []
         
         # 根据是否为重击选择相应的范围和角度
-        current_range = self.heavy_range if self.is_heavy_attack else self.range
-        current_angle = self.heavy_angle if self.is_heavy_attack else self.angle
+        current_range, current_angle = self._get_current_attack_params()
         
         hit_list = []
         for target_id, target_pos in targets.items():
@@ -140,8 +146,7 @@ class MeleeWeapon:
             return []
         
         # 根据是否为重击选择相应的范围和角度
-        current_range = self.heavy_range if self.is_heavy_attack else self.range
-        current_angle = self.heavy_angle if self.is_heavy_attack else self.angle
+        current_range, current_angle = self._get_current_attack_params()
         
         progress = self.get_attack_progress()
         actual_angle = current_angle * progress  # 随着动画进度增加攻击角度

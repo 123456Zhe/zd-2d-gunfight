@@ -17,6 +17,10 @@ DOOR_SIZE = 80
 DOOR_ANIMATION_SPEED = 2.0  # 门动画速度
 BULLET_DAMAGE = 20  # 子弹伤害
 RESPAWN_TIME = 3.0  # 复活时间（秒）
+
+# 被击中减速效果
+HIT_SLOWDOWN_DURATION = 0.5  # 减速持续时间（秒）
+HIT_SLOWDOWN_FACTOR = 0.5  # 减速倍率（0.5表示减速到原来的一半）
 SERVER_PORT = 5555
 BUFFER_SIZE = 4096
 
