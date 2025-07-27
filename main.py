@@ -940,15 +940,19 @@ class NetworkManager:
                 attacker_id = int(melee_data['attacker_id'])
                 direction = melee_data['direction']
                 targets = melee_data['targets']
+                is_heavy = melee_data.get('is_heavy', False)  # 是否为重击
                 
-                print(f"[近战攻击] 玩家{attacker_id}发起近战攻击，方向{direction}°，目标{targets}")
+                print(f"[近战攻击] 玩家{attacker_id}发起近战攻击，方向{direction}°，目标{targets}" + (" (重击)" if is_heavy else " (轻击)"))
+                
+                # 确定伤害值
+                damage = MELEE_DAMAGE * 1.5 if is_heavy else MELEE_DAMAGE
                 
                 # 处理每个被击中的目标
                 for target_id in targets:
                     if target_id != attacker_id and target_id in self.players:
                         damage_data = {
                             'target_id': target_id,
-                            'damage': MELEE_DAMAGE,
+                            'damage': damage,
                             'attacker_id': attacker_id,
                             'type': 'melee'
                         }
@@ -1128,14 +1132,15 @@ class NetworkManager:
                 }
             })
 
-    def request_melee_attack(self, attacker_id, direction, hit_targets):
+    def request_melee_attack(self, attacker_id, direction, hit_targets, is_heavy=False):
         """请求近战攻击"""
         if self.is_server:
             # 服务端直接处理近战攻击
             melee_data = {
                 'attacker_id': attacker_id,
                 'direction': direction,
-                'targets': hit_targets
+                'targets': hit_targets,
+                'is_heavy': is_heavy  # 是否为重击
             }
             self._handle_melee_attack(melee_data)
         else:
@@ -1145,7 +1150,8 @@ class NetworkManager:
                 'data': {
                     'attacker_id': attacker_id,
                     'direction': direction,
-                    'targets': hit_targets
+                    'targets': hit_targets,
+                    'is_heavy': is_heavy  # 是否为重击
                 }
             })
 
@@ -1545,7 +1551,8 @@ class Player:
                     network_manager.request_melee_attack(
                         self.id,
                         self.melee_weapon.attack_direction,
-                        hit_targets
+                        hit_targets,
+                        is_heavy=self.melee_weapon.is_heavy_attack  # 传递是否为重击
                     )
             
             # 换弹控制
@@ -1668,10 +1675,10 @@ class Player:
                     'data': {str(self.id): player_data}
                 })
 
-    def start_melee_attack(self):
+    def start_melee_attack(self, is_heavy=False):
         """开始近战攻击"""
         if not self.is_dead and not self.is_respawning and self.weapon_type == "melee":
-            return self.melee_weapon.start_attack(self.angle)
+            return self.melee_weapon.start_attack(self.angle, is_heavy)
         return False
 
     def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False):
@@ -2406,14 +2413,22 @@ class Game:
                         self.show_vision = not self.show_vision
             elif event.type == MOUSEBUTTONDOWN and not self.chat_active:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
-                    self.player.shooting = True
-                elif event.button == 3 and not self.player.is_dead:  # 右键按下 - 瞄准
-                    self.player.is_aiming = True
+                    if self.player.weapon_type == "melee":  # 近战武器时触发轻击
+                        self.player.start_melee_attack(is_heavy=False)
+                    else:  # 其他武器时射击
+                        self.player.shooting = True
+                elif event.button == 3 and not self.player.is_dead:  # 右键按下
+                    if self.player.weapon_type == "melee":  # 近战武器时触发重击
+                        self.player.start_melee_attack(is_heavy=True)
+                    else:  # 其他武器时瞄准
+                        self.player.is_aiming = True
             elif event.type == MOUSEBUTTONUP and not self.chat_active:
                 if event.button == 1:  # 左键释放
-                    self.player.shooting = False
-                elif event.button == 3:  # 右键释放 - 停止瞄准
-                    self.player.is_aiming = False
+                    if self.player.weapon_type != "melee":  # 非近战武器时停止射击
+                        self.player.shooting = False
+                elif event.button == 3:  # 右键释放
+                    if self.player.weapon_type != "melee":  # 非近战武器时停止瞄准
+                        self.player.is_aiming = False
     
     def update(self, dt):
         # 检查网络连接状态

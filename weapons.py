@@ -42,8 +42,16 @@ class MeleeWeapon:
         self.cooldown = MELEE_COOLDOWN
         self.animation_time = MELEE_ANIMATION_TIME
         
+        # 重击属性
+        self.heavy_damage = HEAVY_MELEE_DAMAGE  # 使用专门的重击伤害
+        self.heavy_range = HEAVY_MELEE_RANGE    # 重击范围
+        self.heavy_angle = HEAVY_MELEE_ANGLE    # 重击角度
+        self.heavy_cooldown = HEAVY_MELEE_COOLDOWN  # 使用专门的重击冷却时间
+        self.heavy_animation_time = HEAVY_MELEE_ANIMATION_TIME  # 使用专门的重击动画时间
+        
         # 攻击状态
         self.is_attacking = False
+        self.is_heavy_attack = False  # 是否为重击
         self.attack_start_time = 0
         self.last_attack_time = 0
         self.attack_direction = 0  # 攻击方向
@@ -51,21 +59,35 @@ class MeleeWeapon:
         # 已击中的目标（防止一次攻击击中多次）
         self.hit_targets = set()
     
-    def can_attack(self):
+    def can_attack(self, is_heavy=False):
         """检查是否可以攻击"""
         current_time = time.time()
-        return current_time - self.last_attack_time >= self.cooldown
+        # 重击使用更长的冷却时间
+        cooldown = self.heavy_cooldown if is_heavy else self.cooldown
+        return current_time - self.last_attack_time >= cooldown
     
-    def start_attack(self, direction):
+    def start_attack(self, direction, is_heavy=False):
         """开始攻击"""
-        if not self.can_attack():
+        if not self.can_attack(is_heavy):
             return False
         
         current_time = time.time()
         self.is_attacking = True
+        self.is_heavy_attack = is_heavy  # 记录是否为重击
         self.attack_start_time = current_time
         self.last_attack_time = current_time
         self.attack_direction = direction
+        
+        # 重击使用不同的属性
+        if is_heavy:
+            self.animation_time = self.heavy_animation_time
+            self.range = self.heavy_range
+            self.angle = self.heavy_angle
+        else:
+            self.animation_time = MELEE_ANIMATION_TIME
+            self.range = MELEE_RANGE
+            self.angle = MELEE_ANGLE
+        
         self.hit_targets.clear()
         return True
     
@@ -85,16 +107,27 @@ class MeleeWeapon:
         elapsed = current_time - self.attack_start_time
         return min(elapsed / self.animation_time, 1.0)
     
+    def get_damage(self):
+        """获取当前攻击的伤害值"""
+        if self.is_heavy_attack:
+            return self.heavy_damage
+        else:
+            return self.damage
+    
     def check_hit(self, attacker_pos, targets):
         """检查攻击是否击中目标"""
         if not self.is_attacking:
             return []
         
+        # 根据是否为重击选择相应的范围和角度
+        current_range = self.heavy_range if self.is_heavy_attack else self.range
+        current_angle = self.heavy_angle if self.is_heavy_attack else self.angle
+        
         hit_list = []
         for target_id, target_pos in targets.items():
             if (target_id != self.owner_id and 
                 target_id not in self.hit_targets and
-                is_in_melee_range(attacker_pos, self.attack_direction, target_pos, self.range, self.angle)):
+                is_in_melee_range(attacker_pos, self.attack_direction, target_pos, current_range, current_angle)):
                 
                 self.hit_targets.add(target_id)
                 hit_list.append(target_id)
@@ -106,20 +139,24 @@ class MeleeWeapon:
         if not self.is_attacking:
             return []
         
+        # 根据是否为重击选择相应的范围和角度
+        current_range = self.heavy_range if self.is_heavy_attack else self.range
+        current_angle = self.heavy_angle if self.is_heavy_attack else self.angle
+        
         progress = self.get_attack_progress()
-        current_angle = self.angle * progress  # 随着动画进度增加攻击角度
+        actual_angle = current_angle * progress  # 随着动画进度增加攻击角度
         
         points = []
-        half_angle = current_angle / 2
+        half_angle = actual_angle / 2
         
         # 生成攻击弧形的点
-        for i in range(int(current_angle) + 1):
+        for i in range(int(actual_angle) + 1):
             angle = self.attack_direction - half_angle + i
             angle_rad = math.radians(angle)
             
             # 计算弧形上的点
-            end_x = attacker_pos.x + math.cos(angle_rad) * self.range
-            end_y = attacker_pos.y - math.sin(angle_rad) * self.range
+            end_x = attacker_pos.x + math.cos(angle_rad) * current_range
+            end_y = attacker_pos.y - math.sin(angle_rad) * current_range
             
             # 转换为屏幕坐标
             screen_x = end_x - screen_offset.x

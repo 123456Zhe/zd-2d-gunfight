@@ -27,6 +27,13 @@ MELEE_COOLDOWN = 0.8  # 近战攻击冷却时间
 MELEE_ANIMATION_TIME = 0.3  # 近战攻击动画时间
 MELEE_ANGLE = 90  # 近战攻击角度范围（度）
 
+# 重击配置
+HEAVY_MELEE_DAMAGE = 60  # 重击伤害 (1.5倍)
+HEAVY_MELEE_RANGE = 45  # 重击攻击范围 (0.75倍)
+HEAVY_MELEE_COOLDOWN = 1.2  # 重击攻击冷却时间 (1.5倍)
+HEAVY_MELEE_ANIMATION_TIME = 0.45  # 重击攻击动画时间 (1.5倍)
+HEAVY_MELEE_ANGLE = 60  # 重击攻击角度范围 (0.67倍)
+
 # 瞄准配置
 AIM_CAMERA_RANGE = 150  # 瞄准时相机可以偏移的最大距离
 AIM_SENSITIVITY = 0.3  # 瞄准时鼠标灵敏度
