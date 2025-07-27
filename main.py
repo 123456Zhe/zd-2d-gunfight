@@ -904,11 +904,17 @@ class NetworkManager:
                 
                 self.last_damage_time[damage_key] = current_time
                 
-                # 如果受伤的是本地玩家，触发红色滤镜效果
+                # 如果受伤的是本地玩家，触发红色滤镜效果和减速效果
                 if target_id == self.player_id:
                     # 触发红色滤镜效果
                     if hasattr(self, 'game_instance') and self.game_instance:
                         self.game_instance.trigger_hit_effect()
+                    
+                    # 应用减速效果
+                    game_instance = getattr(self, 'game_instance', None)
+                    if game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
+                        player = game_instance.players[target_id]
+                        player.take_damage(0)  # 传入0伤害，只触发减速效果
                 
                 # 服务端处理
                 if self.is_server:
@@ -1602,17 +1608,17 @@ class Player:
                 self.ammo = MAGAZINE_SIZE
                 self.is_reloading = False
         
+        # 检查是否处于被击中减速状态（所有玩家）
+        current_time = time.time()
+        is_slowed = current_time < self.hit_slowdown_end_time
+        
+        # 计算实际速度
+        actual_velocity = pygame.Vector2(self.velocity)
+        if is_slowed:
+            actual_velocity *= HIT_SLOWDOWN_FACTOR
+        
         # 更新位置（所有玩家）
-        if self.velocity.length() > 0 and not self.is_respawning and not self.is_dead:
-            # 检查是否处于被击中减速状态
-            current_time = time.time()
-            is_slowed = current_time < self.hit_slowdown_end_time
-            
-            # 计算实际速度
-            actual_velocity = pygame.Vector2(self.velocity)
-            if is_slowed:
-                actual_velocity *= HIT_SLOWDOWN_FACTOR
-            
+        if actual_velocity.length() > 0 and not self.is_respawning and not self.is_dead:
             new_pos = self.pos + actual_velocity * dt
             player_rect = pygame.Rect(
                 new_pos.x - PLAYER_RADIUS,
