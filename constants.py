@@ -3,9 +3,9 @@ import pygame
 # 游戏配置
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
 FPS = 60
-PLAYER_SPEED = 200
+PLAYER_SPEED = 300  # 增加移动速度
 AIMING_SPEED_MULTIPLIER = 0.5  # 瞄准时速度倍率
-BULLET_SPEED = 500
+BULLET_SPEED = 800  # 增加子弹速度
 BULLET_COOLDOWN = 0.15  # 连发间隔
 RELOAD_TIME = 2.0
 MAGAZINE_SIZE = 30
@@ -39,8 +39,8 @@ HEAVY_MELEE_ANIMATION_TIME = 0.45  # 重击攻击动画时间 (1.5倍)
 HEAVY_MELEE_ANGLE = 60  # 重击攻击角度范围 (0.67倍)
 
 # 瞄准配置
-AIM_CAMERA_RANGE = 150  # 瞄准时相机可以偏移的最大距离
-AIM_SENSITIVITY = 0.3  # 瞄准时鼠标灵敏度
+AIM_CAMERA_RANGE = 400  # 瞄准时相机可以偏移的最大距离（进一步增加瞄准距离）
+AIM_SENSITIVITY = 1  # 增加鼠标灵敏度，减少鼠标移动距离
 
 # 网络配置
 HEARTBEAT_INTERVAL = 1.0  # 心跳间隔（秒）
@@ -49,7 +49,7 @@ CONNECTION_TIMEOUT = 10.0  # 连接超时时间（秒）
 SCAN_TIMEOUT = 1.0  # 扫描单个IP的超时时间 - 增加到1秒
 
 # 视角配置
-FIELD_OF_VIEW = 120  # 视角角度（度）
+FIELD_OF_VIEW = 120  # 视角角度（度）- 缩小视野角度
 VISION_RANGE = 300   # 视角范围（像素）- 优化：减少视角范围
 
 # 聊天配置
