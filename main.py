@@ -1617,6 +1617,15 @@ class Player:
         
         # 被击中减速效果
         self.hit_slowdown_end_time = 0  # 减速结束时间
+        
+        # 脚步声系统
+        self.last_move_sound_time = 0
+        self.move_sound_interval = 0.3  # 移动声音间隔(秒)
+        self.is_making_sound = False  # 是否正在发出声音
+        
+        # 静步功能
+        self.is_walking = False  # 是否静步移动
+        self.walk_speed_multiplier = 0.3  # 静步速度倍率
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -1752,7 +1761,13 @@ class Player:
         if time_since_movement < 0.5 and is_moving:  # 移动后0.5秒内有散布
             # 根据速度计算散布，速度越快散布越大
             speed_ratio = min(self.velocity.length() / PLAYER_SPEED, 1.0)
-            spread += speed_ratio * 15.0  # 最多15度散布
+            base_spread = speed_ratio * 15.0  # 基础散布最多15度
+            
+            # 静步时减少散布
+            if self.is_walking:
+                spread += base_spread * 0.5  # 静步时散布减半
+            else:
+                spread += base_spread
         
         # 连续射击散布
         time_since_last_shot = current_time - self.last_shot_time
@@ -1808,11 +1823,24 @@ class Player:
             if keys[K_a]: move_dir.x -= 1
             if keys[K_d]: move_dir.x += 1
             
+            # 检测静步状态
+            self.is_walking = keys[K_LSHIFT] or keys[K_RSHIFT]
+            
+            # 检测移动声音
+            is_moving = move_dir.length() > 0
+            if is_moving and not self.is_walking and current_time - self.last_move_sound_time > self.move_sound_interval:
+                self.is_making_sound = True
+                self.last_move_sound_time = current_time
+            elif not is_moving or self.is_walking:
+                self.is_making_sound = False
+            
             if move_dir.length() > 0:
                 # 计算移动速度（瞄准时减速）
                 current_speed = PLAYER_SPEED
                 if self.is_aiming:
                     current_speed *= AIMING_SPEED_MULTIPLIER
+                if self.is_walking:
+                    current_speed *= self.walk_speed_multiplier  # 静步速度
                 
                 move_dir = move_dir.normalize() * current_speed
                 self.velocity += move_dir * dt * 5
@@ -1856,6 +1884,7 @@ class Player:
                             self.last_shot = current_time
                             self.last_shot_time = current_time
                             self.shot_count += 1
+                            self.is_making_sound = True  # 射击时发出声音
                 elif self.weapon_type == "melee":
                     # 近战攻击
                     if self.melee_weapon.can_attack():
@@ -1990,8 +2019,9 @@ class Player:
                 'name': self.name,
                 'melee_attacking': self.melee_weapon.is_attacking,
                 'melee_direction': self.melee_weapon.attack_direction,
-                'weapon_type': self.weapon_type,  # 新增
-                'is_aiming': self.is_aiming  # 新增
+                'weapon_type': self.weapon_type,
+                'is_aiming': self.is_aiming,
+                'is_making_sound': self.is_making_sound  # 新增声音状态
             }
             
             # 更新网络管理器中的玩家数据
@@ -2175,6 +2205,10 @@ class Player:
         # 同步瞄准状态
         if 'is_aiming' in network_data:
             self.is_aiming = network_data['is_aiming']
+            
+        # 同步声音状态
+        if 'is_making_sound' in network_data:
+            self.is_making_sound = network_data['is_making_sound']
     
     def take_damage(self, damage):
         """玩家受到伤害"""
@@ -2355,6 +2389,10 @@ class Game:
         
         # 调试模式
         self.debug_mode = True
+        
+        # 脚步声系统
+        self.footstep_detection_range = 400  # 脚步声检测范围
+        self.nearby_sound_players = []  # 附近发出声音的玩家
     
     def trigger_hit_effect(self):
         """触发被击中时的红色滤镜效果"""
@@ -2945,6 +2983,9 @@ class Game:
             
             self.camera_offset += (target_offset - self.camera_offset) * 0.1
         
+        # 检测附近的脚步声
+        self.detect_nearby_footsteps()
+        
         # 更新聊天光标闪烁
         if self.chat_active:
             current_time = pygame.time.get_ticks()
@@ -3023,6 +3064,9 @@ class Game:
         
         # 聊天系统
         self.render_chat()
+        
+        # 绘制脚步声指示器
+        self.render_footstep_indicators()
         
         # 绘制红色滤镜效果
         if self.hit_effect_time > 0:
@@ -3192,6 +3236,11 @@ class Game:
         vision_text = f"视角: {current_fov}° {'(瞄准)' if self.player.is_aiming else '(正常)'})"
         self.screen.blit(font.render(vision_text, True, YELLOW), (20, 170))
         
+        # 脚步声提示
+        if self.nearby_sound_players:
+            footstep_text = f"附近脚步声: {len(self.nearby_sound_players)}个玩家"
+            self.screen.blit(font.render(footstep_text, True, RED), (20, 200))
+        
         # 调试信息
         if self.debug_mode:
             debug_y = 200
@@ -3212,6 +3261,8 @@ class Game:
             self.screen.blit(font.render(f"按F3切换调试模式 F4切换视角显示", True, YELLOW), (20, debug_y))
             debug_y += 25
             self.screen.blit(font.render(f"视角系统: {'开' if self.show_vision else '关'}", True, YELLOW), (20, debug_y))
+            debug_y += 25
+            self.screen.blit(font.render(f"脚步声: {len(self.nearby_sound_players)}个玩家", True, YELLOW), (20, debug_y))
 
     def render_chat(self):
         """绘制聊天系统"""
@@ -3307,6 +3358,32 @@ class Game:
             player_color = MELEE_COLOR
         pygame.draw.circle(minimap_surface, player_color, (int(minimap_center_x), int(minimap_center_y)), 4)
 
+        # 在小地图上显示大概方位（不显示精确位置）
+        for sound_info in self.nearby_sound_players:
+            direction = sound_info['direction']
+            is_shooting = sound_info['is_shooting']
+            
+            # 根据声音类型选择颜色
+            color = (255, 50, 50) if is_shooting else (50, 255, 50)  # 红色表示开枪，绿色表示移动
+            
+            # 计算大概方位（在小地图边缘显示方向指示）
+            edge_distance = min(minimap_width, minimap_height) * 0.3  # 距离中心一定距离
+            dir_x = direction.x * edge_distance
+            dir_y = direction.y * edge_distance
+            
+            # 确保指示器在小地图范围内
+            indicator_x = int(minimap_center_x + dir_x)
+            indicator_y = int(minimap_center_y + dir_y)
+            
+            # 绘制方向箭头（简化版）
+            arrow_size = 3
+            pygame.draw.circle(minimap_surface, color, (indicator_x, indicator_y), arrow_size)
+            
+            # 绘制指向中心的连线表示方向
+            pygame.draw.line(minimap_surface, color, 
+                           (indicator_x, indicator_y), 
+                           (int(minimap_center_x), int(minimap_center_y)), 1)
+
         # 移除了小地图上的视角方向线绘制
 
         # 绘制瞄准指示
@@ -3328,6 +3405,114 @@ class Game:
         
         # 将小地图绘制到屏幕上
         self.screen.blit(minimap_surface, (SCREEN_WIDTH - minimap_width - 10, SCREEN_HEIGHT - minimap_height - 10))
+    
+    def detect_nearby_footsteps(self):
+        """检测发出声音的玩家（静步0范围，正常移动400范围，开枪600范围）"""
+        if self.player.is_dead:
+            self.nearby_sound_players = []
+            return
+            
+        nearby_players = []
+        
+        # 检查所有玩家（包括静步的）
+        for player_id, player in self.other_players.items():
+            if player.is_dead:
+                continue
+                
+            distance = self.player.pos.distance_to(player.pos)
+            
+            # 根据玩家状态设置不同检测范围
+            if player.shooting:
+                detection_range = 600  # 开枪声音范围
+            elif player.is_walking:
+                detection_range = 0  # 静步时完全无法被探测
+            elif player.is_making_sound:
+                detection_range = 400  # 正常移动范围
+            else:
+                continue  # 没有声音就不检测
+                
+            if distance <= detection_range:
+                # 计算方向向量
+                direction = player.pos - self.player.pos
+                if direction.length() > 0:
+                    direction = direction.normalize()
+                
+                nearby_players.append({
+                    'player': player,
+                    'distance': distance,
+                    'direction': direction,
+                    'is_shooting': player.shooting,  # 标记是否为开枪声音
+                    'screen_pos': pygame.Vector2(
+                        player.pos.x - self.camera_offset.x,
+                        player.pos.y - self.camera_offset.y
+                    )
+                })
+        
+        self.nearby_sound_players = nearby_players
+    
+    def render_footstep_indicators(self):
+        """渲染方向指示器（箭头指向声音来源）"""
+        if self.player.is_dead or not self.nearby_sound_players:
+            return
+            
+        # 获取屏幕中心位置
+        center_x = SCREEN_WIDTH // 2
+        center_y = SCREEN_HEIGHT // 2
+        
+        for sound_info in self.nearby_sound_players:
+            player = sound_info['player']
+            direction = sound_info['direction']
+            is_shooting = sound_info['is_shooting']
+            
+            # 根据声音类型选择颜色
+            color = (255, 100, 100) if is_shooting else (100, 255, 100)  # 红色表示开枪，绿色表示移动
+            
+            # 计算箭头位置（屏幕边缘）
+            arrow_distance = 80
+            arrow_x = center_x + direction.x * arrow_distance
+            arrow_y = center_y + direction.y * arrow_distance
+            
+            # 创建指示器表面
+            indicator_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            
+            # 绘制方向箭头
+            arrow_size = 15
+            angle = math.atan2(direction.y, direction.x)
+            
+            # 箭头顶点
+            end_x = arrow_x + math.cos(angle) * arrow_size
+            end_y = arrow_y + math.sin(angle) * arrow_size
+            
+            # 箭头两侧
+            left_x = arrow_x + math.cos(angle + 2.5) * (arrow_size * 0.7)
+            left_y = arrow_y + math.sin(angle + 2.5) * (arrow_size * 0.7)
+            right_x = arrow_x + math.cos(angle - 2.5) * (arrow_size * 0.7)
+            right_y = arrow_y + math.sin(angle - 2.5) * (arrow_size * 0.7)
+            
+            # 绘制箭头线条
+            pygame.draw.line(indicator_surface, color, 
+                           (center_x, center_y), (end_x, end_y), 3)
+            pygame.draw.line(indicator_surface, color, 
+                           (end_x, end_y), (left_x, left_y), 3)
+            pygame.draw.line(indicator_surface, color, 
+                           (end_x, end_y), (right_x, right_y), 3)
+            
+            # 绘制距离圈
+            pygame.draw.circle(indicator_surface, color, (center_x, center_y), 50, 1)
+            
+            # 添加声音类型标签
+            label = "开枪" if is_shooting else "移动"
+            label_surface = small_font.render(label, True, color)
+            label_x = arrow_x - label_surface.get_width() // 2
+            label_y = arrow_y + 20
+            
+            # 确保标签在屏幕内
+            label_x = max(10, min(SCREEN_WIDTH - label_surface.get_width() - 10, label_x))
+            label_y = max(10, min(SCREEN_HEIGHT - label_surface.get_height() - 10, label_y))
+            
+            indicator_surface.blit(label_surface, (label_x, label_y))
+            
+            self.screen.blit(indicator_surface, (0, 0))
     
     def run(self):
         while self.running:
