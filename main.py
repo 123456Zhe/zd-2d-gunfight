@@ -1598,6 +1598,11 @@ class Player:
         self.last_respawn_check = 0
         self.last_door_interaction = 0
         
+        # 子弹散布相关属性
+        self.last_movement_time = 0  # 上次移动时间
+        self.shot_count = 0  # 连续射击计数
+        self.last_shot_time = 0  # 上次射击时间
+        
         # 近战武器
         self.melee_weapon = MeleeWeapon(player_id)
         
@@ -1692,6 +1697,11 @@ class Player:
         self.is_aiming = False
         self.aim_offset = pygame.Vector2(0, 0)
         
+        # 重置子弹散布相关属性
+        self.last_movement_time = 0
+        self.shot_count = 0
+        self.last_shot_time = 0
+        
         # 重置近战武器
         self.melee_weapon = MeleeWeapon(self.id)
         
@@ -1726,6 +1736,39 @@ class Player:
                 })
         
         self.last_respawn_check = time.time()
+    
+    def calculate_bullet_spread(self):
+        """计算子弹散布角度"""
+        current_time = time.time()
+        spread = 0.0
+        
+        # 检查是否在移动
+        is_moving = self.velocity.length() > 0.1
+        if is_moving:
+            self.last_movement_time = current_time
+        
+        # 移动时的散布（根据速度计算，最多15度）
+        time_since_movement = current_time - self.last_movement_time
+        if time_since_movement < 0.5 and is_moving:  # 移动后0.5秒内有散布
+            # 根据速度计算散布，速度越快散布越大
+            speed_ratio = min(self.velocity.length() / PLAYER_SPEED, 1.0)
+            spread += speed_ratio * 15.0  # 最多15度散布
+        
+        # 连续射击散布
+        time_since_last_shot = current_time - self.last_shot_time
+        if time_since_last_shot < 3.0:  # 3秒内的连续射击
+            # 第一发是准的，之后有<=5度的基础散布
+            if self.shot_count > 0:
+                spread += min(self.shot_count * 1.0, 5.0)  # 最大5度散布
+        else:
+            # 重置射击计数
+            self.shot_count = 0
+        
+        # 瞄准时限制最大散布为3度
+        if self.is_aiming:
+            spread = 0
+        
+        return spread
 
     def update(self, dt, game_map, bullets, network_manager=None, all_players=None):
         current_time = time.time()
@@ -1790,8 +1833,16 @@ class Player:
                     # 枪械射击
                     if not self.is_reloading and self.ammo > 0:
                         if current_time - self.last_shot > BULLET_COOLDOWN:
-                            bullet_dir = pygame.Vector2(math.cos(math.radians(self.angle)),
-                                                      -math.sin(math.radians(self.angle)))
+                            # 计算子弹散布角度
+                            spread_angle = self.calculate_bullet_spread()
+                            
+                            # 应用散布到子弹方向
+                            if spread_angle > 0:
+                                final_angle = self.angle + random.uniform(-spread_angle, spread_angle)
+                            else:
+                                final_angle = self.angle
+                            bullet_dir = pygame.Vector2(math.cos(math.radians(final_angle)),
+                                                      -math.sin(math.radians(final_angle)))
                             bullet_pos = self.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
                             
                             # 请求发射子弹
@@ -1803,6 +1854,8 @@ class Player:
                             
                             self.ammo -= 1
                             self.last_shot = current_time
+                            self.last_shot_time = current_time
+                            self.shot_count += 1
                 elif self.weapon_type == "melee":
                     # 近战攻击
                     if self.melee_weapon.can_attack():
