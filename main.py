@@ -1625,7 +1625,7 @@ class Player:
         
         # 静步功能
         self.is_walking = False  # 是否静步移动
-        self.walk_speed_multiplier = 0.3  # 静步速度倍率
+        self.walk_speed_multiplier = 0.15  # 静步速度倍率（降低至15%）
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
