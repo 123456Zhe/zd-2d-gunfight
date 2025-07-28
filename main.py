@@ -1625,7 +1625,7 @@ class Player:
         
         # 静步功能
         self.is_walking = False  # 是否静步移动
-        self.walk_speed_multiplier = 0.15  # 静步速度倍率（降低至15%）
+        self.walk_speed_multiplier = 0.4  # 静步速度倍率（降低至40%）
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -1851,6 +1851,8 @@ class Player:
             max_speed = PLAYER_SPEED
             if self.is_aiming:
                 max_speed *= AIMING_SPEED_MULTIPLIER
+            if self.is_walking:
+                max_speed *= self.walk_speed_multiplier  # 静步速度上限
                 
             if self.velocity.length() > max_speed:
                 self.velocity = self.velocity.normalize() * max_speed
