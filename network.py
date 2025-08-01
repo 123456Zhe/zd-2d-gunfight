@@ -223,7 +223,7 @@ class NetworkManager:
             self.message_queue.clear()
         return messages
     
-    def send_player_update(self, position, angle, health, is_dead, is_aiming):
+    def send_player_update(self, position, angle, health, is_dead, is_aiming, is_making_sound=False, sound_volume=0.0):
         """发送玩家状态更新"""
         message = {
             "type": "player_update",
@@ -232,6 +232,8 @@ class NetworkManager:
             "health": health,
             "is_dead": is_dead,
             "is_aiming": is_aiming,
+            "is_making_sound": is_making_sound,
+            "sound_volume": sound_volume,
             "timestamp": time.time()
         }
         self.send_message_to_server(message)

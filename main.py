@@ -39,13 +39,14 @@ except:
 
 # 射线类
 class Ray:
-    def __init__(self, start_pos, direction, owner_id, game_map, players):
+    def __init__(self, start_pos, direction, owner_id, game_map, players, custom_speed=None):
         self.start_pos = pygame.Vector2(start_pos)
         self.direction = pygame.Vector2(direction).normalize()
         self.owner_id = owner_id
         self.game_map = game_map
         self.players = players
-        self.speed = BULLET_SPEED
+        # 使用自定义速度或默认值
+        self.speed = custom_speed if custom_speed is not None else BULLET_SPEED
         self.damage = BULLET_DAMAGE
         self.max_distance = 500  # 射线最大距离
         self.distance_traveled = 0
@@ -535,6 +536,10 @@ class ChatMessage:
     
     def get_player_color(self, player_id):
         """根据玩家ID获取颜色"""
+        # 系统消息使用白色
+        if player_id == 0:
+            return WHITE
+            
         colors = [RED, BLUE, GREEN, YELLOW, ORANGE, PURPLE, (0, 255, 255)]
         return colors[player_id % len(colors)]
     
@@ -1116,9 +1121,17 @@ class NetworkManager:
         if isinstance(damage_data, dict) and all(key in damage_data for key in ['target_id', 'damage', 'attacker_id']):
             try:
                 target_id = int(damage_data['target_id'])
-                damage = damage_data['damage']
+                base_damage = damage_data['damage']
                 attacker_id = int(damage_data['attacker_id'])
                 damage_type = damage_data.get('type', 'bullet')  # 添加伤害类型
+                
+                # 应用游戏规则中的伤害倍率
+                game_instance = getattr(self, 'game_instance', None)
+                damage_multiplier = 1.0
+                if game_instance and hasattr(game_instance, 'game_rules'):
+                    damage_multiplier = game_instance.game_rules['damage_multiplier']
+                
+                damage = base_damage * damage_multiplier
                 
                 # 防止重复处理相同的伤害事件
                 damage_key = f"{attacker_id}_{target_id}_{damage_type}_{int(time.time() * 10)}"
@@ -1148,20 +1161,29 @@ class NetworkManager:
                         game_instance = getattr(self, 'game_instance', None)
                         if game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
                             player = game_instance.players[target_id]
-                            # 调用玩家的take_damage方法
-                            is_dead = player.take_damage(damage)
+                            # 调用玩家的take_damage方法，传入游戏规则中的复活时间
+                            respawn_time = RESPAWN_TIME
+                            if game_instance and hasattr(game_instance, 'game_rules'):
+                                respawn_time = game_instance.game_rules['respawn_time']
+                            is_dead = player.take_damage(damage, respawn_time)
                             
                             # 同步玩家状态到网络
                             self.players[target_id]['health'] = player.health
                             self.players[target_id]['is_dead'] = player.is_dead
                             if is_dead:
                                 self.players[target_id]['death_time'] = current_time
-                                self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
+                                
+                                # 使用游戏规则中的复活时间
+                                respawn_time = RESPAWN_TIME
+                                if game_instance and hasattr(game_instance, 'game_rules'):
+                                    respawn_time = game_instance.game_rules['respawn_time']
+                                
+                                self.players[target_id]['respawn_time'] = current_time + respawn_time
                             
                             print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{player.health + damage}->{player.health}")
                             
                             if is_dead:
-                                print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
+                                print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
                                 
                                 # 发送死亡信息到聊天框
                                 attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
@@ -1182,8 +1204,14 @@ class NetworkManager:
                                 self.players[target_id]['health'] = 0
                                 self.players[target_id]['is_dead'] = True
                                 self.players[target_id]['death_time'] = current_time
-                                self.players[target_id]['respawn_time'] = current_time + RESPAWN_TIME
-                                print(f"[死亡] 玩家{target_id}死亡，将在{RESPAWN_TIME}秒后复活")
+                                
+                                # 使用游戏规则中的复活时间
+                                respawn_time = RESPAWN_TIME
+                                if game_instance and hasattr(game_instance, 'game_rules'):
+                                    respawn_time = game_instance.game_rules['respawn_time']
+                                
+                                self.players[target_id]['respawn_time'] = current_time + respawn_time
+                                print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
                                 
                                 # 发送死亡信息到聊天框
                                 attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
@@ -1251,11 +1279,21 @@ class NetworkManager:
     def _handle_chat_message(self, chat_data):
         """处理聊天消息"""
         if isinstance(chat_data, dict) and all(key in chat_data for key in ['player_id', 'player_name', 'message']):
+            message = chat_data['message']
+            player_id = chat_data['player_id']
+            player_name = chat_data['player_name']
+            timestamp = chat_data.get('timestamp', time.time())
+            
+            # 检查是否是服务端命令
+            if self.is_server and message.startswith('.'):
+                self._handle_server_command(message, player_id, player_name)
+                return
+            
             msg = ChatMessage(
-                chat_data['player_id'],
-                chat_data['player_name'],
-                chat_data['message'],
-                chat_data.get('timestamp', time.time())
+                player_id,
+                player_name,
+                message,
+                timestamp
             )
             
             # 添加到聊天历史
@@ -1270,6 +1308,360 @@ class NetworkManager:
             # 如果是服务端，转发给所有客户端
             if self.is_server:
                 self.broadcast_chat_message(msg)
+                
+    def _handle_server_command(self, command, player_id, player_name):
+        """处理服务端命令"""
+        if not self.is_server:
+            return
+            
+        # 分割命令和参数
+        parts = command.strip().split()
+        if not parts:
+            return
+            
+        cmd = parts[0].lower()
+        args = parts[1:] if len(parts) > 1 else []
+        
+        # 只有服务器管理员（玩家ID为1）可以执行某些命令
+        is_admin = (player_id == 1)
+        
+        # 处理不同的命令
+        if cmd == '.kick' and is_admin:
+            if len(args) < 1:
+                self._send_system_message(f"用法: .kick <玩家ID> [原因]")
+                return
+                
+            try:
+                target_id = int(args[0])
+                reason = " ".join(args[1:]) if len(args) > 1 else "被管理员踢出"
+                
+                # 检查玩家是否存在
+                if target_id not in self.players:
+                    self._send_system_message(f"玩家{target_id}不存在")
+                    return
+                    
+                # 不能踢出自己
+                if target_id == player_id:
+                    self._send_system_message(f"不能踢出自己")
+                    return
+                    
+                # 查找玩家的地址
+                target_addr = None
+                for addr, pid in self.clients.items():
+                    if pid == target_id:
+                        target_addr = addr
+                        break
+                        
+                if target_addr:
+                    # 发送踢出消息
+                    kick_data = {
+                        'type': 'kick',
+                        'data': {'reason': reason}
+                    }
+                    self.send_to_client(kick_data, target_addr)
+                    
+                    # 从客户端列表中移除
+                    with self.lock:
+                        if target_addr in self.clients:
+                            del self.clients[target_addr]
+                        if target_addr in self.client_last_seen:
+                            del self.client_last_seen[target_addr]
+                        if target_id in self.players:
+                            del self.players[target_id]
+                            
+                    # 回收玩家ID
+                    self.recycle_player_id(target_id)
+                    
+                    # 广播系统消息
+                    self._send_system_message(f"玩家{target_id}已被踢出: {reason}")
+                    print(f"[服务端] 玩家{target_id}已被踢出: {reason}")
+                else:
+                    self._send_system_message(f"无法找到玩家{target_id}的连接")
+            except ValueError:
+                self._send_system_message(f"无效的玩家ID: {args[0]}")
+        
+        elif cmd == '.list' or cmd == '.players':
+            # 显示在线玩家列表
+            if not self.players:
+                self._send_system_message("当前没有在线玩家")
+                return
+                
+            player_list = []
+            for pid, pdata in self.players.items():
+                player_name = pdata.get('name', f"玩家{pid}")
+                health = pdata.get('health', 0)
+                is_dead = pdata.get('is_dead', False)
+                status = "死亡" if is_dead else f"生命值:{health}"
+                player_list.append(f"ID:{pid} - {player_name} ({status})")
+                
+            self._send_system_message(f"在线玩家({len(player_list)}):\n" + "\n".join(player_list))
+        
+        elif cmd == '.broadcast' and is_admin:
+            # 广播系统消息
+            if not args:
+                self._send_system_message("用法: .broadcast <消息>")
+                return
+                
+            message = " ".join(args)
+            self._send_system_message(f"[公告] {message}")
+        
+        elif cmd == '.heal' and is_admin:
+            # 治疗玩家
+            if len(args) < 1:
+                self._send_system_message("用法: .heal <玩家ID|all> [生命值]")
+                return
+                
+            try:
+                target = args[0].lower()
+                amount = int(args[1]) if len(args) > 1 else 100
+                
+                if target == "all":
+                    # 治疗所有玩家
+                    for pid in self.players:
+                        if not self.players[pid].get('is_dead', False):
+                            self.players[pid]['health'] = min(100, amount)
+                    self._send_system_message(f"已将所有玩家的生命值恢复到{amount}")
+                else:
+                    # 治疗指定玩家
+                    target_id = int(target)
+                    if target_id not in self.players:
+                        self._send_system_message(f"玩家{target_id}不存在")
+                        return
+                        
+                    if self.players[target_id].get('is_dead', False):
+                        self._send_system_message(f"玩家{target_id}已死亡，无法治疗")
+                        return
+                        
+                    self.players[target_id]['health'] = min(100, amount)
+                    self._send_system_message(f"已将玩家{target_id}的生命值恢复到{amount}")
+            except ValueError:
+                self._send_system_message(f"无效的参数: {args[0]}")
+        
+        elif cmd == '.respawn' and is_admin:
+            # 复活玩家
+            if len(args) < 1:
+                self._send_system_message("用法: .respawn <玩家ID|all>")
+                return
+                
+            try:
+                target = args[0].lower()
+                
+                if target == "all":
+                    # 复活所有死亡玩家
+                    respawned_count = 0
+                    for pid in self.players:
+                        if self.players[pid].get('is_dead', False):
+                            self.players[pid]['is_dead'] = False
+                            self.players[pid]['health'] = 100
+                            self.players[pid]['respawn_time'] = 0
+                            respawned_count += 1
+                    
+                    if respawned_count > 0:
+                        self._send_system_message(f"已复活所有死亡玩家({respawned_count}人)")
+                    else:
+                        self._send_system_message("当前没有死亡的玩家")
+                else:
+                    # 复活指定玩家
+                    target_id = int(target)
+                    if target_id not in self.players:
+                        self._send_system_message(f"玩家{target_id}不存在")
+                        return
+                        
+                    if not self.players[target_id].get('is_dead', False):
+                        self._send_system_message(f"玩家{target_id}没有死亡，无需复活")
+                        return
+                        
+                    self.players[target_id]['is_dead'] = False
+                    self.players[target_id]['health'] = 100
+                    self.players[target_id]['respawn_time'] = 0
+                    self._send_system_message(f"已复活玩家{target_id}")
+            except ValueError:
+                self._send_system_message(f"无效的参数: {args[0]}")
+        
+        elif cmd == '.tp' and is_admin:
+            # 传送玩家到指定位置
+            if len(args) < 3:
+                self._send_system_message("用法: .tp <玩家ID|all> <x> <y>")
+                return
+                
+            try:
+                target = args[0].lower()
+                x = float(args[1])
+                y = float(args[2])
+                
+                # 确保坐标在地图范围内
+                x = max(0, min(x, self.map_width))
+                y = max(0, min(y, self.map_height))
+                
+                if target == "all":
+                    # 传送所有玩家
+                    for pid in self.players:
+                        if not self.players[pid].get('is_dead', False):
+                            self.players[pid]['x'] = x
+                            self.players[pid]['y'] = y
+                    self._send_system_message(f"已将所有玩家传送到坐标({x:.1f}, {y:.1f})")
+                else:
+                    # 传送指定玩家
+                    target_id = int(target)
+                    if target_id not in self.players:
+                        self._send_system_message(f"玩家{target_id}不存在")
+                        return
+                        
+                    if self.players[target_id].get('is_dead', False):
+                        self._send_system_message(f"玩家{target_id}已死亡，无法传送")
+                        return
+                        
+                    self.players[target_id]['x'] = x
+                    self.players[target_id]['y'] = y
+                    self._send_system_message(f"已将玩家{target_id}传送到坐标({x:.1f}, {y:.1f})")
+            except ValueError:
+                self._send_system_message(f"无效的坐标参数")
+        
+        elif cmd == '.kill':
+            # 自杀命令
+            if player_id not in self.players:
+                self._send_system_message(f"玩家{player_id}不存在")
+                return
+                
+            if self.players[player_id].get('is_dead', False):
+                self._send_system_message(f"你已经死亡，无法使用此命令")
+                return
+                
+            # 处理自杀
+            damage_data = {
+                'target_id': player_id,
+                'damage': 100,  # 直接致命伤害
+                'attacker_id': player_id,  # 自己击杀自己
+                'type': 'suicide'
+            }
+            self._handle_damage(damage_data)
+            self._send_system_message(f"玩家{player_id}自杀了")
+            
+        elif cmd == '.weapon' and is_admin:
+            # 切换武器命令（仅管理员可用）
+            if player_id not in self.players:
+                self._send_system_message(f"玩家{player_id}不存在")
+                return
+                
+            if self.players[player_id].get('is_dead', False):
+                self._send_system_message(f"你已经死亡，无法使用此命令")
+                return
+                
+            # 切换武器类型
+            current_weapon = self.players[player_id].get('weapon_type', 'gun')
+            new_weapon = 'melee' if current_weapon == 'gun' else 'gun'
+            self.players[player_id]['weapon_type'] = new_weapon
+            self._send_system_message(f"已将武器切换为: {new_weapon}")
+            print(f"[服务端] 管理员{player_id}切换了武器类型为{new_weapon}")
+            
+        elif cmd == '.ammo' and is_admin:
+            # 补充弹药命令（仅管理员可用）
+            if player_id not in self.players:
+                self._send_system_message(f"玩家{player_id}不存在")
+                return
+                
+            if self.players[player_id].get('is_dead', False):
+                self._send_system_message(f"你已经死亡，无法使用此命令")
+                return
+                
+            # 补充弹药
+            self.players[player_id]['ammo'] = MAGAZINE_SIZE
+            self.players[player_id]['is_reloading'] = False
+            self._send_system_message(f"已补充弹药")
+            print(f"[服务端] 管理员{player_id}补充了弹药")
+            
+        elif cmd == '.speed' and is_admin:
+            # 临时提高移动速度命令（仅管理员可用）
+            if player_id not in self.players:
+                self._send_system_message(f"玩家{player_id}不存在")
+                return
+                
+            if self.players[player_id].get('is_dead', False):
+                self._send_system_message(f"你已经死亡，无法使用此命令")
+                return
+                
+            # 获取速度参数
+            speed_multiplier = 1.5  # 默认提高到150%
+            if len(args) > 0:
+                try:
+                    speed_multiplier = float(args[0])
+                    # 限制速度倍率在合理范围内
+                    speed_multiplier = max(0.5, min(speed_multiplier, 2.0))
+                except ValueError:
+                    self._send_system_message(f"无效的速度参数，使用默认值1.5")
+            
+            # 获取持续时间参数
+            duration = 10.0  # 默认10秒
+            if len(args) > 1:
+                try:
+                    duration = float(args[1])
+                    # 限制持续时间在合理范围内
+                    duration = max(1.0, min(duration, 30.0))
+                except ValueError:
+                    self._send_system_message(f"无效的持续时间参数，使用默认值10秒")
+            
+            # 应用速度提升
+            game_instance = getattr(self, 'game_instance', None)
+            if game_instance and hasattr(game_instance, 'players') and player_id in game_instance.players:
+                player = game_instance.players[player_id]
+                player.speed_boost_end_time = time.time() + duration
+                player.speed_boost_multiplier = speed_multiplier
+                self._send_system_message(f"已临时提高移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
+                print(f"[服务端] 管理员{player_id}临时提高了移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
+            
+        elif cmd == '.help':
+            # 显示可用命令
+            if is_admin:
+                commands = [
+                    ".kick <玩家ID> [原因] - 踢出玩家",
+                    ".list 或 .players - 显示在线玩家列表",
+                    ".broadcast <消息> - 广播系统消息",
+                    ".heal <玩家ID|all> [生命值] - 治疗玩家",
+                    ".respawn <玩家ID|all> - 复活死亡玩家",
+                    ".tp <玩家ID|all> <x> <y> - 传送玩家到指定坐标",
+                    ".kill - 自杀",
+                    ".weapon - 切换武器类型",
+                    ".ammo - 补充弹药",
+                    ".speed [倍率] [持续时间] - 临时提高移动速度",
+                    ".help - 显示此帮助信息"
+                ]
+                self._send_system_message("可用命令:\n" + "\n".join(commands))
+            else:
+                commands = [
+                    ".list 或 .players - 显示在线玩家列表",
+                    ".kill - 自杀",
+                    ".help - 显示此帮助信息"
+                ]
+                self._send_system_message("可用命令:\n" + "\n".join(commands))
+        else:
+            # 未知命令
+            self._send_system_message(f"未知命令: {cmd}")
+            self._send_system_message("输入 .help 查看可用命令")
+    
+    def _send_system_message(self, message):
+        """发送系统消息"""
+        if not self.is_server:
+            return
+            
+        # 创建系统消息
+        msg = ChatMessage(
+            0,  # 系统消息使用ID 0
+            "系统",
+            message,
+            time.time()
+        )
+        
+        # 添加到聊天历史
+        self.chat_messages.append(msg)
+        
+        # 保持聊天历史不超过最大数量
+        if len(self.chat_messages) > MAX_CHAT_MESSAGES * 2:
+            self.chat_messages = self.chat_messages[-MAX_CHAT_MESSAGES:]
+        
+        print(f"[系统] {message}")
+        
+        # 广播给所有客户端
+        self.broadcast_chat_message(msg)
     
     def _handle_chat_history(self, history_data):
         """处理聊天历史（客户端接收）"""
@@ -1494,12 +1886,13 @@ class NetworkManager:
             pass
 
 class Bullet:
-    def __init__(self, bullet_data):
+    def __init__(self, bullet_data, custom_speed=None):
         self.id = bullet_data['id']
         self.pos = pygame.Vector2(bullet_data['pos'])
         self.direction = pygame.Vector2(bullet_data['dir']).normalize()
         self.owner_id = bullet_data['owner']
-        self.speed = BULLET_SPEED
+        # 使用自定义速度或默认值
+        self.speed = custom_speed if custom_speed is not None else BULLET_SPEED
         self.radius = BULLET_RADIUS
         self.creation_time = bullet_data['time']
         self.has_hit = set()
@@ -1622,10 +2015,16 @@ class Player:
         self.last_move_sound_time = 0
         self.move_sound_interval = 0.3  # 移动声音间隔(秒)
         self.is_making_sound = False  # 是否正在发出声音
+        self.sound_volume = 0.0  # 声音音量 (0.0-1.0)
         
         # 静步功能
         self.is_walking = False  # 是否静步移动
         self.walk_speed_multiplier = 0.4  # 静步速度倍率（降低至40%）
+        
+        # 速度提升效果
+        self.speed_boost_end_time = 0  # 速度提升结束时间
+        self.speed_boost_multiplier = 1.0  # 速度提升倍率
+        self.last_speed_warning_time = 0  # 上次速度提升警告时间
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -1826,21 +2225,58 @@ class Player:
             # 检测静步状态
             self.is_walking = keys[K_LSHIFT] or keys[K_RSHIFT]
             
-            # 检测移动声音
+            # 检测移动声音 - 根据速度调整声音大小
             is_moving = move_dir.length() > 0
-            if is_moving and not self.is_walking and current_time - self.last_move_sound_time > self.move_sound_interval:
-                self.is_making_sound = True
-                self.last_move_sound_time = current_time
-            elif not is_moving or self.is_walking:
+            
+            # 静步时完全不发出声音
+            if self.is_walking:
                 self.is_making_sound = False
+                self.sound_volume = 0.0
+            # 移动时根据速度调整声音大小
+            elif is_moving and current_time - self.last_move_sound_time > self.move_sound_interval:
+                # 计算速度比例 (0.0-1.0)
+                speed_ratio = min(self.velocity.length() / PLAYER_SPEED, 1.0)
+                
+                # 设置最小速度阈值，低于此速度不发声
+                min_speed_threshold = 0.2  # 低于20%速度不发声
+                
+                if speed_ratio > min_speed_threshold:
+                    self.is_making_sound = True
+                    # 声音大小随速度线性增加 (0.0-1.0)
+                    self.sound_volume = (speed_ratio - min_speed_threshold) / (1.0 - min_speed_threshold)
+                    self.last_move_sound_time = current_time
+                else:
+                    # 速度太低，不发出声音
+                    self.is_making_sound = False
+                    self.sound_volume = 0.0
+            elif not is_moving:
+                self.is_making_sound = False
+                self.sound_volume = 0.0
             
             if move_dir.length() > 0:
                 # 计算移动速度（瞄准时减速）
                 current_speed = PLAYER_SPEED
+                
+                # 检查是否有速度提升效果
+                current_time = time.time()
+                has_speed_boost = current_time < self.speed_boost_end_time
+                
+                # 应用各种速度修饰符
                 if self.is_aiming:
                     current_speed *= AIMING_SPEED_MULTIPLIER
                 if self.is_walking:
                     current_speed *= self.walk_speed_multiplier  # 静步速度
+                if has_speed_boost:
+                    current_speed *= self.speed_boost_multiplier  # 速度提升效果
+                    
+                    # 如果速度提升即将结束，发送提示
+                    remaining_time = self.speed_boost_end_time - current_time
+                    if remaining_time < 1.0 and hasattr(self, 'last_speed_warning_time') and current_time - self.last_speed_warning_time > 1.0:
+                        self.last_speed_warning_time = current_time
+                        # 尝试发送系统消息
+                        network_manager_obj = network_manager
+                        if network_manager_obj and hasattr(network_manager_obj, '_send_system_message'):
+                            network_manager_obj._send_system_message(f"速度提升效果即将结束: {remaining_time:.1f}秒")
                 
                 move_dir = move_dir.normalize() * current_speed
                 self.velocity += move_dir * dt * 5
@@ -1849,10 +2285,18 @@ class Player:
                 
             # 限制最大速度
             max_speed = PLAYER_SPEED
+            
+            # 检查是否有速度提升效果
+            current_time = time.time()
+            has_speed_boost = current_time < self.speed_boost_end_time
+            
+            # 应用各种速度修饰符
             if self.is_aiming:
                 max_speed *= AIMING_SPEED_MULTIPLIER
             if self.is_walking:
                 max_speed *= self.walk_speed_multiplier  # 静步速度上限
+            if has_speed_boost:
+                max_speed *= self.speed_boost_multiplier  # 速度提升效果
                 
             if self.velocity.length() > max_speed:
                 self.velocity = self.velocity.normalize() * max_speed
@@ -1887,10 +2331,13 @@ class Player:
                             self.last_shot_time = current_time
                             self.shot_count += 1
                             self.is_making_sound = True  # 射击时发出声音
+                            self.sound_volume = 1.0  # 射击时声音音量最大
                 elif self.weapon_type == "melee":
                     # 近战攻击
                     if self.melee_weapon.can_attack():
                         self.start_melee_attack()
+                        self.is_making_sound = True  # 近战攻击时发出声音
+                        self.sound_volume = 0.4  # 近战攻击声音音量（略小于射击）
             
             # 近战攻击检测
             if self.melee_weapon.is_attacking:
@@ -2023,7 +2470,8 @@ class Player:
                 'melee_direction': self.melee_weapon.attack_direction,
                 'weapon_type': self.weapon_type,
                 'is_aiming': self.is_aiming,
-                'is_making_sound': self.is_making_sound  # 新增声音状态
+                'is_making_sound': self.is_making_sound,  # 声音状态
+                'sound_volume': self.sound_volume  # 新增声音音量
             }
             
             # 更新网络管理器中的玩家数据
@@ -2211,6 +2659,10 @@ class Player:
         # 同步声音状态
         if 'is_making_sound' in network_data:
             self.is_making_sound = network_data['is_making_sound']
+            
+        # 同步声音音量
+        if 'sound_volume' in network_data:
+            self.sound_volume = network_data['sound_volume']
     
     def take_damage(self, damage):
         """玩家受到伤害"""
@@ -2393,8 +2845,17 @@ class Game:
         self.debug_mode = True
         
         # 脚步声系统
-        self.footstep_detection_range = 400  # 脚步声检测范围
+        self.footstep_detection_range = VISION_RANGE  # 脚步声检测范围，使用视角范围常量
         self.nearby_sound_players = []  # 附近发出声音的玩家
+        
+        # 游戏规则设置
+        self.game_rules = {
+            'damage_multiplier': 1.0,  # 伤害倍率，默认为1.0
+            'respawn_time': RESPAWN_TIME,      # 复活时间（秒）
+            'friendly_fire': True,     # 友军伤害
+            'bullet_speed': BULLET_SPEED,      # 子弹速度
+            'footstep_range': self.footstep_detection_range    # 脚步声范围
+        }
     
     def trigger_hit_effect(self):
         """触发被击中时的红色滤镜效果"""
@@ -3015,7 +3476,12 @@ class Game:
         # 添加新子弹
         for bullet_data in network_bullets:
             if bullet_data['id'] not in current_bullet_ids:
-                new_bullet = Bullet(bullet_data)
+                # 使用游戏规则中的子弹速度
+                bullet_speed = BULLET_SPEED
+                if hasattr(self, 'game_rules'):
+                    bullet_speed = self.game_rules['bullet_speed']
+                
+                new_bullet = Bullet(bullet_data, bullet_speed)
                 self.bullets.append(new_bullet)
     
     def render(self):
@@ -3364,12 +3830,17 @@ class Game:
         for sound_info in self.nearby_sound_players:
             direction = sound_info['direction']
             is_shooting = sound_info['is_shooting']
+            sound_intensity = sound_info['sound_intensity']
             
             # 根据声音类型选择颜色
-            color = (255, 50, 50) if is_shooting else (50, 255, 50)  # 红色表示开枪，绿色表示移动
+            base_color = (255, 50, 50) if is_shooting else (50, 255, 50)  # 红色表示开枪，绿色表示移动
+            
+            # 根据声音强度调整颜色透明度和指示器大小
+            alpha = int(min(255, max(50, 255 * sound_intensity)))  # 最小透明度为50，最大为255
+            color = (base_color[0], base_color[1], base_color[2], alpha)
             
             # 计算大概方位（在小地图边缘显示方向指示）
-            edge_distance = min(minimap_width, minimap_height) * 0.3  # 距离中心一定距离
+            edge_distance = min(minimap_width, minimap_height) * (0.2 + 0.2 * sound_intensity)  # 距离中心根据声音强度变化
             dir_x = direction.x * edge_distance
             dir_y = direction.y * edge_distance
             
@@ -3409,7 +3880,7 @@ class Game:
         self.screen.blit(minimap_surface, (SCREEN_WIDTH - minimap_width - 10, SCREEN_HEIGHT - minimap_height - 10))
     
     def detect_nearby_footsteps(self):
-        """检测发出声音的玩家（静步0范围，正常移动400范围，开枪600范围）"""
+        """检测发出声音的玩家（静步0范围，正常移动根据速度调整范围0-400，开枪600范围）"""
         if self.player.is_dead:
             self.nearby_sound_players = []
             return
@@ -3429,7 +3900,9 @@ class Game:
             elif player.is_walking:
                 detection_range = 0  # 静步时完全无法被探测
             elif player.is_making_sound:
-                detection_range = 400  # 正常移动范围
+                # 根据声音音量调整检测范围 (0.0-1.0 对应 0-400范围)
+                max_range = 400  # 最大检测范围
+                detection_range = max_range * player.sound_volume
             else:
                 continue  # 没有声音就不检测
                 
@@ -3439,11 +3912,18 @@ class Game:
                 if direction.length() > 0:
                     direction = direction.normalize()
                 
+                # 计算声音强度 (距离越近越强)
+                sound_intensity = 1.0 - (distance / detection_range) if detection_range > 0 else 0
+                # 将声音强度与音量相乘
+                if not player.shooting:  # 射击声音不受音量影响
+                    sound_intensity *= player.sound_volume
+                
                 nearby_players.append({
                     'player': player,
                     'distance': distance,
                     'direction': direction,
                     'is_shooting': player.shooting,  # 标记是否为开枪声音
+                    'sound_intensity': sound_intensity,  # 声音强度
                     'screen_pos': pygame.Vector2(
                         player.pos.x - self.camera_offset.x,
                         player.pos.y - self.camera_offset.y
@@ -3453,7 +3933,7 @@ class Game:
         self.nearby_sound_players = nearby_players
     
     def render_footstep_indicators(self):
-        """渲染方向指示器（箭头指向声音来源）"""
+        """渲染方向指示器（箭头指向声音来源，根据声音强度调整透明度）"""
         if self.player.is_dead or not self.nearby_sound_players:
             return
             
@@ -3465,9 +3945,14 @@ class Game:
             player = sound_info['player']
             direction = sound_info['direction']
             is_shooting = sound_info['is_shooting']
+            sound_intensity = sound_info['sound_intensity']
             
             # 根据声音类型选择颜色
-            color = (255, 100, 100) if is_shooting else (100, 255, 100)  # 红色表示开枪，绿色表示移动
+            base_color = (255, 100, 100) if is_shooting else (100, 255, 100)  # 红色表示开枪，绿色表示移动
+            
+            # 根据声音强度调整颜色透明度
+            alpha = int(min(255, max(50, 255 * sound_intensity)))  # 最小透明度为50，最大为255
+            color = (base_color[0], base_color[1], base_color[2], alpha)
             
             # 计算箭头位置（屏幕边缘）
             arrow_distance = 80
@@ -3477,8 +3962,8 @@ class Game:
             # 创建指示器表面
             indicator_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             
-            # 绘制方向箭头
-            arrow_size = 15
+            # 根据声音强度调整箭头大小
+            arrow_size = 10 + int(5 * sound_intensity)  # 10-15之间变化
             angle = math.atan2(direction.y, direction.x)
             
             # 箭头顶点
@@ -3493,18 +3978,21 @@ class Game:
             
             # 绘制箭头线条
             pygame.draw.line(indicator_surface, color, 
-                           (center_x, center_y), (end_x, end_y), 3)
+                           (center_x, center_y), (end_x, end_y), 2 + int(sound_intensity * 2))  # 线宽根据强度变化
             pygame.draw.line(indicator_surface, color, 
-                           (end_x, end_y), (left_x, left_y), 3)
+                           (end_x, end_y), (left_x, left_y), 2 + int(sound_intensity * 2))
             pygame.draw.line(indicator_surface, color, 
-                           (end_x, end_y), (right_x, right_y), 3)
+                           (end_x, end_y), (right_x, right_y), 2 + int(sound_intensity * 2))
             
-            # 绘制距离圈
-            pygame.draw.circle(indicator_surface, color, (center_x, center_y), 50, 1)
+            # 绘制距离圈，大小根据声音强度变化
+            circle_radius = int(30 + 20 * sound_intensity)  # 30-50之间变化
+            pygame.draw.circle(indicator_surface, color, (center_x, center_y), circle_radius, 1)
             
             # 添加声音类型标签
             label = "开枪" if is_shooting else "移动"
-            label_surface = small_font.render(label, True, color)
+            # 根据声音强度调整标签大小
+            label_font = small_font if sound_intensity < 0.7 else font
+            label_surface = label_font.render(label, True, color)
             label_x = arrow_x - label_surface.get_width() // 2
             label_y = arrow_y + 20
             

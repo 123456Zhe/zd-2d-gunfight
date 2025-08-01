@@ -98,8 +98,13 @@ class Player:
             
         self.current_weapon = (self.current_weapon + 1) % len(self.weapons)
     
-    def take_damage(self, damage):
-        """玩家受到伤害"""
+    def take_damage(self, damage, custom_respawn_time=None):
+        """玩家受到伤害
+        
+        Args:
+            damage: 伤害值
+            custom_respawn_time: 自定义复活时间，如果为None则使用默认值
+        """
         current_time = time.time()
         if current_time - self.last_damage_time < self.damage_cooldown:
             return False
@@ -113,7 +118,9 @@ class Player:
         if self.health <= 0:
             self.health = 0
             self.is_dead = True
-            self.respawn_time = time.time() + RESPAWN_TIME
+            # 使用自定义复活时间或默认值
+            respawn_time = custom_respawn_time if custom_respawn_time is not None else RESPAWN_TIME
+            self.respawn_time = time.time() + respawn_time
             return True
         
         return False
