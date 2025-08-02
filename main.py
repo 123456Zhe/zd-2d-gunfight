@@ -603,6 +603,8 @@ class NetworkManager:
     def __init__(self, is_server=False, server_address=None, game_instance=None):
         self.is_server = is_server
         self.player_id = None  # 将在连接时分配
+        # 玩家自定义名称（客户端使用，服务端同样保留以便本地显示）
+        self.player_name = f"Player{random.randint(100, 999)}"
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(1.0)  # 设置超时
         self.players = {}
@@ -1186,8 +1188,8 @@ class NetworkManager:
                                 print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
                                 
                                 # 发送死亡信息到聊天框
-                                attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
-                                target_name = f"玩家{target_id}" if target_id in self.players else f"玩家{target_id}"
+                                attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
+                                target_name = self.players.get(target_id, {}).get('name', f"玩家{target_id}")
                                 death_message = f"{attacker_name} 击杀了 {target_name}！"
                                 death_chat = ChatMessage(0, "[系统]", death_message, current_time)
                                 self.chat_messages.append(death_chat)
@@ -1214,8 +1216,8 @@ class NetworkManager:
                                 print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
                                 
                                 # 发送死亡信息到聊天框
-                                attacker_name = f"玩家{attacker_id}" if attacker_id in self.players else f"玩家{attacker_id}"
-                                target_name = f"玩家{target_id}" if target_id in self.players else f"玩家{target_id}"
+                                attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
+                                target_name = self.players.get(target_id, {}).get('name', f"玩家{target_id}")
                                 death_message = f"{attacker_name} 击杀了 {target_name}！"
                                 death_chat = ChatMessage(0, "[系统]", death_message, current_time)
                                 self.chat_messages.append(death_chat)
@@ -1970,7 +1972,7 @@ class Bullet:
         )
 
 class Player:
-    def __init__(self, player_id, x, y):
+    def __init__(self, player_id, x, y, is_local=False, name=None):
         self.id = player_id
         self.pos = pygame.Vector2(x, y)
         self.velocity = pygame.Vector2(0, 0)
@@ -1982,7 +1984,8 @@ class Player:
         self.reload_start = 0
         self.last_shot = 0
         self.color = RED if player_id == 1 else (random.randint(100, 255), random.randint(100, 255), random.randint(100, 255))
-        self.name = f"玩家{player_id}"
+        self.is_local = is_local
+        self.name = name if name is not None else f"玩家{player_id}"
         self.shooting = False
         self.is_dead = False
         self.death_time = 0
@@ -2578,7 +2581,7 @@ class Player:
                                         screen_points[0][1] - 15,
                                         health_bar_width * health_ratio, 5))
         
-        name_surface = font.render(self.name, True, WHITE)
+        name_surface = small_font.render(self.name, True, WHITE)
         surface.blit(name_surface, (screen_points[0][0] - name_surface.get_width() // 2,
                                    screen_points[0][1] - 35))
 
@@ -3277,7 +3280,7 @@ class Game:
             spawn_y = spawn_row * ROOM_SIZE + ROOM_SIZE // 2
             
             # 创建本地玩家
-            self.player = Player(self.network_manager.player_id, spawn_x, spawn_y)
+            self.player = Player(self.network_manager.player_id, spawn_x, spawn_y, is_local=True, name=self.network_manager.player_name)
             self.other_players = {}  # 存储其他玩家
             
             # 初始化游戏地图（使用九宫格地图）
@@ -3395,7 +3398,7 @@ class Game:
                         
                     # 创建或更新其他玩家
                     if pid not in self.other_players:
-                        self.other_players[pid] = Player(pid, pdata['pos'][0], pdata['pos'][1])
+                        self.other_players[pid] = Player(pid, pdata['pos'][0], pdata['pos'][1], name=pdata.get('name', f'玩家{pid}'))
                         print(f"[客户端] 添加新玩家{pid}")
                     
                     # 更新玩家数据

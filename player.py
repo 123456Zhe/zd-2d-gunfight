@@ -5,12 +5,13 @@ from pygame.locals import *
 from constants import *
 
 class Player:
-    def __init__(self, player_id, x, y, is_local=False):
+    def __init__(self, player_id, x, y, is_local=False, name=None):
         self.id = player_id
         self.position = pygame.Vector2(x, y)
         self.velocity = pygame.Vector2(0, 0)
         self.angle = 0  # 角度（度）
         self.is_local = is_local
+        self.name = name if name is not None else f"玩家{player_id}"
         
         # 玩家状态
         self.health = 100
@@ -178,9 +179,23 @@ class Player:
         
         pygame.draw.rect(screen, RED, (health_x, health_y, health_width, health_height))
         pygame.draw.rect(screen, GREEN, (health_x, health_y, health_width * (self.health / 100), health_height))
+        # 绘制玩家名称，动态计算位置并绘制背景避免重叠
+        name_font = pygame.font.SysFont('Microsoft YaHei', 16)
+        name_surface = name_font.render(self.name, True, WHITE)
+        name_x = screen_x - name_surface.get_width() // 2
+        # 动态计算Y坐标，以文本高度和间距为准
+        padding = 2
+        name_y = health_y - name_surface.get_height() - padding
+        # 绘制背景矩形提高可读性并防止重叠
+        bg_rect = pygame.Rect(name_x - padding, name_y - padding//2,
+                              name_surface.get_width() + padding*2,
+                              name_surface.get_height() + padding)
+        pygame.draw.rect(screen, BLACK, bg_rect)
+        screen.blit(name_surface, (name_x, name_y))
         
         # 调试信息
         if debug_mode:
             debug_text = f"ID: {self.id} HP: {self.health}"
-            debug_surface = small_font.render(debug_text, True, WHITE)
+            debug_font = pygame.font.SysFont('Microsoft YaHei', 14)
+            debug_surface = debug_font.render(debug_text, True, WHITE)
             screen.blit(debug_surface, (screen_x - debug_surface.get_width() // 2, screen_y + PLAYER_RADIUS + 5))
