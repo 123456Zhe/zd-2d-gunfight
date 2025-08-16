@@ -3549,43 +3549,155 @@ class Game:
         pygame.display.flip()
     
     def render_vision_fan(self):
-        """绘制视野扇形 - 优化版本"""
+        """绘制视野扇形 - 高效率版本，考虑墙壁和门的遮挡"""
         # 根据瞄准状态选择视野角度
         current_fov = 30 if self.player.is_aiming else 120
         
-        # 创建扇形点集合
-        fan_points = create_vision_fan_points(
-            self.player.pos, 
-            self.player.angle, 
-            current_fov, 
-            VISION_RANGE,
-            num_points=20  # 减少点数以提高性能
+        # 创建一个透明表面用于绘制视野
+        vision_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        
+        # 玩家屏幕位置
+        player_screen_pos = (
+            self.player.pos.x - self.camera_offset.x,
+            self.player.pos.y - self.camera_offset.y
         )
         
-        # 转换为屏幕坐标
-        screen_points = []
-        for point in fan_points:
-            screen_x = point[0] - self.camera_offset.x
-            screen_y = point[1] - self.camera_offset.y
-            screen_points.append((screen_x, screen_y))
+        # 使用光线投射算法计算可见区域
+        half_fov = current_fov / 2
         
-        # 绘制扇形（如果有足够的点）
-        if len(screen_points) >= 3:
+        # 优化：根据屏幕分辨率和视野角度动态调整光线数量
+        # 瞄准时使用更多光线以获得更精确的边缘
+        ray_count = 40 if current_fov > 60 else 20
+        angle_step = current_fov / ray_count
+        
+        # 收集所有可见点，用于构建可见多边形
+        visible_points = [player_screen_pos]  # 起始点是玩家位置
+        
+        # 预先筛选可能与视野相交的墙壁和门，减少循环中的检查次数
+        potential_walls = []
+        for wall in self.game_map.walls:
+            # 简单检查：如果墙壁在玩家视野范围内，则添加到潜在列表
+            wall_center_x = wall.x + wall.width / 2
+            wall_center_y = wall.y + wall.height / 2
+            distance = math.sqrt((self.player.pos.x - wall_center_x)**2 + (self.player.pos.y - wall_center_y)**2)
+            if distance <= VISION_RANGE * 1.5:  # 稍微扩大检查范围
+                potential_walls.append(wall)
+        
+        potential_doors = []
+        for door in self.game_map.doors:
+            if not door.is_open:
+                door_center_x = door.rect.x + door.rect.width / 2
+                door_center_y = door.rect.y + door.rect.height / 2
+                distance = math.sqrt((self.player.pos.x - door_center_x)**2 + (self.player.pos.y - door_center_y)**2)
+                if distance <= VISION_RANGE * 1.5:
+                    potential_doors.append(door)
+        
+        # 使用批处理方式处理光线
+        batch_size = 5  # 每批处理的光线数量
+        for batch_start in range(0, ray_count + 1, batch_size):
+            batch_rays = []
+            batch_angles = []
+            
+            # 为这一批次准备光线数据
+            for i in range(batch_start, min(batch_start + batch_size, ray_count + 1)):
+                angle = self.player.angle - half_fov + (angle_step * i)
+                angle_rad = math.radians(angle)
+                ray_end_x = self.player.pos.x + math.cos(angle_rad) * VISION_RANGE
+                ray_end_y = self.player.pos.y - math.sin(angle_rad) * VISION_RANGE
+                ray_end = pygame.Vector2(ray_end_x, ray_end_y)
+                batch_rays.append(ray_end)
+                batch_angles.append(angle)
+            
+            # 处理这一批次的所有光线
+            for j, ray_end in enumerate(batch_rays):
+                closest_hit = None
+                closest_distance = float('inf')
+                
+                # 检查墙壁碰撞
+                for wall in potential_walls:
+                    intersection = self.get_line_rect_intersection(self.player.pos, ray_end, wall)
+                    if intersection:
+                        distance = self.player.pos.distance_to(intersection)
+                        if distance < closest_distance:
+                            closest_distance = distance
+                            closest_hit = intersection
+                
+                # 检查门碰撞
+                for door in potential_doors:
+                    intersection = self.get_line_rect_intersection(self.player.pos, ray_end, door.rect)
+                    if intersection:
+                        distance = self.player.pos.distance_to(intersection)
+                        if distance < closest_distance:
+                            closest_distance = distance
+                            closest_hit = intersection
+                
+                # 确定最终点位置（射线终点或碰撞点）
+                if closest_hit:
+                    final_point = closest_hit
+                else:
+                    final_point = ray_end
+                
+                # 转换为屏幕坐标并添加到可见点列表
+                screen_x = final_point.x - self.camera_offset.x
+                screen_y = final_point.y - self.camera_offset.y
+                visible_points.append((screen_x, screen_y))
+        
+        # 绘制可见区域多边形
+        if len(visible_points) >= 3:
             try:
-                # 创建一个透明表面
-                fan_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-                pygame.draw.polygon(fan_surface, (*VISION_GROUND, 120), screen_points)
-                self.screen.blit(fan_surface, (0, 0))
-            except:
+                # 使用抗锯齿绘制，提高视觉质量
+                pygame.draw.polygon(vision_surface, (*VISION_GROUND, 120), visible_points)
+                self.screen.blit(vision_surface, (0, 0))
+            except Exception as e:
                 # 如果绘制失败，降级到简单的圆形
-                player_screen_pos = (
-                    self.player.pos.x - self.camera_offset.x,
-                    self.player.pos.y - self.camera_offset.y
-                )
                 if 0 <= player_screen_pos[0] <= SCREEN_WIDTH and 0 <= player_screen_pos[1] <= SCREEN_HEIGHT:
                     pygame.draw.circle(self.screen, VISION_GROUND, 
                                      (int(player_screen_pos[0]), int(player_screen_pos[1])), 
                                      min(VISION_RANGE, 200), 0)
+    
+    def get_line_rect_intersection(self, start, end, rect):
+        """获取线段与矩形的交点"""
+        # 检查与四条边的交点
+        edges = [
+            ((rect.left, rect.top), (rect.left, rect.bottom)),  # 左边
+            ((rect.right, rect.top), (rect.right, rect.bottom)),  # 右边
+            ((rect.left, rect.top), (rect.right, rect.top)),  # 上边
+            ((rect.left, rect.bottom), (rect.right, rect.bottom))  # 下边
+        ]
+        
+        closest_point = None
+        min_distance = float('inf')
+        
+        for edge in edges:
+            intersection = self.get_line_line_intersection(start, end, pygame.Vector2(edge[0]), pygame.Vector2(edge[1]))
+            if intersection:
+                distance = start.distance_to(intersection)
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_point = intersection
+        
+        return closest_point
+    
+    def get_line_line_intersection(self, p1, p2, p3, p4):
+        """获取两条线段的交点"""
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+        x4, y4 = p4
+        
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(denom) < 0.0001:
+            return None
+        
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+        
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            x = x1 + t * (x2 - x1)
+            y = y1 + t * (y2 - y1)
+            return pygame.Vector2(x, y)
+        
+        return None
     
     def render_full_ground(self):
         """绘制完整的灰色地面（不使用视角系统时）"""
