@@ -8,18 +8,22 @@ from constants import SERVER_PORT, BUFFER_SIZE, HEARTBEAT_INTERVAL, CLIENT_TIMEO
 
 class NetworkManager:
     """网络管理类，处理客户端和服务器的网络通信"""
-    def __init__(self, is_server=False):
+    def __init__(self, is_server=False, server_name="默认服务器", player_name="玩家", game_instance=None):
         self.is_server = is_server
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(0.1)  # 设置超时时间
         
         # 玩家信息
         self.player_id = -1
-        self.player_name = "Player" + str(random.randint(100, 999))
+        self.player_name = player_name
         
         # 服务器信息
         self.server_ip = ""
         self.server_port = SERVER_PORT
+        self.server_name = server_name
+        
+        # 游戏实例引用
+        self.game_instance = game_instance
         
         # 客户端列表（服务器用）
         self.clients = {}  # {client_id: (ip, port, last_heartbeat)}
@@ -52,6 +56,13 @@ class NetworkManager:
             self.network_thread = threading.Thread(target=self.network_loop)
             self.network_thread.daemon = True
             self.network_thread.start()
+            
+            # 客户端启动后发送连接请求
+            if not self.is_server and self.server_ip:
+                # 等待一小段时间确保网络线程启动
+                import time
+                time.sleep(0.1)
+                self.send_connect_request()
             
             return True
         except Exception as e:
@@ -121,7 +132,12 @@ class NetworkManager:
         """客户端处理消息"""
         if message_type == "connect_response":
             self.player_id = message.get("client_id", -1)
+            self.server_name = message.get("server_name", "默认服务器")
             self.last_heartbeat_received = time.time()
+            
+            # 通知游戏实例服务器名称已更新
+            if self.game_instance:
+                self.game_instance.on_server_name_received(self.server_name)
         elif message_type == "heartbeat_response":
             self.last_heartbeat_received = time.time()
         elif message_type in ["player_update", "bullet_fired", "melee_attack", "door_interaction", "chat_message"]:
@@ -130,8 +146,6 @@ class NetworkManager:
     
     def handle_connect_request(self, addr, message):
         """处理客户端连接请求"""
-        client_name = message.get("name", "Player")
-        
         # 分配或回收客户端ID
         if self.recycled_ids:
             client_id = self.recycled_ids.pop()
@@ -139,18 +153,22 @@ class NetworkManager:
             client_id = self.next_client_id
             self.next_client_id += 1
         
-        # 记录客户端信息
-        self.clients[client_id] = (addr[0], addr[1], time.time())
+        # 获取客户端玩家名称
+        client_player_name = message.get("player_name", "玩家")
         
-        # 发送连接响应
+        # 记录客户端信息（包含玩家名称）
+        self.clients[client_id] = (addr[0], addr[1], time.time(), client_player_name)
+        
+        # 发送连接响应（包含服务器名称）
         response = {
             "type": "connect_response",
             "client_id": client_id,
-            "server_time": time.time()
+            "server_time": time.time(),
+            "server_name": self.server_name
         }
         self.send_message(response, addr)
         
-        print(f"新客户端连接: {client_name} (ID: {client_id}) 来自 {addr}")
+        print(f"新客户端连接: ID {client_id} 玩家名: {client_player_name} 来自 {addr}")
     
     def handle_heartbeat(self, client_id, addr):
         """处理心跳包"""
@@ -206,6 +224,18 @@ class NetworkManager:
             
         message["client_id"] = self.player_id
         self.send_message(message, (self.server_ip, self.server_port))
+    
+    def send_connect_request(self):
+        """发送连接请求"""
+        if not self.server_ip:
+            return False
+            
+        message = {
+            "type": "connect_request",
+            "player_name": self.player_name
+        }
+        self.send_message(message, (self.server_ip, self.server_port))
+        return True
     
     def broadcast_message(self, message, exclude=None):
         """广播消息给所有客户端"""
@@ -276,7 +306,7 @@ class NetworkManager:
             "type": "chat_message",
             "text": text,
             "player_id": self.player_id,
-            "player_name": self.player_name,
+            "player_name": self.player_name,  # 添加玩家名称
             "timestamp": time.time()
         }
         self.send_message_to_server(message)

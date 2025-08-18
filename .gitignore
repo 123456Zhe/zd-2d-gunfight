@@ -3,8 +3,10 @@ __pycache__/map.cpython-313.pyc
 __pycache__/network.cpython-313.pyc
 __pycache__/player.cpython-313.pyc
 __pycache__/weapons.cpython-313.pyc
+__pycache__/*
 dist_nuitka/**/*
 .gitignore
 dist_nuitka/main.dist/*
+dist_nuitka/main.dist
 dist_nuitka/main.exe
 dist_nuitka/main.dist/main.dll

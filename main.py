@@ -21,21 +21,21 @@ pygame.font.init()
 
 # 尝试加载中文字体
 try:
-    font = pygame.font.SysFont('Microsoft YaHei', 24)
-    small_font = pygame.font.SysFont('Microsoft YaHei', 18)
-    large_font = pygame.font.SysFont('Microsoft YaHei', 32)
-    title_font = pygame.font.SysFont('Microsoft YaHei', 48)
+    font = pygame.font.SysFont('Microsoft YaHei', 20)
+    small_font = pygame.font.SysFont('Microsoft YaHei', 16)
+    large_font = pygame.font.SysFont('Microsoft YaHei', 28)
+    title_font = pygame.font.SysFont('Microsoft YaHei', 40)
 except:
     try:
-        font = pygame.font.SysFont('SimHei', 24)
-        small_font = pygame.font.SysFont('SimHei', 18)
-        large_font = pygame.font.SysFont('SimHei', 32)
-        title_font = pygame.font.SysFont('SimHei', 48)
+        font = pygame.font.SysFont('SimHei', 20)
+        small_font = pygame.font.SysFont('SimHei', 16)
+        large_font = pygame.font.SysFont('SimHei', 28)
+        title_font = pygame.font.SysFont('SimHei', 40)
     except:
-        font = pygame.font.Font(None, 24)
-        small_font = pygame.font.Font(None, 18)
-        large_font = pygame.font.Font(None, 32)
-        title_font = pygame.font.Font(None, 48)
+        font = pygame.font.Font(None, 20)
+        small_font = pygame.font.Font(None, 16)
+        large_font = pygame.font.Font(None, 28)
+        title_font = pygame.font.Font(None, 40)
 
 # 射线类
 class Ray:
@@ -600,11 +600,9 @@ class ChatMessage:
         return self.rect.colliderect(rect)
 
 class NetworkManager:
-    def __init__(self, is_server=False, server_address=None, game_instance=None):
+    def __init__(self, is_server=False, server_address=None, game_instance=None, server_name=None, player_name=None):
         self.is_server = is_server
         self.player_id = None  # 将在连接时分配
-        # 玩家自定义名称（客户端使用，服务端同样保留以便本地显示）
-        self.player_name = f"Player{random.randint(100, 999)}"
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(1.0)  # 设置超时
         self.players = {}
@@ -615,6 +613,8 @@ class NetworkManager:
         self.connected = False
         self.connection_error = None
         self.game_instance = game_instance  # 添加game_instance属性
+        self.server_name = server_name or '默认服务器'
+        self.player_name = player_name or '玩家'
         
         # 服务端特有属性 - 改进的ID管理
         self.clients = {}  # 客户端地址到玩家ID的映射
@@ -652,11 +652,11 @@ class NetworkManager:
                     'death_time': 0,
                     'respawn_time': 0,
                     'is_respawning': False,
-                    'name': f'玩家{self.player_id}',
                     'melee_attacking': False,
                     'melee_direction': 0,
                     'weapon_type': 'gun',  # 新增：武器类型
-                    'is_aiming': False  # 新增：瞄准状态
+                    'is_aiming': False,  # 新增：瞄准状态
+                    'name': self.server_name  # 新增：服务器名称
                 }
                 self.connected = True
                 
@@ -672,6 +672,8 @@ class NetworkManager:
         else:
             # 客户端连接到服务器
             if not self.connect_to_server():
+                self.connected = False
+                self.connection_error = "无法连接到服务器"
                 return
         
         # 启动接收线程
@@ -708,8 +710,11 @@ class NetworkManager:
     
     def get_server_info(self):
         """获取服务器信息"""
+        # 使用网络管理器中的服务器名称
+        server_name = self.server_name
+        
         return {
-            'name': '多人射击游戏服务器',
+            'name': server_name,
             'players': len(self.players),
             'max_players': 10,
             'version': '1.0'
@@ -723,9 +728,7 @@ class NetworkManager:
             # 发送连接请求，包含玩家名称
             connect_msg = {
                 'type': 'connect_request',
-                'data': {
-                    'name': getattr(self, 'player_name', f'玩家{int(time.time() * 1000) % 10000}')
-                }
+                'player_name': self.player_name
             }
             self.socket.sendto(json.dumps(connect_msg).encode(), (self.server_address, SERVER_PORT))
             
@@ -734,18 +737,19 @@ class NetworkManager:
             while time.time() - start_time < CONNECTION_TIMEOUT:
                 try:
                     data, addr = self.socket.recvfrom(BUFFER_SIZE)
-                    response = data.decode()
+                    response = json.loads(data.decode())
                     
-                    if response.startswith("connect_accepted:"):
-                        _, player_id = response.split(":")
-                        self.player_id = int(player_id)
+                    if response.get('type') == 'connect_response':
+                        self.player_id = response.get('client_id', -1)
+                        self.server_name = response.get('server_name', '默认服务器')
                         self.connected = True
                         self.last_server_response = time.time()
-                        print(f"连接成功！分配到玩家ID: {self.player_id}")
+                        print(f"连接成功！分配到玩家ID: {self.player_id}, 服务器名称: {self.server_name}")
+                        
+                        # 通知游戏实例服务器名称已更新
+                        if self.game_instance:
+                            self.game_instance.on_server_name_received(self.server_name)
                         return True
-                    elif response == "connect_rejected":
-                        self.connection_error = "服务器拒绝连接（可能已满）"
-                        return False
                         
                 except socket.timeout:
                     continue
@@ -780,12 +784,13 @@ class NetworkManager:
                 for addr in disconnected_clients:
                     if addr in self.clients:
                         player_id = self.clients[addr]
-                        player_name = self.players.get(player_id, {}).get('name', f'玩家{player_id}')
-                        print(f"[服务端] 玩家{player_id}({player_name})连接超时，已踢出")
+                        print(f"[服务端] 玩家{player_id}连接超时，已踢出")
                         
                         # 广播玩家离开消息
+                        player_name = self.players.get(player_id, {}).get('name', f'玩家{player_id}')
                         leave_msg = ChatMessage(
-                            0, "系统", 
+                            0, 
+                            "[系统]",
                             f"{player_name} 离开了游戏", 
                             time.time()
                         )
@@ -931,12 +936,16 @@ class NetworkManager:
             # 分配玩家ID（使用新的ID管理系统）
             new_player_id = self.allocate_player_id()
             
-            # 获取玩家名称
-            player_name = data.get('name', f'玩家{new_player_id}') if data else f'玩家{new_player_id}'
-            
             # 记录客户端
             self.clients[addr] = new_player_id
             self.client_last_seen[addr] = time.time()
+            
+            # 获取玩家名称
+            player_name = '玩家'
+            if data and isinstance(data, dict) and 'player_name' in data:
+                player_name = data['player_name']
+            elif data and isinstance(data, str):
+                player_name = data
             
             # 初始化新玩家
             spawn_pos = self.get_random_spawn_pos()
@@ -951,18 +960,23 @@ class NetworkManager:
                 'death_time': 0,
                 'respawn_time': 0,
                 'is_respawning': False,
-                'name': player_name,
                 'melee_attacking': False,
                 'melee_direction': 0,
                 'weapon_type': 'gun',  # 新增：武器类型
-                'is_aiming': False  # 新增：瞄准状态
+                'is_aiming': False,  # 新增：瞄准状态
+                'name': player_name  # 新增：玩家名称
             }
             
-            print(f"[服务端] 玩家{new_player_id}({player_name})已连接，地址：{addr}，当前玩家数: {len(self.players)}")
+            print(f"[服务端] 玩家{new_player_id}已连接，地址：{addr}，玩家名: {player_name}，当前玩家数: {len(self.players)}")
             
-            # 发送连接确认
-            response = f"connect_accepted:{new_player_id}"
-            self.socket.sendto(response.encode(), addr)
+            # 发送连接响应（包含服务器名称）
+            response = {
+                'type': 'connect_response',
+                'client_id': new_player_id,
+                'server_name': self.server_name,
+                'server_time': time.time()
+            }
+            self.socket.sendto(json.dumps(response).encode(), addr)
             
             # 发送当前游戏状态给新玩家
             self.send_to_client({
@@ -992,8 +1006,10 @@ class NetworkManager:
                 }, addr)
             
             # 广播新玩家加入消息
+            player_name = self.players.get(new_player_id, {}).get('name', f'玩家{new_player_id}')
             join_msg = ChatMessage(
-                0, "系统", 
+                0, 
+                "[系统]",
                 f"{player_name} 加入了游戏", 
                 time.time()
             )
@@ -1280,38 +1296,39 @@ class NetworkManager:
     
     def _handle_chat_message(self, chat_data):
         """处理聊天消息"""
-        if isinstance(chat_data, dict) and all(key in chat_data for key in ['player_id', 'player_name', 'message']):
-            message = chat_data['message']
-            player_id = chat_data['player_id']
-            player_name = chat_data['player_name']
-            timestamp = chat_data.get('timestamp', time.time())
-            
-            # 检查是否是服务端命令
-            if self.is_server and message.startswith('.'):
-                self._handle_server_command(message, player_id, player_name)
-                return
-            
-            msg = ChatMessage(
-                player_id,
-                player_name,
-                message,
-                timestamp
-            )
-            
-            # 添加到聊天历史
-            self.chat_messages.append(msg)
-            
-            # 保持聊天历史不超过最大数量
-            if len(self.chat_messages) > MAX_CHAT_MESSAGES * 2:
-                self.chat_messages = self.chat_messages[-MAX_CHAT_MESSAGES:]
-            
-            print(f"[聊天] {msg.player_name}: {msg.message}")
-            
-            # 如果是服务端，转发给所有客户端
-            if self.is_server:
-                self.broadcast_chat_message(msg)
+        if isinstance(chat_data, dict) and all(key in chat_data for key in ['player_id', 'message']):
+                message = chat_data['message']
+                player_id = chat_data['player_id']
+                timestamp = chat_data.get('timestamp', time.time())
                 
-    def _handle_server_command(self, command, player_id, player_name):
+                # 检查是否是服务端命令
+                if self.is_server and message.startswith('.'):
+                    self._handle_server_command(message, player_id)
+                    return
+                
+                # 获取玩家名称 - 优先使用消息中包含的名称
+                player_name = chat_data.get('player_name', self.players.get(player_id, {}).get('name', f'玩家{player_id}'))
+                msg = ChatMessage(
+                    player_id,
+                    player_name,
+                    message,
+                    timestamp
+                )
+                
+                # 添加到聊天历史
+                self.chat_messages.append(msg)
+                
+                # 保持聊天历史不超过最大数量
+                if len(self.chat_messages) > MAX_CHAT_MESSAGES * 2:
+                    self.chat_messages = self.chat_messages[-MAX_CHAT_MESSAGES:]
+                
+                print(f"[聊天] 玩家{msg.player_id}({msg.player_name}): {msg.message}")
+                
+                # 如果是服务端，转发给所有客户端
+                if self.is_server:
+                    self.broadcast_chat_message(msg)
+                
+    def _handle_server_command(self, command, player_id):
         """处理服务端命令"""
         if not self.is_server:
             return
@@ -1390,11 +1407,10 @@ class NetworkManager:
                 
             player_list = []
             for pid, pdata in self.players.items():
-                player_name = pdata.get('name', f"玩家{pid}")
                 health = pdata.get('health', 0)
                 is_dead = pdata.get('is_dead', False)
                 status = "死亡" if is_dead else f"生命值:{health}"
-                player_list.append(f"ID:{pid} - {player_name} ({status})")
+                player_list.append(f"ID:{pid} - 玩家{pid} ({status})")
                 
             self._send_system_message(f"在线玩家({len(player_list)}):\n" + "\n".join(player_list))
         
@@ -1648,7 +1664,7 @@ class NetworkManager:
         # 创建系统消息
         msg = ChatMessage(
             0,  # 系统消息使用ID 0
-            "系统",
+            "[系统]",
             message,
             time.time()
         )
@@ -1672,7 +1688,7 @@ class NetworkManager:
             for msg_data in history_data['messages']:
                 msg = ChatMessage(
                     msg_data['player_id'],
-                    msg_data['player_name'],
+                    msg_data.get('player_name', f'玩家{msg_data["player_id"]}'),
                     msg_data['message'],
                     msg_data['timestamp']
                 )
@@ -1727,10 +1743,8 @@ class NetworkManager:
         if len(message.strip()) == 0:
             return
             
-        player_name = f"玩家{self.player_id}"
-        if self.player_id in self.players:
-            player_name = self.players[self.player_id].get('name', player_name)
-        
+        # 获取玩家名称
+        player_name = self.players.get(self.player_id, {}).get('name', f'玩家{self.player_id}')
         chat_data = {
             'type': 'chat_message',
             'data': {
@@ -2887,10 +2901,16 @@ class Game:
         """显示主菜单"""
         # 菜单状态
         selected_option = 0  # 0=创建服务器, 1=加入游戏, 2=刷新服务器
-        name_input_text = "玩家" + str(int(time.time() * 1000) % 10000)
-        name_input_active = False
         input_text = ""
         input_active = False
+        
+        # 服务器和玩家命名状态
+        server_name_input = ""
+        player_name_input = ""
+        server_name_active = False
+        player_name_active = False
+        show_server_name_input = False
+        show_player_name_input = False
         
         # 自动开始扫描
         if not self.scanning_servers and not self.found_servers:
@@ -2904,9 +2924,16 @@ class Game:
         
         button_create = pygame.Rect(50, start_y, button_width, button_height)
         button_refresh = pygame.Rect(50, start_y + button_height + button_spacing, button_width, button_height)
-        name_input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 10, button_width, 35)
-        input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 50, button_width, 35)
-        button_connect = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 100, button_width, 40)
+        input_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 10, button_width, 35)
+        button_connect = pygame.Rect(50, start_y + (button_height + button_spacing) * 2 + 60, button_width, 40)
+        
+        # 服务器命名输入框
+        server_name_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 150, button_width, 35)
+        server_name_button = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 195, button_width, 40)
+        
+        # 玩家命名输入框
+        player_name_box = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 150, button_width, 35)
+        player_name_button = pygame.Rect(50, start_y + (button_height + button_spacing) * 3 + 195, button_width, 40)
         
         # 服务器列表区域
         server_list_x = 300
@@ -2926,96 +2953,159 @@ class Game:
                     elif event.key == K_UP:
                         selected_option = max(0, selected_option - 1)
                         input_active = False
-                        name_input_active = False
+                        server_name_active = False
+                        player_name_active = False
                     elif event.key == K_DOWN:
                         selected_option = min(2, selected_option + 1)
                         input_active = False
-                        name_input_active = False
                     elif event.key == K_RETURN:
-                        if selected_option == 0:
-                            # 创建服务器
-                            self.connection_info = {'is_server': True}
-                            self.state = "CONNECTING"
-                            self.connecting_start_time = time.time()
-                            return
-                        elif selected_option == 1 and input_text.strip():
+                        if selected_option == 0 and not show_server_name_input:
+                            # 显示服务器命名输入框
+                            show_server_name_input = True
+                            server_name_active = True
+                            server_name_input = "我的服务器"
+                        elif selected_option == 0 and show_server_name_input and server_name_input.strip():
+                            # 显示玩家命名输入框
+                            show_player_name_input = True
+                            player_name_active = True
+                            player_name_input = "玩家"
+                            server_name_active = False
+                        elif selected_option == 1 and input_text.strip() and not show_player_name_input:
+                            # 显示玩家命名输入框
+                            show_player_name_input = True
+                            player_name_active = True
+                            player_name_input = "玩家"
+                        elif selected_option == 1 and input_text.strip() and show_player_name_input and player_name_input.strip():
                             # 手动连接
                             self.connection_info = {
                                 'is_server': False,
-                                'server_ip': input_text.strip()
+                                'server_ip': input_text.strip(),
+                                'player_name': player_name_input.strip()
                             }
-                            # 保存玩家名称到网络管理器
-                            if self.network_manager:
-                                self.network_manager.player_name = name_input_text
-                            else:
-                                # 如果网络管理器尚未创建，先保存到游戏实例
-                                self.player_name = name_input_text
                             self.state = "CONNECTING"
                             self.connecting_start_time = time.time()
                             return
                         elif selected_option == 2:
                             # 刷新服务器列表
                             self.start_server_scan()
-                    elif name_input_active:
-                        if event.key == K_BACKSPACE:
-                            name_input_text = name_input_text[:-1]
-                        else:
-                            if len(name_input_text) < 20:
-                                name_input_text += event.unicode
                     elif input_active:
                         if event.key == K_BACKSPACE:
                             input_text = input_text[:-1]
                         else:
                             if len(input_text) < 50:
                                 input_text += event.unicode
+                    elif server_name_active:
+                        if event.key == K_BACKSPACE:
+                            server_name_input = server_name_input[:-1]
+                        else:
+                            if len(server_name_input) < 20:
+                                server_name_input += event.unicode
+                    elif player_name_active:
+                        if event.key == K_BACKSPACE:
+                            player_name_input = player_name_input[:-1]
+                        else:
+                            if len(player_name_input) < 16:
+                                player_name_input += event.unicode
                 elif event.type == MOUSEBUTTONDOWN:
-                    if button_create.collidepoint(event.pos):
+                    if button_create.collidepoint(event.pos) and not show_server_name_input:
                         selected_option = 0
                         input_active = False
-                        # 创建服务器
-                        self.connection_info = {'is_server': True}
-                        self.state = "CONNECTING"
-                        self.connecting_start_time = time.time()
-                        return
+                        # 显示服务器命名输入框
+                        show_server_name_input = True
+                        server_name_active = True
+                        server_name_input = "我的服务器"
+                    elif button_create.collidepoint(event.pos) and show_server_name_input and server_name_input.strip():
+                        selected_option = 0
+                        input_active = False
+                        # 显示玩家命名输入框
+                        show_player_name_input = True
+                        player_name_active = True
+                        player_name_input = "玩家"
+                        server_name_active = False
+                        self.creating_server = True
                     elif button_refresh.collidepoint(event.pos):
                         selected_option = 2
                         input_active = False
-                        name_input_active = False
                         # 刷新服务器列表
                         self.start_server_scan()
-                    elif name_input_box.collidepoint(event.pos):
-                        name_input_active = True
-                        input_active = False
-                        selected_option = 1
                     elif input_box.collidepoint(event.pos):
                         input_active = True
-                        name_input_active = False
                         selected_option = 1
-                    elif button_connect.collidepoint(event.pos) and input_text.strip():
-                        # 手动连接按钮
-                        self.connection_info = {
-                            'is_server': False,
-                            'server_ip': input_text.strip()
-                        }
-                        # 保存玩家名称到网络管理器
-                        if self.network_manager:
-                            self.network_manager.player_name = name_input_text
+                        server_name_active = False
+                        player_name_active = False
+                    elif show_server_name_input and server_name_box.collidepoint(event.pos):
+                        # 激活服务器命名输入框
+                        server_name_active = True
+                        input_active = False
+                        player_name_active = False
+                    elif show_player_name_input and player_name_box.collidepoint(event.pos):
+                        # 激活玩家命名输入框
+                        player_name_active = True
+                        input_active = False
+                        server_name_active = False
+                    elif show_server_name_input and server_name_button.collidepoint(event.pos) and server_name_input.strip():
+                        # 服务器命名确认按钮点击
+                        # 显示玩家命名输入框并隐藏服务器命名输入框
+                        show_player_name_input = True
+                        show_server_name_input = False  # 隐藏服务器命名输入框
+                        player_name_active = True
+                        player_name_input = "玩家"
+                        server_name_active = False
+                        self.creating_server = True  # 设置创建服务器标志位
+                    elif show_player_name_input and player_name_button.collidepoint(event.pos) and player_name_input.strip():
+                        # 玩家命名确认按钮点击
+                        print("玩家名称按钮被点击!")
+                        print(f"创建服务器标志: {hasattr(self, 'creating_server') and self.creating_server}")
+                        print(f"选中的服务器IP: {getattr(self, 'selected_server_ip', None)}")
+                        print(f"输入的IP: {input_text.strip()}")
+                        if hasattr(self, 'creating_server') and self.creating_server:
+                            # 创建服务器
+                            self.connection_info = {
+                                'is_server': True,
+                                'server_name': server_name_input.strip(),
+                                'player_name': player_name_input.strip()
+                            }
+                        elif hasattr(self, 'selected_server_ip') and self.selected_server_ip:
+                            # 连接到选中的服务器
+                            self.connection_info = {
+                                'is_server': False,
+                                'server_ip': self.selected_server_ip,
+                                'player_name': player_name_input.strip()
+                            }
                         else:
-                            # 如果网络管理器尚未创建，先保存到游戏实例
-                            self.player_name = name_input_text
+                            # 手动连接
+                            self.connection_info = {
+                                'is_server': False,
+                                'server_ip': input_text.strip(),
+                                'player_name': player_name_input.strip()
+                            }
                         self.state = "CONNECTING"
                         self.connecting_start_time = time.time()
                         return
+                    elif button_connect.collidepoint(event.pos) and input_text.strip() and not show_player_name_input:
+                        # 显示玩家命名输入框
+                        show_player_name_input = True
+                        player_name_active = True
+                        player_name_input = "玩家"
+                    # 删除重复的玩家名称按钮点击处理逻辑
+                    # 该逻辑已在上方统一处理
                     else:
                         # 检查是否点击了服务器列表项
                         for i, server in enumerate(self.found_servers):
                             server_rect = pygame.Rect(server_list_x, server_list_y + i * (server_item_height + 10), 
                                                     server_list_width, server_item_height)
-                            if server_rect.collidepoint(event.pos):
+                            if server_rect.collidepoint(event.pos) and not show_player_name_input:
+                                # 显示玩家命名输入框
+                                show_player_name_input = True
+                                player_name_active = True
+                                player_name_input = "玩家"
+                                self.selected_server_ip = server['ip']
+                            elif server_rect.collidepoint(event.pos) and show_player_name_input and player_name_input.strip():
                                 # 连接到选中的服务器
                                 self.connection_info = {
                                     'is_server': False,
-                                    'server_ip': server['ip']
+                                    'server_ip': self.selected_server_ip,
+                                    'player_name': player_name_input.strip()
                                 }
                                 self.state = "CONNECTING"
                                 self.connecting_start_time = time.time()
@@ -3053,24 +3143,6 @@ class Game:
             self.screen.blit(refresh_text, (button_refresh.x + (button_refresh.width - refresh_text.get_width())//2,
                                           button_refresh.y + (button_refresh.height - refresh_text.get_height())//2))
             
-            # 玩家名称输入框
-            name_input_color = YELLOW if name_input_active else WHITE
-            pygame.draw.rect(self.screen, BLACK, name_input_box)
-            pygame.draw.rect(self.screen, name_input_color, name_input_box, 2)
-            
-            name_label = font.render("玩家名称:", True, WHITE)
-            self.screen.blit(name_label, (name_input_box.x, name_input_box.y - 30))
-            
-            name_input_surface = font.render(name_input_text, True, WHITE)
-            self.screen.blit(name_input_surface, (name_input_box.x + 10, name_input_box.y + 7))
-            
-            # 玩家名称输入光标
-            if name_input_active and pygame.time.get_ticks() % 1000 < 500:
-                name_cursor_x = name_input_box.x + 10 + name_input_surface.get_width()
-                pygame.draw.line(self.screen, WHITE, 
-                               (name_cursor_x, name_input_box.y + 5), 
-                               (name_cursor_x, name_input_box.y + name_input_box.height - 5), 2)
-            
             # IP输入框
             input_color = YELLOW if input_active else WHITE
             pygame.draw.rect(self.screen, BLACK, input_box)
@@ -3097,6 +3169,62 @@ class Game:
             connect_text = font.render("手动连接", True, WHITE if connect_enabled else DARK_GRAY)
             self.screen.blit(connect_text, (button_connect.x + (button_connect.width - connect_text.get_width())//2,
                                           button_connect.y + (button_connect.height - connect_text.get_height())//2))
+            
+            # 服务器命名输入框
+            if show_server_name_input and not show_player_name_input:
+                server_name_color = YELLOW if server_name_active else WHITE
+                pygame.draw.rect(self.screen, BLACK, server_name_box)
+                pygame.draw.rect(self.screen, server_name_color, server_name_box, 2)
+                
+                server_name_label = font.render("服务器名称:", True, WHITE)
+                self.screen.blit(server_name_label, (server_name_box.x, server_name_box.y - 30))
+                
+                server_name_surface = font.render(server_name_input, True, WHITE)
+                self.screen.blit(server_name_surface, (server_name_box.x + 10, server_name_box.y + 7))
+                
+                # 光标
+                if server_name_active and pygame.time.get_ticks() % 1000 < 500:
+                    cursor_x = server_name_box.x + 10 + server_name_surface.get_width()
+                    pygame.draw.line(self.screen, WHITE, 
+                                   (cursor_x, server_name_box.y + 5), 
+                                   (cursor_x, server_name_box.y + server_name_box.height - 5), 2)
+                
+                # 确认按钮
+                server_name_enabled = len(server_name_input.strip()) > 0
+                server_name_btn_color = GREEN if server_name_enabled else GRAY
+                pygame.draw.rect(self.screen, server_name_btn_color, server_name_button)
+                pygame.draw.rect(self.screen, WHITE, server_name_button, 2)
+                server_name_btn_text = font.render("确认创建", True, WHITE if server_name_enabled else DARK_GRAY)
+                self.screen.blit(server_name_btn_text, (server_name_button.x + (server_name_button.width - server_name_btn_text.get_width())//2,
+                                                      server_name_button.y + (server_name_button.height - server_name_btn_text.get_height())//2))
+            
+            # 玩家命名输入框
+            if show_player_name_input:
+                player_name_color = YELLOW if player_name_active else WHITE
+                pygame.draw.rect(self.screen, BLACK, player_name_box)
+                pygame.draw.rect(self.screen, player_name_color, player_name_box, 2)
+                
+                player_name_label = font.render("玩家名称:", True, WHITE)
+                self.screen.blit(player_name_label, (player_name_box.x, player_name_box.y - 30))
+                
+                player_name_surface = font.render(player_name_input, True, WHITE)
+                self.screen.blit(player_name_surface, (player_name_box.x + 10, player_name_box.y + 7))
+                
+                # 光标
+                if player_name_active and pygame.time.get_ticks() % 1000 < 500:
+                    cursor_x = player_name_box.x + 10 + player_name_surface.get_width()
+                    pygame.draw.line(self.screen, WHITE, 
+                                   (cursor_x, player_name_box.y + 5), 
+                                   (cursor_x, player_name_box.y + player_name_box.height - 5), 2)
+                
+                # 确认按钮
+                player_name_enabled = len(player_name_input.strip()) > 0
+                player_name_btn_color = GREEN if player_name_enabled else GRAY
+                pygame.draw.rect(self.screen, player_name_btn_color, player_name_button)
+                pygame.draw.rect(self.screen, WHITE, player_name_button, 2)
+                player_name_btn_text = font.render("确认连接", True, WHITE if player_name_enabled else DARK_GRAY)
+                self.screen.blit(player_name_btn_text, (player_name_button.x + (player_name_button.width - player_name_btn_text.get_width())//2,
+                                                      player_name_button.y + (player_name_button.height - player_name_btn_text.get_height())//2))
             
             # 右侧服务器列表
             list_title = large_font.render("局域网服务器", True, WHITE)
@@ -3142,16 +3270,7 @@ class Game:
                 hint_text = small_font.render("点击\"刷新服务器列表\"重新扫描", True, GRAY)
                 self.screen.blit(hint_text, (server_list_x, server_list_y + 30))
             
-            # 操作提示
-            controls = [
-                "方向键/鼠标选择，Enter确认",
-                "ESC退出游戏",
-                "点击服务器项直接连接"
-            ]
-            
-            for i, control in enumerate(controls):
-                control_text = small_font.render(control, True, GRAY)
-                self.screen.blit(control_text, (50, SCREEN_HEIGHT - 80 + i * 20))
+            # 删除底部操作提示文字以避免字体重叠
             
             pygame.display.flip()
             self.clock.tick(FPS)
@@ -3160,6 +3279,11 @@ class Game:
         """显示连接中界面"""
         dots = ""
         last_dot_time = 0
+        
+        # 玩家名称修改状态
+        show_player_name_edit = False
+        player_name_input = self.connection_info.get('player_name', '玩家')
+        player_name_active = False
         
         while self.state == "CONNECTING":
             current_time = time.time()
@@ -3178,6 +3302,51 @@ class Game:
                     if event.key == K_ESCAPE:
                         self.state = "MENU"
                         return
+                    elif event.key == K_n and not self.connection_info['is_server'] and not show_player_name_edit:
+                        # 按N键修改玩家名称
+                        show_player_name_edit = True
+                        player_name_active = True
+                        player_name_input = self.connection_info.get('player_name', '玩家')
+                    elif event.key == K_RETURN and show_player_name_edit and player_name_input.strip():
+                        # 确认修改玩家名称
+                        self.connection_info['player_name'] = player_name_input.strip()
+                        show_player_name_edit = False
+                        player_name_active = False
+                        # 重新初始化网络管理器以使用新的玩家名称
+                        if self.network_manager:
+                            self.network_manager.player_name = player_name_input.strip()
+                    elif player_name_active:
+                        if event.key == K_BACKSPACE:
+                            player_name_input = player_name_input[:-1]
+                        elif event.key == K_ESCAPE:
+                            show_player_name_edit = False
+                            player_name_active = False
+                        else:
+                            if len(player_name_input) < 16:
+                                player_name_input += event.unicode
+                elif event.type == MOUSEBUTTONDOWN:
+                    # 检查是否点击了修改名称按钮
+                    if not self.connection_info['is_server'] and not show_player_name_edit:
+                        button_rect = pygame.Rect(SCREEN_WIDTH//2 - 100, SCREEN_HEIGHT//2 + 100, 200, 40)
+                        if button_rect.collidepoint(event.pos):
+                            show_player_name_edit = True
+                            player_name_active = True
+                            player_name_input = self.connection_info.get('player_name', '玩家')
+                    elif show_player_name_edit:
+                        # 确认按钮
+                        confirm_rect = pygame.Rect(SCREEN_WIDTH//2 - 50, SCREEN_HEIGHT//2 + 150, 100, 40)
+                        if confirm_rect.collidepoint(event.pos) and player_name_input.strip():
+                            self.connection_info['player_name'] = player_name_input.strip()
+                            show_player_name_edit = False
+                            player_name_active = False
+                            # 重新初始化网络管理器以使用新的玩家名称
+                            if self.network_manager:
+                                self.network_manager.player_name = player_name_input.strip()
+                        # 取消按钮
+                        cancel_rect = pygame.Rect(SCREEN_WIDTH//2 - 50, SCREEN_HEIGHT//2 + 200, 100, 40)
+                        if cancel_rect.collidepoint(event.pos):
+                            show_player_name_edit = False
+                            player_name_active = False
             
             # 尝试初始化游戏
             if self.initialize_game():
@@ -3207,13 +3376,65 @@ class Game:
             else:
                 title = large_font.render("正在连接服务器" + dots, True, WHITE)
                 info = font.render(f"服务器: {self.connection_info['server_ip']}", True, LIGHT_BLUE)
+                
+                # 显示当前玩家名称
+                player_info = font.render(f"玩家名称: {self.connection_info.get('player_name', '玩家')}", True, YELLOW)
+                self.screen.blit(player_info, (SCREEN_WIDTH//2 - player_info.get_width()//2, SCREEN_HEIGHT//2 + 50))
+                
+                # 修改名称按钮
+                if not show_player_name_edit:
+                    button_rect = pygame.Rect(SCREEN_WIDTH//2 - 100, SCREEN_HEIGHT//2 + 100, 200, 40)
+                    pygame.draw.rect(self.screen, DARK_BLUE, button_rect)
+                    pygame.draw.rect(self.screen, WHITE, button_rect, 2)
+                    button_text = font.render("修改名称 (N)", True, WHITE)
+                    self.screen.blit(button_text, (button_rect.x + (button_rect.width - button_text.get_width())//2,
+                                                 button_rect.y + (button_rect.height - button_text.get_height())//2))
+                
+                # 玩家名称编辑界面
+                if show_player_name_edit:
+                    # 输入框
+                    input_rect = pygame.Rect(SCREEN_WIDTH//2 - 100, SCREEN_HEIGHT//2 + 80, 200, 35)
+                    input_color = YELLOW if player_name_active else WHITE
+                    pygame.draw.rect(self.screen, BLACK, input_rect)
+                    pygame.draw.rect(self.screen, input_color, input_rect, 2)
+                    
+                    input_label = font.render("玩家名称:", True, WHITE)
+                    self.screen.blit(input_label, (input_rect.x, input_rect.y - 30))
+                    
+                    input_surface = font.render(player_name_input, True, WHITE)
+                    self.screen.blit(input_surface, (input_rect.x + 10, input_rect.y + 7))
+                    
+                    # 光标
+                    if player_name_active and pygame.time.get_ticks() % 1000 < 500:
+                        cursor_x = input_rect.x + 10 + input_surface.get_width()
+                        pygame.draw.line(self.screen, WHITE, 
+                                       (cursor_x, input_rect.y + 5), 
+                                       (cursor_x, input_rect.y + input_rect.height - 5), 2)
+                    
+                    # 确认按钮
+                    confirm_rect = pygame.Rect(SCREEN_WIDTH//2 - 50, SCREEN_HEIGHT//2 + 150, 100, 40)
+                    confirm_enabled = len(player_name_input.strip()) > 0
+                    confirm_color = GREEN if confirm_enabled else GRAY
+                    pygame.draw.rect(self.screen, confirm_color, confirm_rect)
+                    pygame.draw.rect(self.screen, WHITE, confirm_rect, 2)
+                    confirm_text = font.render("确认", True, WHITE if confirm_enabled else DARK_GRAY)
+                    self.screen.blit(confirm_text, (confirm_rect.x + (confirm_rect.width - confirm_text.get_width())//2,
+                                                   confirm_rect.y + (confirm_rect.height - confirm_text.get_height())//2))
+                    
+                    # 取消按钮
+                    cancel_rect = pygame.Rect(SCREEN_WIDTH//2 - 50, SCREEN_HEIGHT//2 + 200, 100, 40)
+                    pygame.draw.rect(self.screen, RED, cancel_rect)
+                    pygame.draw.rect(self.screen, WHITE, cancel_rect, 2)
+                    cancel_text = font.render("取消", True, WHITE)
+                    self.screen.blit(cancel_text, (cancel_rect.x + (cancel_rect.width - cancel_text.get_width())//2,
+                                                   cancel_rect.y + (cancel_rect.height - cancel_text.get_height())//2))
             
             self.screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, SCREEN_HEIGHT//2 - 50))
             self.screen.blit(info, (SCREEN_WIDTH//2 - info.get_width()//2, SCREEN_HEIGHT//2))
             
             # 取消提示
             cancel_text = small_font.render("按ESC键取消", True, GRAY)
-            self.screen.blit(cancel_text, (SCREEN_WIDTH//2 - cancel_text.get_width()//2, SCREEN_HEIGHT//2 + 70))
+            self.screen.blit(cancel_text, (SCREEN_WIDTH//2 - cancel_text.get_width()//2, SCREEN_HEIGHT//2 + 250))
             
             pygame.display.flip()
             self.clock.tick(FPS)
@@ -3255,16 +3476,20 @@ class Game:
             if not self.network_manager:
                 # 初始化网络管理器
                 if self.connection_info['is_server']:
-                    self.network_manager = NetworkManager(is_server=True, game_instance=self)
+                    server_name = self.connection_info.get('server_name', '默认服务器')
+                    self.network_manager = NetworkManager(is_server=True, game_instance=self, server_name=server_name)
                 else:
+                    player_name = self.connection_info.get('player_name', '玩家')
                     self.network_manager = NetworkManager(
                         is_server=False,
                         server_address=self.connection_info['server_ip'],
-                        game_instance=self
+                        game_instance=self,
+                        player_name=player_name
                     )
             
             # 检查连接是否成功
             if not self.network_manager.connected:
+                self.error_message = self.network_manager.connection_error or "网络连接失败"
                 return False
             
             # 等待分配玩家ID（客户端）
@@ -3280,7 +3505,8 @@ class Game:
             spawn_y = spawn_row * ROOM_SIZE + ROOM_SIZE // 2
             
             # 创建本地玩家
-            self.player = Player(self.network_manager.player_id, spawn_x, spawn_y, is_local=True, name=self.network_manager.player_name)
+            player_name = self.connection_info.get('player_name', f'玩家{self.network_manager.player_id}')
+            self.player = Player(self.network_manager.player_id, spawn_x, spawn_y, is_local=True, name=player_name)
             self.other_players = {}  # 存储其他玩家
             
             # 初始化游戏地图（使用九宫格地图）
@@ -3295,6 +3521,11 @@ class Game:
             print(f"初始化游戏失败: {e}")
             self.error_message = f"游戏初始化失败: {e}"
             return False
+    
+    def on_server_name_received(self, server_name):
+        """处理接收到的服务器名称"""
+        self.server_name = server_name
+        print(f"接收到服务器名称: {server_name}")
     
     def handle_events(self):
         for event in pygame.event.get():
@@ -3365,6 +3596,12 @@ class Game:
         
         current_time = time.time()
         
+        # 检查玩家对象是否存在
+        if not hasattr(self, 'player') or self.player is None:
+            self.error_message = "玩家对象初始化失败"
+            self.state = "ERROR"
+            return
+        
         # 合并所有玩家（本地+网络）
         all_players = {self.player.id: self.player}
         all_players.update(self.other_players)
@@ -3398,7 +3635,8 @@ class Game:
                         
                     # 创建或更新其他玩家
                     if pid not in self.other_players:
-                        self.other_players[pid] = Player(pid, pdata['pos'][0], pdata['pos'][1], name=pdata.get('name', f'玩家{pid}'))
+                        player_name = pdata.get('name', f'玩家{pid}')
+                        self.other_players[pid] = Player(pid, pdata['pos'][0], pdata['pos'][1], name=player_name)
                         print(f"[客户端] 添加新玩家{pid}")
                     
                     # 更新玩家数据
@@ -3887,7 +4125,12 @@ class Game:
                     break
                 
                 # 创建消息文本
-                message_text = f"{msg.player_name}: {msg.message}"
+                # 系统消息直接显示内容，不显示前缀
+                if msg.player_id == 0:
+                    message_text = msg.message
+                else:
+                    # 普通消息显示玩家名称
+                    message_text = f"{msg.player_name}: {msg.message}"
                 message_surface = small_font.render(message_text, True, msg.color)
                 
                 # 半透明背景
