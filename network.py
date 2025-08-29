@@ -6,16 +6,20 @@ import random
 from pygame.locals import *
 from constants import SERVER_PORT, BUFFER_SIZE, HEARTBEAT_INTERVAL, CLIENT_TIMEOUT
 
+def generate_default_player_name():
+    """生成默认玩家名：玩家+3位随机数字"""
+    return f"玩家{random.randint(100, 999)}"
+
 class NetworkManager:
     """网络管理类，处理客户端和服务器的网络通信"""
-    def __init__(self, is_server=False, server_name="默认服务器", player_name="玩家", game_instance=None):
+    def __init__(self, is_server=False, server_name="默认服务器", player_name=None, game_instance=None):
         self.is_server = is_server
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.settimeout(0.1)  # 设置超时时间
         
         # 玩家信息
         self.player_id = -1
-        self.player_name = player_name
+        self.player_name = player_name or generate_default_player_name()
         
         # 服务器信息
         self.server_ip = ""
@@ -154,7 +158,7 @@ class NetworkManager:
             self.next_client_id += 1
         
         # 获取客户端玩家名称
-        client_player_name = message.get("player_name", "玩家")
+        client_player_name = message.get("player_name", generate_default_player_name())
         
         # 记录客户端信息（包含玩家名称）
         self.clients[client_id] = (addr[0], addr[1], time.time(), client_player_name)

@@ -10,3 +10,4 @@ dist_nuitka/main.dist/*
 dist_nuitka/main.dist
 dist_nuitka/main.exe
 dist_nuitka/main.dist/main.dll
+dist_nuitka

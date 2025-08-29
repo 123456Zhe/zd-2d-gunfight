@@ -15,6 +15,10 @@ from map import Map, Door
 from network import NetworkManager
 from weapons import MeleeWeapon, Bullet
 
+def generate_default_player_name():
+    """生成默认玩家名：玩家+3位随机数字"""
+    return f"玩家{random.randint(100, 999)}"
+
 # 初始化pygame
 pygame.init()
 pygame.font.init()
@@ -614,7 +618,7 @@ class NetworkManager:
         self.connection_error = None
         self.game_instance = game_instance  # 添加game_instance属性
         self.server_name = server_name or '默认服务器'
-        self.player_name = player_name or '玩家'
+        self.player_name = player_name or generate_default_player_name()
         
         # 服务端特有属性 - 改进的ID管理
         self.clients = {}  # 客户端地址到玩家ID的映射
@@ -656,7 +660,7 @@ class NetworkManager:
                     'melee_direction': 0,
                     'weapon_type': 'gun',  # 新增：武器类型
                     'is_aiming': False,  # 新增：瞄准状态
-                    'name': self.server_name  # 新增：服务器名称
+                    'name': self.player_name  # 修复：使用玩家名称而不是服务器名称
                 }
                 self.connected = True
                 
@@ -712,6 +716,7 @@ class NetworkManager:
         """获取服务器信息"""
         # 使用网络管理器中的服务器名称
         server_name = self.server_name
+        print(f"[调试] 获取服务器信息，服务器名称: {server_name}")
         
         return {
             'name': server_name,
@@ -871,7 +876,7 @@ class NetworkManager:
                 try:
                     message = json.loads(message_str)
                     if isinstance(message, dict) and message.get('type') == 'connect_request':
-                        self._handle_connection_request(addr, message.get('data', {}))
+                        self._handle_connection_request(addr, message)
                         continue
                 except json.JSONDecodeError:
                     pass
@@ -941,9 +946,12 @@ class NetworkManager:
             self.client_last_seen[addr] = time.time()
             
             # 获取玩家名称
-            player_name = '玩家'
-            if data and isinstance(data, dict) and 'player_name' in data:
-                player_name = data['player_name']
+            player_name = generate_default_player_name()
+            if data and isinstance(data, dict):
+                if 'player_name' in data:
+                    player_name = data['player_name']
+                elif 'data' in data and isinstance(data['data'], dict) and 'player_name' in data['data']:
+                    player_name = data['data']['player_name']
             elif data and isinstance(data, str):
                 player_name = data
             
@@ -1005,8 +1013,7 @@ class NetworkManager:
                     ]}
                 }, addr)
             
-            # 广播新玩家加入消息
-            player_name = self.players.get(new_player_id, {}).get('name', f'玩家{new_player_id}')
+            # 广播新玩家加入消息（使用已经获取的玩家名称）
             join_msg = ChatMessage(
                 0, 
                 "[系统]",
@@ -1062,18 +1069,17 @@ class NetworkManager:
                         current_death_time = self.players[pid].get('death_time', 0)
                         current_respawn_time = self.players[pid].get('respawn_time', 0)
                         current_is_respawning = self.players[pid].get('is_respawning', False)
-                        current_name = self.players[pid].get('name', f'玩家{pid}')
                         
                         # 更新客户端发来的数据
                         self.players[pid].update(pdata)
                         
-                        # 恢复服务端权威数据
+                        # 恢复服务端权威数据（但允许名称更新）
                         self.players[pid]['health'] = current_health
                         self.players[pid]['is_dead'] = current_is_dead
                         self.players[pid]['death_time'] = current_death_time
                         self.players[pid]['respawn_time'] = current_respawn_time
                         self.players[pid]['is_respawning'] = current_is_respawning
-                        self.players[pid]['name'] = current_name
+                        # 名称允许客户端更新，不恢复旧值
                     else:
                         self.players[pid] = pdata
                         self.players[pid]['name'] = pdata.get('name', f'玩家{pid}')
@@ -1293,6 +1299,24 @@ class NetworkManager:
                     'weapon_type': 'gun',  # 重置为枪械
                     'is_aiming': False  # 重置瞄准状态
                 })
+                
+                # 如果是本地玩家，还需要更新游戏实例中的玩家对象
+                game_instance = getattr(self, 'game_instance', None)
+                if (game_instance and hasattr(game_instance, 'player') and 
+                    game_instance.player and game_instance.player.id == player_id):
+                    
+                    # 更新本地玩家对象
+                    game_instance.player.pos.x = respawn_data['pos'][0]
+                    game_instance.player.pos.y = respawn_data['pos'][1]
+                    game_instance.player.health = 100
+                    game_instance.player.is_dead = False
+                    game_instance.player.is_respawning = False
+                    game_instance.player.death_time = 0
+                    game_instance.player.respawn_time = 0
+                    game_instance.player.ammo = MAGAZINE_SIZE
+                    game_instance.player.is_reloading = False
+                    
+                    print(f"[复活] 本地玩家{player_id}已复活，位置更新为{respawn_data['pos']}")
     
     def _handle_chat_message(self, chat_data):
         """处理聊天消息"""
@@ -1842,6 +1866,9 @@ class NetworkManager:
         if self.is_server:
             current_time = time.time()
             if current_time - self.last_broadcast > 0.05:  # 20Hz
+                # 检查玩家复活（服务端统一处理）
+                self.check_player_respawns(current_time)
+                
                 # 广播玩家状态
                 self.send_data({
                     'type': 'player_update', 
@@ -1862,6 +1889,54 @@ class NetworkManager:
                 })
                 
                 self.last_broadcast = current_time
+
+    def check_player_respawns(self, current_time):
+        """检查并处理玩家复活（仅服务端）"""
+        if not self.is_server:
+            return
+            
+        with self.lock:
+            for player_id, player_data in self.players.items():
+                # 检查死亡玩家是否到了复活时间
+                if (player_data.get('is_dead', False) and 
+                    not player_data.get('is_respawning', False) and
+                    player_data.get('respawn_time', 0) > 0 and
+                    current_time >= player_data.get('respawn_time', 0)):
+                    
+                    # 开始复活流程
+                    player_data['is_respawning'] = True
+                    
+                    # 获取随机复活位置
+                    spawn_pos = self.get_random_spawn_pos()
+                    
+                    # 重置玩家状态
+                    player_data['pos'] = spawn_pos
+                    player_data['health'] = 100
+                    player_data['is_dead'] = False
+                    player_data['is_respawning'] = False
+                    player_data['death_time'] = 0
+                    player_data['respawn_time'] = 0
+                    
+                    # 重置武器状态
+                    player_data['ammo'] = MAGAZINE_SIZE
+                    player_data['is_reloading'] = False
+                    
+                    print(f"[服务端] 玩家{player_id}已复活，位置: {spawn_pos}")
+                    
+                    # 广播复活事件
+                    respawn_msg = {
+                        'type': 'respawn',
+                        'data': {
+                            'player_id': player_id,
+                            'pos': spawn_pos,
+                            'health': 100
+                        }
+                    }
+                    self.send_data(respawn_msg)
+                    
+                    # 如果是服务端本地玩家，直接处理复活事件
+                    if player_id == self.player_id:
+                        self._handle_respawn(respawn_msg['data'])
 
     def get_bullets(self):
         """获取当前活动的子弹"""
@@ -2216,10 +2291,8 @@ class Player:
         is_local_player = network_manager and network_manager.player_id == self.id
         
         if is_local_player:
-            # 检查是否需要复活
-            if self.is_dead and not self.is_respawning:
-                if current_time >= self.respawn_time:
-                    self.respawn(network_manager)
+            # 复活由服务端统一处理，客户端不再自行检查复活时间
+            if self.is_dead:
                 return
             
             # 鼠标控制旋转
@@ -2467,7 +2540,8 @@ class Player:
                 if self.is_dead:
                     print(f"[同步] 玩家{self.id}死亡状态同步")
                     self.death_time = server_data.get('death_time', current_time)
-                    self.respawn_time = server_data.get('respawn_time', current_time + RESPAWN_TIME)
+                    # 复活时间完全依赖服务端，不使用本地默认值
+                    self.respawn_time = server_data.get('respawn_time', 0)
 
         # 发送玩家更新（只有本地玩家）
         if is_local_player:
@@ -2680,6 +2754,10 @@ class Player:
         # 同步声音音量
         if 'sound_volume' in network_data:
             self.sound_volume = network_data['sound_volume']
+            
+        # 同步玩家名称
+        if 'name' in network_data:
+            self.name = network_data['name']
     
     def take_damage(self, damage):
         """玩家受到伤害"""
@@ -2692,7 +2770,7 @@ class Player:
         if self.health <= 0:
             self.health = 0
             self.is_dead = True
-            self.respawn_time = time.time() + RESPAWN_TIME
+            # 复活时间由服务端统一设置，这里不再设置
             return True
         
         return False
@@ -2968,13 +3046,13 @@ class Game:
                             # 显示玩家命名输入框
                             show_player_name_input = True
                             player_name_active = True
-                            player_name_input = "玩家"
+                            player_name_input = generate_default_player_name()
                             server_name_active = False
                         elif selected_option == 1 and input_text.strip() and not show_player_name_input:
                             # 显示玩家命名输入框
                             show_player_name_input = True
                             player_name_active = True
-                            player_name_input = "玩家"
+                            player_name_input = generate_default_player_name()
                         elif selected_option == 1 and input_text.strip() and show_player_name_input and player_name_input.strip():
                             # 手动连接
                             self.connection_info = {
@@ -3020,7 +3098,7 @@ class Game:
                         # 显示玩家命名输入框
                         show_player_name_input = True
                         player_name_active = True
-                        player_name_input = "玩家"
+                        player_name_input = generate_default_player_name()
                         server_name_active = False
                         self.creating_server = True
                     elif button_refresh.collidepoint(event.pos):
@@ -3049,7 +3127,7 @@ class Game:
                         show_player_name_input = True
                         show_server_name_input = False  # 隐藏服务器命名输入框
                         player_name_active = True
-                        player_name_input = "玩家"
+                        player_name_input = generate_default_player_name()
                         server_name_active = False
                         self.creating_server = True  # 设置创建服务器标志位
                     elif show_player_name_input and player_name_button.collidepoint(event.pos) and player_name_input.strip():
@@ -3086,7 +3164,7 @@ class Game:
                         # 显示玩家命名输入框
                         show_player_name_input = True
                         player_name_active = True
-                        player_name_input = "玩家"
+                        player_name_input = generate_default_player_name()
                     # 删除重复的玩家名称按钮点击处理逻辑
                     # 该逻辑已在上方统一处理
                     else:
@@ -3098,7 +3176,7 @@ class Game:
                                 # 显示玩家命名输入框
                                 show_player_name_input = True
                                 player_name_active = True
-                                player_name_input = "玩家"
+                                player_name_input = generate_default_player_name()
                                 self.selected_server_ip = server['ip']
                             elif server_rect.collidepoint(event.pos) and show_player_name_input and player_name_input.strip():
                                 # 连接到选中的服务器
@@ -3282,7 +3360,7 @@ class Game:
         
         # 玩家名称修改状态
         show_player_name_edit = False
-        player_name_input = self.connection_info.get('player_name', '玩家')
+        player_name_input = self.connection_info.get('player_name', generate_default_player_name())
         player_name_active = False
         
         while self.state == "CONNECTING":
@@ -3306,7 +3384,7 @@ class Game:
                         # 按N键修改玩家名称
                         show_player_name_edit = True
                         player_name_active = True
-                        player_name_input = self.connection_info.get('player_name', '玩家')
+                        player_name_input = self.connection_info.get('player_name', generate_default_player_name())
                     elif event.key == K_RETURN and show_player_name_edit and player_name_input.strip():
                         # 确认修改玩家名称
                         self.connection_info['player_name'] = player_name_input.strip()
@@ -3331,7 +3409,7 @@ class Game:
                         if button_rect.collidepoint(event.pos):
                             show_player_name_edit = True
                             player_name_active = True
-                            player_name_input = self.connection_info.get('player_name', '玩家')
+                            player_name_input = self.connection_info.get('player_name', generate_default_player_name())
                     elif show_player_name_edit:
                         # 确认按钮
                         confirm_rect = pygame.Rect(SCREEN_WIDTH//2 - 50, SCREEN_HEIGHT//2 + 150, 100, 40)
@@ -3378,7 +3456,7 @@ class Game:
                 info = font.render(f"服务器: {self.connection_info['server_ip']}", True, LIGHT_BLUE)
                 
                 # 显示当前玩家名称
-                player_info = font.render(f"玩家名称: {self.connection_info.get('player_name', '玩家')}", True, YELLOW)
+                player_info = font.render(f"玩家名称: {self.connection_info.get('player_name', generate_default_player_name())}", True, YELLOW)
                 self.screen.blit(player_info, (SCREEN_WIDTH//2 - player_info.get_width()//2, SCREEN_HEIGHT//2 + 50))
                 
                 # 修改名称按钮
@@ -3477,9 +3555,10 @@ class Game:
                 # 初始化网络管理器
                 if self.connection_info['is_server']:
                     server_name = self.connection_info.get('server_name', '默认服务器')
+                    print(f"[调试] 创建服务器，服务器名称: {server_name}")
                     self.network_manager = NetworkManager(is_server=True, game_instance=self, server_name=server_name)
                 else:
-                    player_name = self.connection_info.get('player_name', '玩家')
+                    player_name = self.connection_info.get('player_name', generate_default_player_name())
                     self.network_manager = NetworkManager(
                         is_server=False,
                         server_address=self.connection_info['server_ip'],
