@@ -2252,11 +2252,11 @@ class Player:
         if time_since_movement < 0.5 and is_moving:  # 移动后0.5秒内有散布
             # 根据速度计算散布，速度越快散布越大
             speed_ratio = min(self.velocity.length() / PLAYER_SPEED, 1.0)
-            base_spread = speed_ratio * 15.0  # 基础散布最多15度
+            base_spread = speed_ratio * 20.0  # 基础散布最多20度
             
             # 静步时减少散布
             if self.is_walking:
-                spread += base_spread * 0.5  # 静步时散布减半
+                spread += base_spread * 0.25  # 静步时散布减至1/4
             else:
                 spread += base_spread
         
@@ -2540,8 +2540,11 @@ class Player:
                 if self.is_dead:
                     print(f"[同步] 玩家{self.id}死亡状态同步")
                     self.death_time = server_data.get('death_time', current_time)
-                    # 复活时间完全依赖服务端，不使用本地默认值
-                    self.respawn_time = server_data.get('respawn_time', 0)
+                    # 复活时间完全依赖服务端，但要确保数据有效
+                    server_respawn_time = server_data.get('respawn_time', 0)
+                    # 只有当服务端提供了有效的复活时间才使用，否则保持当前值
+                    if server_respawn_time > 0:
+                        self.respawn_time = server_respawn_time
 
         # 发送玩家更新（只有本地玩家）
         if is_local_player:
@@ -2621,13 +2624,17 @@ class Player:
             
             # 显示复活倒计时
             current_time = time.time()
-            remaining_time = max(0, self.respawn_time - current_time)
-            if remaining_time > 0:
-                respawn_text = f"{remaining_time:.1f}s"
-                text_surface = font.render(respawn_text, True, WHITE)
-                surface.blit(text_surface, 
-                           (int(player_screen_pos.x - text_surface.get_width() // 2),
-                            int(player_screen_pos.y - PLAYER_RADIUS - 40)))
+            # 确保复活时间有效且大于当前时间才显示倒计时
+            if self.respawn_time > 0 and self.respawn_time > current_time:
+                remaining_time = self.respawn_time - current_time
+                # 确保倒计时在合理范围内（0到RESPAWN_TIME秒）
+                if 0 < remaining_time <= RESPAWN_TIME:
+                    respawn_text = f"{remaining_time:.1f}s"
+                    text_surface = font.render(respawn_text, True, WHITE)
+                    surface.blit(text_surface, 
+                               (int(player_screen_pos.x - text_surface.get_width() // 2),
+                                int(player_screen_pos.y - PLAYER_RADIUS - 40)))
+
             
             return
         
@@ -4090,8 +4097,16 @@ class Game:
         if self.player.is_dead:
             # 显示死亡状态
             current_time = time.time()
-            remaining_time = max(0, self.player.respawn_time - current_time)
-            death_text = f"已死亡 - 复活倒计时: {remaining_time:.1f}s"
+            # 修复：确保复活时间有效且大于当前时间才显示倒计时
+            if self.player.respawn_time > 0 and self.player.respawn_time > current_time:
+                remaining_time = self.player.respawn_time - current_time
+                # 限制显示的最大复活时间为10秒，防止显示异常大的数值
+                if remaining_time <= 10.0:
+                    death_text = f"已死亡 - 复活倒计时: {remaining_time:.1f}s"
+                else:
+                    death_text = "已死亡 - 等待复活..."
+            else:
+                death_text = "已死亡 - 等待复活..."
             death_surface = font.render(death_text, True, RED)
             self.screen.blit(death_surface, (SCREEN_WIDTH//2 - death_surface.get_width()//2, SCREEN_HEIGHT//2))
         
