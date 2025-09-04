@@ -23,23 +23,125 @@ def generate_default_player_name():
 pygame.init()
 pygame.font.init()
 
-# 尝试加载中文字体
-try:
-    font = pygame.font.SysFont('Microsoft YaHei', 20)
-    small_font = pygame.font.SysFont('Microsoft YaHei', 16)
-    large_font = pygame.font.SysFont('Microsoft YaHei', 28)
-    title_font = pygame.font.SysFont('Microsoft YaHei', 40)
-except:
-    try:
-        font = pygame.font.SysFont('SimHei', 20)
-        small_font = pygame.font.SysFont('SimHei', 16)
-        large_font = pygame.font.SysFont('SimHei', 28)
-        title_font = pygame.font.SysFont('SimHei', 40)
-    except:
-        font = pygame.font.Font(None, 20)
-        small_font = pygame.font.Font(None, 16)
-        large_font = pygame.font.Font(None, 28)
-        title_font = pygame.font.Font(None, 40)
+# 尝试加载中文字体 - 支持多平台
+def load_fonts():
+    """加载字体，支持Windows、Ubuntu和其他Linux发行版"""
+    import platform
+    import os
+    
+    # 检测操作系统
+    system = platform.system().lower()
+    
+    # 根据操作系统选择字体候选列表
+    if system == 'windows':
+        font_candidates = [
+            'Microsoft YaHei',
+            'SimHei',
+            'SimSun',
+            'Arial Unicode MS',
+            'DejaVu Sans',
+            'Arial'
+        ]
+    elif system == 'linux':
+        # Linux/Ubuntu字体优先级
+        font_candidates = [
+            'Noto Sans CJK SC',      # Ubuntu默认中文字体
+            'Noto Sans CJK TC',      # 繁体中文
+            'WenQuanYi Micro Hei',   # 文泉驿微米黑
+            'WenQuanYi Zen Hei',     # 文泉驿正黑
+            'Droid Sans Fallback',   # Android字体
+            'AR PL UMing CN',        # 文鼎明体
+            'AR PL UKai CN',         # 文鼎楷体
+            'DejaVu Sans',           # 通用字体
+            'Liberation Sans',       # LibreOffice字体
+            'FreeSans'               # GNU字体
+        ]
+    elif system == 'darwin':  # macOS
+        font_candidates = [
+            'PingFang SC',
+            'Hiragino Sans GB',
+            'STHeiti',
+            'Arial Unicode MS',
+            'Helvetica',
+            'Arial'
+        ]
+    else:
+        # 其他系统使用通用字体
+        font_candidates = [
+            'DejaVu Sans',
+            'Liberation Sans',
+            'FreeSans',
+            'Arial'
+        ]
+    
+    print(f"检测到操作系统: {system}")
+    print(f"尝试加载 {len(font_candidates)} 个字体候选...")
+    
+    # 尝试加载字体并验证中文渲染
+    for i, font_name in enumerate(font_candidates, 1):
+        try:
+            # 尝试创建字体对象
+            test_font = pygame.font.SysFont(font_name, 20)
+            
+            if test_font:
+                # 验证字体是否能正确渲染中文
+                try:
+                    # 测试中文渲染
+                    test_surface = test_font.render("中文测试", True, (255, 255, 255))
+                    
+                    # 检查渲染结果是否有效（宽度大于0）
+                    if test_surface.get_width() > 0:
+                        print(f"✅ [{i:2d}] {font_name} - 加载成功，中文渲染正常")
+                        
+                        return {
+                            'font': pygame.font.SysFont(font_name, 20),
+                            'small_font': pygame.font.SysFont(font_name, 16),
+                            'large_font': pygame.font.SysFont(font_name, 28),
+                            'title_font': pygame.font.SysFont(font_name, 40),
+                            'font_name': font_name
+                        }
+                    else:
+                        print(f"❌ [{i:2d}] {font_name} - 中文渲染失败")
+                        
+                except Exception as render_error:
+                    print(f"❌ [{i:2d}] {font_name} - 中文渲染异常: {render_error}")
+                    continue
+            else:
+                print(f"❌ [{i:2d}] {font_name} - 字体对象创建失败")
+                
+        except Exception as font_error:
+            print(f"❌ [{i:2d}] {font_name} - 字体加载异常: {font_error}")
+            continue
+    
+    # 如果所有字体都失败，使用默认字体
+    print("⚠️  警告: 无法加载任何系统字体，使用pygame默认字体")
+    print("建议安装中文字体包以获得更好的显示效果")
+    
+    if system == 'linux':
+        print("Ubuntu/Linux用户可以运行: sudo apt install fonts-noto-cjk fonts-wqy-microhei")
+    
+    return {
+        'font': pygame.font.Font(None, 20),
+        'small_font': pygame.font.Font(None, 16),
+        'large_font': pygame.font.Font(None, 28),
+        'title_font': pygame.font.Font(None, 40),
+        'font_name': 'Default'
+    }
+
+# 加载字体
+fonts = load_fonts()
+font = fonts['font']
+small_font = fonts['small_font']
+large_font = fonts['large_font']
+title_font = fonts['title_font']
+
+# 显示当前使用的字体信息
+current_font_name = fonts.get('font_name', 'Unknown')
+print(f"当前使用字体: {current_font_name}")
+
+# 如果使用默认字体，给出提示
+if current_font_name == 'Default':
+    print("提示: 游戏将使用默认字体，中文显示可能不完整")
 
 # 射线类
 class Ray:
