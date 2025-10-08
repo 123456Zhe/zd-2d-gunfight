@@ -650,6 +650,8 @@ pip install pyinstaller
 - `network.py` - 网络管理，处理客户端-服务器通信
 - `constants.py` - 游戏常量配置
 
+~~游戏功能的分装有问题~~
+
 #### 打包脚本
 - `build_exe.py` - Windows标准打包
 - `build_minimal.py` - Windows最小化打包
@@ -662,13 +664,6 @@ pip install pyinstaller
 - `test_ubuntu_fonts.py` - 字体测试工具
 - `verify_font_fix.py` - 字体修复验证
 - `install_packaging_tools.py` - 打包工具安装
-
-#### 文档文件
-- `README.md` - 主文档
-- `README_Ubuntu.md` - Ubuntu支持文档
-- `Ubuntu使用说明.md` - Ubuntu快速指南
-- `字体修复说明.md` - 字体兼容性说明
-- `项目完整文档.md` - 本文档
 
 ### 技术架构
 
@@ -769,45 +764,8 @@ BUFFER_SIZE = 4096
 
 - **项目地址**: https://github.com/123456Zhe/zd-2d-gunfight
 - **问题反馈**: 通过GitHub Issues提交
-- **开发者**: AI Generated Project
 
 ---
 
-## 更新日志
-
-### v2.0.0 (2024-01-XX)
-- ✨ 新增聊天消息滚动功能
-- ✨ 消息永久保留，不再自动消失
-- ✨ 支持多行消息显示
-- 🐛 修复Ubuntu字体兼容性问题
-- 🐛 修复.help命令换行显示问题
-- ⚡ 优化网络同步性能
-- 📝 完善项目文档
-
-### v1.5.0 (2024-01-XX)
-- ✨ 新增双武器系统
-- ✨ 新增瞄准机制
-- ✨ 新增管理员命令系统
-- ⚡ 优化游戏参数（速度、射程等）
-- 🐛 修复多人游戏同步问题
-
-### v1.0.0 (2024-01-XX)
-- 🎉 初始版本发布
-- ✨ 基础多人射击游戏功能
-- ✨ 局域网联机支持
-- ✨ 房间和门系统
-
----
-
-## 致谢
-
-感谢所有为本项目做出贡献的开发者和测试者！
-
-特别感谢：
-- **Pygame社区** - 提供优秀的游戏开发框架
-- **Python社区** - 提供强大的编程语言和工具
-- **开源社区** - 提供各种优秀的开源工具和库
-
----
 
 **Enjoy the game! 🎮**
