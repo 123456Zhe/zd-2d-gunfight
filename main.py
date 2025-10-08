@@ -2052,9 +2052,8 @@ class NetworkManager:
 
     def get_recent_chat_messages(self):
         """获取最近的聊天消息"""
-        current_time = time.time()
-        # 返回未过期的消息
-        return [msg for msg in self.chat_messages if not msg.is_expired(current_time)]
+        # 返回所有消息，不再检查过期
+        return self.chat_messages
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -3036,6 +3035,8 @@ class Game:
         self.chat_input = ""
         self.chat_cursor_blink = 0
         self.last_chat_cursor_blink = 0
+        self.chat_scroll_offset = 0  # 聊天消息滚动偏移量（向上滚动的行数）
+        self.chat_max_display_height = 290  # 聊天消息最大显示高度（从y=250到y=540）
         
         # 红色滤镜效果
         self.hit_effect_time = 0
@@ -3731,6 +3732,12 @@ class Game:
                 elif event.key == K_3 and not self.chat_active:  # 按3切换武器
                     if self.player and not self.player.is_dead:
                         self.player.switch_weapon()
+                elif event.key == K_UP:
+                    # 向上滚动（查看更早的消息）- 任何时候都可以使用
+                    self.chat_scroll_offset += 1
+                elif event.key == K_DOWN:
+                    # 向下滚动（查看更新的消息）- 任何时候都可以使用
+                    self.chat_scroll_offset = max(0, self.chat_scroll_offset - 1)
                 elif self.chat_active:
                     # 聊天模式下的按键处理
                     if event.key == K_RETURN:
@@ -3738,6 +3745,7 @@ class Game:
                             self.network_manager.send_chat_message(self.chat_input.strip())
                         self.chat_active = False
                         self.chat_input = ""
+                        self.chat_scroll_offset = 0  # 重置滚动偏移
                     elif event.key == K_BACKSPACE:
                         self.chat_input = self.chat_input[:-1]
                     else:
@@ -4337,53 +4345,113 @@ class Game:
         # 聊天消息历史
         recent_messages = self.network_manager.get_recent_chat_messages()
         if recent_messages:
-            # 计算聊天框的位置
-            chat_y_start = SCREEN_HEIGHT - 60 - (self.chat_active * 45)  # 如果输入框激活，留出更多空间
-            current_y = chat_y_start
+            # 定义显示区域
+            chat_y_start = SCREEN_HEIGHT - 60 - (self.chat_active * 45)  # 底部位置
+            chat_y_min = 250  # 顶部限制
+            display_height = chat_y_start - chat_y_min  # 可显示区域高度
             
-            # 显示最近的消息（从下往上）
-            for msg in reversed(recent_messages[-5:]):  # 最多显示5条消息
+            # 第一步：计算所有消息的行信息
+            message_lines = []  # 存储每条消息的行信息 [(msg, lines, total_height), ...]
+            
+            for msg in recent_messages:
                 # 创建消息文本
-                # 系统消息直接显示内容，不显示前缀
                 if msg.player_id == 0:
                     message_text = msg.message
                 else:
-                    # 普通消息显示玩家名称
                     message_text = f"{msg.player_name}: {msg.message}"
                 
-                # 检查是否包含换行符
+                # 分割成行
                 if '\n' in message_text:
-                    # 多行文本处理
                     lines = message_text.split('\n')
-                    # 计算总高度
-                    total_lines = len(lines)
-                    total_height = total_lines * (small_font.get_height() + 5)
-                    
-                    # 调整起始位置
-                    message_y = current_y - total_height
-                    if message_y < 50:  # 降低限制，只要不超出屏幕顶部即可
-                        break
-                    
-                    # 渲染多行文本
-                    self.render_multiline_text(message_text, small_font, msg.color, 15, message_y)
-                    current_y = message_y - 10  # 为下一条消息留出空间
                 else:
-                    # 单行文本处理
-                    message_y = current_y - 25
-                    if message_y < 50:  # 降低限制，只要不超出屏幕顶部即可
-                        break
+                    lines = [message_text]
+                
+                # 计算高度
+                line_height = small_font.get_height() + 5
+                total_height = len(lines) * line_height
+                
+                message_lines.append((msg, lines, total_height))
+            
+            # 第二步：应用滚动偏移，计算要显示的消息范围
+            # 从最新的消息开始，向上累积高度
+            accumulated_height = 0
+            scroll_pixels = self.chat_scroll_offset * (small_font.get_height() + 5)  # 将行偏移转换为像素偏移
+            
+            # 限制滚动偏移量
+            total_content_height = sum(h for _, _, h in message_lines) + len(message_lines) * 10  # 加上消息间距
+            max_scroll = max(0, total_content_height - display_height)
+            scroll_pixels = min(scroll_pixels, max_scroll)
+            
+            # 更新滚动偏移量（转换回行数）
+            self.chat_scroll_offset = int(scroll_pixels / (small_font.get_height() + 5))
+            
+            # 第三步：渲染消息（从下往上，应用滚动偏移）
+            current_y = chat_y_start + scroll_pixels  # 加上滚动偏移
+            
+            for msg, lines, total_height in reversed(message_lines):
+                # 计算消息的起始Y坐标
+                message_y = current_y - total_height
+                message_end_y = current_y
+                
+                # 检查消息是否在可见区域内
+                if message_end_y < chat_y_min:
+                    # 消息完全在可见区域上方，停止渲染
+                    break
+                
+                if message_y < chat_y_min and message_end_y > chat_y_min:
+                    # 消息部分可见，需要裁剪
+                    # 计算可见的行
+                    line_height = small_font.get_height() + 5
+                    visible_start_line = max(0, int((chat_y_min - message_y) / line_height))
                     
-                    message_surface = small_font.render(message_text, True, msg.color)
-                    
-                    # 半透明背景
-                    bg_rect = pygame.Rect(10, message_y - 2, message_surface.get_width() + 10, message_surface.get_height() + 4)
-                    bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
-                    bg_surface.fill((0, 0, 0, 128))
-                    self.screen.blit(bg_surface, bg_rect)
-                    
-                    # 消息文本
-                    self.screen.blit(message_surface, (15, message_y))
-                    current_y = message_y - 10  # 为下一条消息留出空间
+                    # 只渲染可见的行
+                    for i in range(visible_start_line, len(lines)):
+                        line = lines[i]
+                        line_y = message_y + i * line_height
+                        
+                        if line_y >= chat_y_min and line_y < chat_y_start:
+                            line_surface = small_font.render(line, True, msg.color)
+                            
+                            # 半透明背景
+                            bg_rect = pygame.Rect(10, line_y - 2, line_surface.get_width() + 10, line_surface.get_height() + 4)
+                            bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+                            bg_surface.fill((0, 0, 0, 128))
+                            self.screen.blit(bg_surface, bg_rect)
+                            
+                            # 文本
+                            self.screen.blit(line_surface, (15, line_y))
+                
+                elif message_y >= chat_y_min:
+                    # 消息完全可见
+                    line_height = small_font.get_height() + 5
+                    for i, line in enumerate(lines):
+                        line_y = message_y + i * line_height
+                        line_surface = small_font.render(line, True, msg.color)
+                        
+                        # 半透明背景
+                        bg_rect = pygame.Rect(10, line_y - 2, line_surface.get_width() + 10, line_surface.get_height() + 4)
+                        bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+                        bg_surface.fill((0, 0, 0, 128))
+                        self.screen.blit(bg_surface, bg_rect)
+                        
+                        # 文本
+                        self.screen.blit(line_surface, (15, line_y))
+                
+                # 移动到下一条消息
+                current_y = message_y - 10  # 消息间距
+            
+            # 显示滚动提示（任何时候都显示，不仅限于聊天激活时）
+            if len(message_lines) > 0:
+                # 检查是否可以滚动
+                if scroll_pixels > 0:
+                    hint_text = "↓ 更多消息 (方向键)"
+                    hint_surface = small_font.render(hint_text, True, YELLOW)
+                    self.screen.blit(hint_surface, (SCREEN_WIDTH - hint_surface.get_width() - 20, chat_y_start + 10))
+                
+                if scroll_pixels < max_scroll:
+                    hint_text = "↑ 更早消息 (方向键)"
+                    hint_surface = small_font.render(hint_text, True, YELLOW)
+                    self.screen.blit(hint_surface, (SCREEN_WIDTH - hint_surface.get_width() - 20, chat_y_min - 20))
 
     def render_minimap(self):
         """绘制小地图（不显示其他玩家）"""
