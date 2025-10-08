@@ -1423,36 +1423,35 @@ class NetworkManager:
     def _handle_chat_message(self, chat_data):
         """处理聊天消息"""
         if isinstance(chat_data, dict) and all(key in chat_data for key in ['player_id', 'message']):
-                message = chat_data['message']
-                player_id = chat_data['player_id']
-                timestamp = chat_data.get('timestamp', time.time())
-                
-                # 检查是否是服务端命令
-                if self.is_server and message.startswith('.'):
-                    self._handle_server_command(message, player_id)
-                    return
-                
-                # 获取玩家名称 - 优先使用消息中包含的名称
-                player_name = chat_data.get('player_name', self.players.get(player_id, {}).get('name', f'玩家{player_id}'))
-                msg = ChatMessage(
-                    player_id,
-                    player_name,
-                    message,
-                    timestamp
-                )
-                
-                # 添加到聊天历史
-                self.chat_messages.append(msg)
-                
-                # 保持聊天历史不超过最大数量
-                if len(self.chat_messages) > MAX_CHAT_MESSAGES * 2:
-                    self.chat_messages = self.chat_messages[-MAX_CHAT_MESSAGES:]
-                
-                print(f"[聊天] 玩家{msg.player_id}({msg.player_name}): {msg.message}")
-                
-                # 如果是服务端，转发给所有客户端
-                if self.is_server:
-                    self.broadcast_chat_message(msg)
+            message = chat_data['message']
+            player_id = chat_data['player_id']
+            timestamp = chat_data.get('timestamp', time.time())
+            
+            # 检查是否是服务端命令
+            if self.is_server and message.startswith('.') and player_id != 0:
+                # 只有非系统消息的命令才需要处理
+                self._handle_server_command(message, player_id)
+                return
+            
+            # 获取玩家名称 - 优先使用消息中包含的名称
+            player_name = chat_data.get('player_name', self.players.get(player_id, {}).get('name', f'玩家{player_id}'))
+            msg = ChatMessage(
+                player_id,
+                player_name,
+                message,
+                timestamp
+            )
+            
+            # 添加到聊天历史
+            self.chat_messages.append(msg)
+            
+            # 保持聊天历史不超过最大数量
+            if len(self.chat_messages) > MAX_CHAT_MESSAGES * 2:
+                self.chat_messages = self.chat_messages[-MAX_CHAT_MESSAGES:]
+            
+            # 如果是服务端且不是系统消息，转发给所有客户端
+            if self.is_server and player_id != 0:
+                self.broadcast_chat_message(msg)
                 
     def _handle_server_command(self, command, player_id):
         """处理服务端命令"""
@@ -4281,6 +4280,33 @@ class Game:
             debug_y += 25
             self.screen.blit(font.render(f"脚步声: {len(self.nearby_sound_players)}个玩家", True, YELLOW), (20, debug_y))
 
+    def render_multiline_text(self, text, font, color, x, y, line_spacing=5):
+        """渲染多行文本，返回渲染的行数和总高度"""
+        lines = text.split('\n')
+        total_height = 0
+        max_width = 0
+        rendered_line_count = 0
+        
+        for i, line in enumerate(lines):
+            # 渲染所有行，包括空行（空行也占位置）
+            line_surface = font.render(line, True, color)
+            line_y = y + rendered_line_count * (font.get_height() + line_spacing)
+            
+            # 半透明背景
+            bg_rect = pygame.Rect(x - 5, line_y - 2, line_surface.get_width() + 10, line_surface.get_height() + 4)
+            bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+            bg_surface.fill((0, 0, 0, 128))
+            self.screen.blit(bg_surface, bg_rect)
+            
+            # 文本
+            self.screen.blit(line_surface, (x, line_y))
+            
+            max_width = max(max_width, line_surface.get_width())
+            total_height = line_y + font.get_height() - y
+            rendered_line_count += 1
+        
+        return len(lines), total_height, max_width
+
     def render_chat(self):
         """绘制聊天系统"""
         # 聊天输入框
@@ -4313,13 +4339,10 @@ class Game:
         if recent_messages:
             # 计算聊天框的位置
             chat_y_start = SCREEN_HEIGHT - 60 - (self.chat_active * 45)  # 如果输入框激活，留出更多空间
+            current_y = chat_y_start
             
             # 显示最近的消息（从下往上）
-            for i, msg in enumerate(reversed(recent_messages[-5:])):  # 最多显示5条消息
-                message_y = chat_y_start - i * 25
-                if message_y < 250:  # 不要覆盖UI元素
-                    break
-                
+            for msg in reversed(recent_messages[-5:]):  # 最多显示5条消息
                 # 创建消息文本
                 # 系统消息直接显示内容，不显示前缀
                 if msg.player_id == 0:
@@ -4327,16 +4350,40 @@ class Game:
                 else:
                     # 普通消息显示玩家名称
                     message_text = f"{msg.player_name}: {msg.message}"
-                message_surface = small_font.render(message_text, True, msg.color)
                 
-                # 半透明背景
-                bg_rect = pygame.Rect(10, message_y - 2, message_surface.get_width() + 10, message_surface.get_height() + 4)
-                bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
-                bg_surface.fill((0, 0, 0, 128))
-                self.screen.blit(bg_surface, bg_rect)
-                
-                # 消息文本
-                self.screen.blit(message_surface, (15, message_y))
+                # 检查是否包含换行符
+                if '\n' in message_text:
+                    # 多行文本处理
+                    lines = message_text.split('\n')
+                    # 计算总高度
+                    total_lines = len(lines)
+                    total_height = total_lines * (small_font.get_height() + 5)
+                    
+                    # 调整起始位置
+                    message_y = current_y - total_height
+                    if message_y < 50:  # 降低限制，只要不超出屏幕顶部即可
+                        break
+                    
+                    # 渲染多行文本
+                    self.render_multiline_text(message_text, small_font, msg.color, 15, message_y)
+                    current_y = message_y - 10  # 为下一条消息留出空间
+                else:
+                    # 单行文本处理
+                    message_y = current_y - 25
+                    if message_y < 50:  # 降低限制，只要不超出屏幕顶部即可
+                        break
+                    
+                    message_surface = small_font.render(message_text, True, msg.color)
+                    
+                    # 半透明背景
+                    bg_rect = pygame.Rect(10, message_y - 2, message_surface.get_width() + 10, message_surface.get_height() + 4)
+                    bg_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+                    bg_surface.fill((0, 0, 0, 128))
+                    self.screen.blit(bg_surface, bg_rect)
+                    
+                    # 消息文本
+                    self.screen.blit(message_surface, (15, message_y))
+                    current_y = message_y - 10  # 为下一条消息留出空间
 
     def render_minimap(self):
         """绘制小地图（不显示其他玩家）"""
