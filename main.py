@@ -4205,6 +4205,24 @@ class Game:
                     ai_player.is_reloading = True
                     ai_player.reload_start_time = time.time()
                 
+                # 处理门交互
+                if 'interact_door' in action and action['interact_door']:
+                    door = action['interact_door']
+                    if not door.is_open:
+                        # AI开门
+                        door.open()
+                        print(f"[AI门交互] AI玩家{ai_id}开启了门")
+                
+                # 处理静步状态
+                if 'is_walking' in action:
+                    ai_player.is_walking = action['is_walking']
+                
+                # 处理声音状态
+                if 'is_making_sound' in action:
+                    ai_player.is_making_sound = action['is_making_sound']
+                if 'sound_volume' in action:
+                    ai_player.sound_volume = action['sound_volume']
+                
                 # 更新网络数据
                 if ai_id in self.network_manager.players:
                     self.network_manager.players[ai_id]['pos'] = [ai_player.pos.x, ai_player.pos.y]
@@ -4213,6 +4231,9 @@ class Game:
                     self.network_manager.players[ai_id]['ammo'] = ai_player.ammo
                     self.network_manager.players[ai_id]['is_reloading'] = ai_player.is_reloading
                     self.network_manager.players[ai_id]['shooting'] = action['shoot']
+                    self.network_manager.players[ai_id]['is_walking'] = getattr(ai_player, 'is_walking', False)
+                    self.network_manager.players[ai_id]['is_making_sound'] = getattr(ai_player, 'is_making_sound', False)
+                    self.network_manager.players[ai_id]['sound_volume'] = getattr(ai_player, 'sound_volume', 0.0)
     
     def sync_bullets(self):
         """同步子弹 - 完全基于服务器数据"""
@@ -4879,15 +4900,23 @@ class Game:
                 
             distance = self.player.pos.distance_to(player.pos)
             
+            # 调试输出：显示玩家状态
+            if distance < 300:  # 只对附近的玩家输出调试信息
+                print(f"[声音检测] 玩家{player_id}: 距离{distance:.1f}, 射击={player.shooting}, 静步={getattr(player, 'is_walking', False)}, 发声={getattr(player, 'is_making_sound', False)}, 音量={getattr(player, 'sound_volume', 0.0)}")
+            
             # 根据玩家状态设置不同检测范围
             if player.shooting:
                 detection_range = 600  # 开枪声音范围
-            elif player.is_walking:
+                sound_type = "枪声"
+            elif getattr(player, 'is_walking', False):
                 detection_range = 0  # 静步时完全无法被探测
-            elif player.is_making_sound:
+                sound_type = "静步"
+            elif getattr(player, 'is_making_sound', False):
                 # 根据声音音量调整检测范围 (0.0-1.0 对应 0-400范围)
                 max_range = 400  # 最大检测范围
-                detection_range = max_range * player.sound_volume
+                sound_volume = getattr(player, 'sound_volume', 0.0)
+                detection_range = max_range * sound_volume
+                sound_type = f"脚步声(音量{sound_volume:.1f})"
             else:
                 continue  # 没有声音就不检测
                 
@@ -4901,7 +4930,7 @@ class Game:
                 sound_intensity = 1.0 - (distance / detection_range) if detection_range > 0 else 0
                 # 将声音强度与音量相乘
                 if not player.shooting:  # 射击声音不受音量影响
-                    sound_intensity *= player.sound_volume
+                    sound_intensity *= getattr(player, 'sound_volume', 0.0)
                 
                 nearby_players.append({
                     'player': player,
@@ -4914,6 +4943,8 @@ class Game:
                         player.pos.y - self.camera_offset.y
                     )
                 })
+                
+                print(f"[声音检测] 检测到玩家{player_id}的{sound_type}，距离{distance:.1f}，强度{sound_intensity:.2f}")
         
         self.nearby_sound_players = nearby_players
     
