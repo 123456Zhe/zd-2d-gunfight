@@ -14,6 +14,7 @@ from player import Player
 from map import Map, Door
 from network import NetworkManager
 from weapons import MeleeWeapon, Bullet
+from ai_player import AIPlayer
 
 def generate_default_player_name():
     """生成默认玩家名：玩家+3位随机数字"""
@@ -1285,7 +1286,35 @@ class NetworkManager:
                     if target_id in self.players and not self.players[target_id]['is_dead']:
                         # 获取玩家实例
                         game_instance = getattr(self, 'game_instance', None)
-                        if game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
+                        
+                        # 检查是否是AI玩家
+                        if game_instance and hasattr(game_instance, 'ai_players') and target_id in game_instance.ai_players:
+                            ai_player = game_instance.ai_players[target_id]
+                            old_health = ai_player.health
+                            is_dead = ai_player.take_damage(damage)
+                            
+                            # 同步AI玩家状态到网络
+                            self.players[target_id]['health'] = ai_player.health
+                            self.players[target_id]['is_dead'] = ai_player.is_dead
+                            if is_dead:
+                                self.players[target_id]['death_time'] = current_time
+                                self.players[target_id]['respawn_time'] = ai_player.respawn_time
+                            
+                            print(f"[{damage_type}伤害] AI玩家{target_id}被玩家{attacker_id}击中，{old_health}->{ai_player.health}")
+                            
+                            if is_dead:
+                                print(f"[死亡] AI玩家{target_id}死亡，将在3秒后复活")
+                                
+                                # 发送死亡信息到聊天框
+                                attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
+                                target_name = self.players.get(target_id, {}).get('name', f"AI_{target_id}")
+                                death_message = f"{attacker_name} 击杀了 {target_name}！"
+                                death_chat = ChatMessage(0, "[系统]", death_message, current_time)
+                                self.chat_messages.append(death_chat)
+                                if self.is_server:
+                                    self.broadcast_chat_message(death_chat)
+                        
+                        elif game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
                             player = game_instance.players[target_id]
                             # 调用玩家的take_damage方法，传入游戏规则中的复活时间
                             respawn_time = RESPAWN_TIME
@@ -1752,6 +1781,102 @@ class NetworkManager:
                 self._send_system_message(f"已临时提高移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
                 print(f"[服务端] 管理员{player_id}临时提高了移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
             
+        elif cmd == '.addai' and is_admin:
+            # 添加AI玩家
+            difficulty = args[0] if args else 'normal'
+            if difficulty not in ['easy', 'normal', 'hard']:
+                difficulty = 'normal'
+            
+            # 生成AI玩家ID
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance:
+                self._send_system_message("无法添加AI玩家：游戏实例不存在")
+                return
+            
+            ai_id = game_instance.next_ai_id
+            game_instance.next_ai_id += 1
+            
+            # 随机生成出生点
+            spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
+            spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+            
+            # 创建AI玩家
+            ai_player = AIPlayer(ai_id, spawn_x, spawn_y, difficulty)
+            ai_player.generate_patrol_points(game_instance.game_map)
+            game_instance.ai_players[ai_id] = ai_player
+            
+            # 添加到玩家列表
+            self.players[ai_id] = {
+                'pos': [spawn_x, spawn_y],
+                'angle': ai_player.angle,
+                'health': ai_player.health,
+                'ammo': ai_player.ammo,
+                'is_reloading': ai_player.is_reloading,
+                'shooting': False,
+                'is_dead': ai_player.is_dead,
+                'death_time': ai_player.death_time,
+                'respawn_time': ai_player.respawn_time,
+                'is_respawning': False,
+                'melee_attacking': False,
+                'melee_direction': 0,
+                'weapon_type': ai_player.weapon_type,
+                'is_aiming': ai_player.is_aiming,
+                'name': f'AI_{difficulty}_{ai_id}'
+            }
+            
+            self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, ID: {ai_id})")
+        
+        elif cmd == '.removeai' and is_admin:
+            # 移除AI玩家
+            if not args:
+                self._send_system_message("用法: .removeai <AI_ID|all>")
+                return
+            
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance:
+                self._send_system_message("无法移除AI玩家：游戏实例不存在")
+                return
+            
+            target = args[0].lower()
+            if target == 'all':
+                # 移除所有AI
+                count = len(game_instance.ai_players)
+                for ai_id in list(game_instance.ai_players.keys()):
+                    if ai_id in self.players:
+                        del self.players[ai_id]
+                game_instance.ai_players.clear()
+                self._send_system_message(f"已移除所有AI玩家 (共{count}个)")
+            else:
+                try:
+                    ai_id = int(target)
+                    if ai_id in game_instance.ai_players:
+                        del game_instance.ai_players[ai_id]
+                        if ai_id in self.players:
+                            del self.players[ai_id]
+                        self._send_system_message(f"已移除AI玩家 (ID: {ai_id})")
+                    else:
+                        self._send_system_message(f"AI玩家不存在 (ID: {ai_id})")
+                except ValueError:
+                    self._send_system_message(f"无效的AI ID: {target}")
+        
+        elif cmd == '.listai':
+            # 列出所有AI玩家
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance:
+                self._send_system_message("无法列出AI玩家：游戏实例不存在")
+                return
+            
+            if not game_instance.ai_players:
+                self._send_system_message("当前没有AI玩家")
+                return
+            
+            ai_list = []
+            for ai_id, ai_player in game_instance.ai_players.items():
+                status = "死亡" if ai_player.is_dead else f"生命值:{ai_player.health}"
+                ai_list.append(f"ID:{ai_id} - {ai_player.name} (难度:{ai_player.difficulty}, {status})")
+            
+            self._send_system_message(f"AI玩家列表({len(ai_list)}):\n" + "\n".join(ai_list))
+        
         elif cmd == '.help':
             # 显示可用命令
             if is_admin:
@@ -1766,6 +1891,9 @@ class NetworkManager:
                     ".weapon - 切换武器类型",
                     ".ammo - 补充弹药",
                     ".speed [倍率] [持续时间] - 临时提高移动速度",
+                    ".addai [easy|normal|hard] - 添加AI玩家",
+                    ".removeai <AI_ID|all> - 移除AI玩家",
+                    ".listai - 列出所有AI玩家",
                     ".help - 显示此帮助信息"
                 ]
                 self._send_system_message("可用命令:\n" + "\n".join(commands))
@@ -1773,6 +1901,7 @@ class NetworkManager:
                 commands = [
                     ".list 或 .players - 显示在线玩家列表",
                     ".kill - 自杀",
+                    ".listai - 列出所有AI玩家",
                     ".help - 显示此帮助信息"
                 ]
                 self._send_system_message("可用命令:\n" + "\n".join(commands))
@@ -2113,6 +2242,8 @@ class Bullet:
                 if bullet_rect.colliderect(player_rect):
                     self.has_hit.add(player.id)
                     
+                    print(f"[子弹碰撞] 子弹{self.id}击中玩家{player.id}，所有者{self.owner_id}")
+                    
                     if network_manager:
                         damage_data = {
                             'target_id': player.id,
@@ -2120,10 +2251,18 @@ class Bullet:
                             'attacker_id': self.owner_id,
                             'type': 'bullet'
                         }
-                        network_manager.send_data({
-                            'type': 'hit_damage',
-                            'data': damage_data
-                        })
+                        
+                        # 服务端直接处理伤害
+                        if network_manager.is_server:
+                            print(f"[服务端] 直接处理伤害: 玩家{player.id}受到{BULLET_DAMAGE}伤害")
+                            network_manager._handle_damage(damage_data)
+                        else:
+                            # 客户端发送伤害请求
+                            print(f"[客户端] 发送伤害请求: 玩家{player.id}受到{BULLET_DAMAGE}伤害")
+                            network_manager.send_data({
+                                'type': 'hit_damage',
+                                'data': damage_data
+                            })
                     
                     return True
         
@@ -3060,6 +3199,10 @@ class Game:
             'bullet_speed': BULLET_SPEED,      # 子弹速度
             'footstep_range': self.footstep_detection_range    # 脚步声范围
         }
+        
+        # AI玩家管理
+        self.ai_players = {}  # AI玩家字典 {player_id: AIPlayer}
+        self.next_ai_id = 100  # AI玩家ID从100开始
     
     def trigger_hit_effect(self):
         """触发被击中时的红色滤镜效果"""
@@ -3801,6 +3944,21 @@ class Game:
         all_players = {self.player.id: self.player}
         all_players.update(self.other_players)
         
+        # 服务端：添加AI玩家对象到all_players用于碰撞检测
+        if self.network_manager.is_server and hasattr(self, 'ai_players'):
+            for ai_id, ai_player in self.ai_players.items():
+                if ai_id not in all_players:
+                    # 创建一个简单的Player对象用于碰撞检测
+                    class AIPlayerWrapper:
+                        def __init__(self, ai):
+                            self.id = ai.id
+                            self.pos = ai.pos
+                            self.is_dead = ai.is_dead
+                    
+                    wrapper = AIPlayerWrapper(ai_player)
+                    all_players[ai_id] = wrapper
+                    print(f"[调试] 添加AI玩家{ai_id}到all_players，位置=({wrapper.pos.x}, {wrapper.pos.y}), 死亡={wrapper.is_dead}")
+        
         # 更新本地玩家
         self.player.update(dt, self.game_map, self.bullets, self.network_manager, all_players)
         
@@ -3853,6 +4011,10 @@ class Game:
                     # 同步状态（包括武器类型和瞄准状态）
                     other_player.sync_from_network(pdata)
             
+            # 更新AI玩家（仅服务端）
+            if self.network_manager.is_server:
+                self.update_ai_players(dt, all_players)
+            
             # 服务端定期广播
             self.network_manager.update_and_broadcast()
             
@@ -3898,6 +4060,160 @@ class Game:
             if self.hit_effect_time < 0:
                 self.hit_effect_time = 0
 
+    def update_ai_players(self, dt, all_players):
+        """更新AI玩家（仅服务端）"""
+        if not self.network_manager.is_server:
+            return
+        
+        # 准备玩家位置数据供AI使用
+        players_data = {}
+        for pid, player in all_players.items():
+            players_data[pid] = {
+                'pos': [player.pos.x, player.pos.y],
+                'is_dead': player.is_dead
+            }
+        
+        # 添加网络玩家数据
+        for pid, pdata in self.network_manager.players.items():
+            if pid not in players_data:
+                players_data[pid] = pdata
+        
+        # 更新每个AI玩家
+        for ai_id, ai_player in list(self.ai_players.items()):
+            # 检查AI是否需要复活
+            if ai_player.is_dead:
+                current_time = time.time()
+                if current_time >= ai_player.respawn_time:
+                    # 随机复活点
+                    spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
+                    spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+                    ai_player.respawn(spawn_x, spawn_y)
+                    
+                    # 更新网络数据
+                    if ai_id in self.network_manager.players:
+                        self.network_manager.players[ai_id]['pos'] = [spawn_x, spawn_y]
+                        self.network_manager.players[ai_id]['health'] = 100
+                        self.network_manager.players[ai_id]['is_dead'] = False
+                        self.network_manager.players[ai_id]['respawn_time'] = 0
+                continue
+            
+            # 更新AI逻辑
+            action = ai_player.update(dt, players_data, self.game_map, self.bullets)
+            
+            if action:
+                # 应用移动
+                move_vec = action['move'] * dt
+                new_pos = ai_player.pos + move_vec
+                
+                # 碰撞检测
+                player_rect = pygame.Rect(
+                    new_pos.x - PLAYER_RADIUS,
+                    new_pos.y - PLAYER_RADIUS,
+                    PLAYER_RADIUS * 2,
+                    PLAYER_RADIUS * 2
+                )
+                
+                # 检查墙壁碰撞
+                collision = False
+                for wall in self.game_map.walls:
+                    if player_rect.colliderect(wall):
+                        collision = True
+                        break
+                
+                # 检查门碰撞
+                if not collision:
+                    for door in self.game_map.doors:
+                        if door.check_collision(player_rect):
+                            collision = True
+                            break
+                
+                if not collision:
+                    ai_player.pos = new_pos
+                else:
+                    # 碰撞时尝试滑动移动
+                    # 尝试只在X轴移动
+                    test_pos_x = pygame.Vector2(ai_player.pos.x + move_vec.x, ai_player.pos.y)
+                    test_rect_x = pygame.Rect(
+                        test_pos_x.x - PLAYER_RADIUS,
+                        test_pos_x.y - PLAYER_RADIUS,
+                        PLAYER_RADIUS * 2,
+                        PLAYER_RADIUS * 2
+                    )
+                    
+                    collision_x = False
+                    for wall in self.game_map.walls:
+                        if test_rect_x.colliderect(wall):
+                            collision_x = True
+                            break
+                    
+                    if not collision_x:
+                        for door in self.game_map.doors:
+                            if door.check_collision(test_rect_x):
+                                collision_x = True
+                                break
+                    
+                    if not collision_x:
+                        ai_player.pos = test_pos_x
+                    else:
+                        # 尝试只在Y轴移动
+                        test_pos_y = pygame.Vector2(ai_player.pos.x, ai_player.pos.y + move_vec.y)
+                        test_rect_y = pygame.Rect(
+                            test_pos_y.x - PLAYER_RADIUS,
+                            test_pos_y.y - PLAYER_RADIUS,
+                            PLAYER_RADIUS * 2,
+                            PLAYER_RADIUS * 2
+                        )
+                        
+                        collision_y = False
+                        for wall in self.game_map.walls:
+                            if test_rect_y.colliderect(wall):
+                                collision_y = True
+                                break
+                        
+                        if not collision_y:
+                            for door in self.game_map.doors:
+                                if door.check_collision(test_rect_y):
+                                    collision_y = True
+                                    break
+                        
+                        if not collision_y:
+                            ai_player.pos = test_pos_y
+                
+                # 更新角度
+                ai_player.angle = action['angle']
+                
+                # 处理射击
+                if action['shoot'] and ai_player.ammo > 0:
+                    # 计算子弹方向向量（与玩家相同的方式）
+                    bullet_dir = pygame.Vector2(
+                        math.cos(math.radians(ai_player.angle)),
+                        -math.sin(math.radians(ai_player.angle))
+                    )
+                    bullet_pos = ai_player.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
+                    
+                    # 创建子弹
+                    self.network_manager.request_fire_bullet(
+                        [bullet_pos.x, bullet_pos.y],
+                        [bullet_dir.x, bullet_dir.y],
+                        ai_id
+                    )
+                    ai_player.ammo -= 1
+                    ai_player.last_shot_time = time.time()
+                
+                # 处理装填
+                if action['reload']:
+                    ai_player.is_reloading = True
+                    ai_player.reload_start_time = time.time()
+                
+                # 更新网络数据
+                if ai_id in self.network_manager.players:
+                    self.network_manager.players[ai_id]['pos'] = [ai_player.pos.x, ai_player.pos.y]
+                    self.network_manager.players[ai_id]['angle'] = ai_player.angle
+                    self.network_manager.players[ai_id]['health'] = ai_player.health
+                    self.network_manager.players[ai_id]['ammo'] = ai_player.ammo
+                    self.network_manager.players[ai_id]['is_reloading'] = ai_player.is_reloading
+                    self.network_manager.players[ai_id]['shooting'] = action['shoot']
+    
     def sync_bullets(self):
         """同步子弹 - 完全基于服务器数据"""
         network_bullets = self.network_manager.get_bullets()
