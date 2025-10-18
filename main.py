@@ -3010,7 +3010,7 @@ class Game:
         self.running = True  
         self.clock = pygame.time.Clock()  
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("多人射击游戏 - 武器切换 + 瞄准系统")
+        pygame.display.set_caption("游戏")
         
         # 游戏状态
         self.state = "MENU"  # MENU, SCANNING, CONNECTING, PLAYING, ERROR
