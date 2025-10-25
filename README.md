@@ -37,12 +37,14 @@ ZD 2D Gunfight是一款基于Python和Pygame开发的多人射击游戏，支持
 ### 项目结构
 ```
 zd-2d-gunfight/
-├── main.py              # 主游戏文件
-├── player.py            # 玩家类
-├── ai_player.py         # AI玩家系统 ⭐新增
-├── map.py               # 地图系统
-├── weapons.py           # 武器系统
-├── network.py           # 网络管理
+├── main.py              # 游戏主循环和Game类（已重构）
+├── player.py            # 玩家类（完整功能）
+├── ai_player.py         # AI玩家系统 ⭐
+├── map.py               # 地图和门系统（完整功能）
+├── weapons.py           # 武器系统（MeleeWeapon, Bullet, Ray）
+├── network.py           # 网络管理（NetworkManager, ChatMessage）
+├── utils.py             # 工具函数模块 ⭐新增
+├── ui.py                # UI渲染模块 ⭐新增
 ├── constants.py         # 游戏常量
 ├── README.md            # 主文档（包含AI使用说明）
 ├── README_Ubuntu.md     # Ubuntu支持文档
@@ -50,6 +52,30 @@ zd-2d-gunfight/
 ├── 字体修复说明.md      # 字体兼容性说明
 └── build_*.py           # 打包脚本
 ```
+
+### 模块说明
+
+#### 核心模块
+- **main.py**: 游戏入口和主循环，包含Game类，负责游戏状态管理和主循环控制
+- **player.py**: 完整的玩家类，包含移动、射击、受伤、复活等所有玩家相关功能
+- **ai_player.py**: AI玩家系统，提供智能对手功能
+- **map.py**: 地图生成和管理，包含九宫格房间系统和门的交互逻辑
+- **weapons.py**: 武器系统，包含近战武器(MeleeWeapon)、子弹(Bullet)和射线(Ray)类
+- **network.py**: 网络通信管理，包含NetworkManager和ChatMessage类
+
+#### 工具模块 ⭐重构新增
+- **utils.py**: 通用工具函数库
+  - 角度计算: `normalize_angle()`, `angle_difference()`
+  - 视野检测: `is_in_field_of_view()`, `is_visible()`, `has_line_of_sight()`
+  - 碰撞检测: `line_intersects_rect()`, `line_intersects_line()`, `is_in_melee_range()`
+  - 视觉效果: `create_vision_fan_points()`
+
+- **ui.py**: UI渲染函数库
+  - 字体管理: `load_fonts()`, `get_fonts()`
+  - 界面绘制: `draw_menu()`, `draw_hud()`, `draw_chat()`
+
+#### 配置模块
+- **constants.py**: 游戏常量和配置参数
 
 ---
 
@@ -936,15 +962,22 @@ pip install pyinstaller
 ### 项目文件说明
 
 #### 核心文件
-- `main.py` - 主游戏逻辑，包含Game类和主循环
-- `player.py` - 玩家类，处理移动、射击、生命值等
-- `ai_player.py` - AI玩家系统，智能对手逻辑 ⭐新增
-- `map.py` - 地图系统，包含房间和门的管理
-- `weapons.py` - 武器系统，定义枪械和近战武器
-- `network.py` - 网络管理，处理客户端-服务器通信
+- `main.py` - 游戏主循环和Game类（已重构，仅包含游戏主逻辑）
+- `player.py` - 完整的玩家类，处理移动、射击、生命值、武器切换等
+- `ai_player.py` - AI玩家系统，智能对手逻辑 ⭐
+- `map.py` - 完整的地图系统，包含九宫格房间和门的管理
+- `weapons.py` - 武器系统，包含MeleeWeapon、Bullet、Ray类
+- `network.py` - 网络管理，包含NetworkManager和ChatMessage类
+- `utils.py` - 工具函数模块，提供角度计算、视野检测、碰撞检测等 ⭐新增
+- `ui.py` - UI渲染模块，提供字体管理和界面绘制函数 ⭐新增
 - `constants.py` - 游戏常量配置
 
-~~游戏功能的分装有问题~~
+#### 代码重构 ⭐已完成
+项目已完成大规模代码重构，将原本5000+行的main.py拆分为模块化结构：
+- **模块化设计**: 代码按功能分离到独立模块
+- **消除重复**: 合并了重复的类定义
+- **职责清晰**: 每个模块有明确的职责
+- **易于维护**: 代码结构清晰，便于后续开发和维护
 
 #### 打包脚本
 - `build_exe.py` - Windows标准打包

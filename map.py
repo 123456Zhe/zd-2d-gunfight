@@ -134,37 +134,146 @@ class Door:
             return base_color
 
 class Map:
-    """游戏地图类"""
+    """游戏地图类 - 3x3房间网格系统"""
     def __init__(self):
-        self.walls = []
+        self.rooms = []
         self.doors = []
-        self.initialize_map()
+        self.walls = []
+        self.door_positions = []
+        self.generate_map()
     
-    def initialize_map(self):
-        """初始化地图"""
-        # 创建九宫格地图
-        center_x = SCREEN_WIDTH // 2
-        center_y = SCREEN_HEIGHT // 2
+    def generate_map(self):
+        """生成3x3房间网格地图"""
+        # 创建3x3房间网格
+        for row in range(3):
+            for col in range(3):
+                x = col * ROOM_SIZE
+                y = row * ROOM_SIZE
+                self.rooms.append(pygame.Rect(x, y, ROOM_SIZE, ROOM_SIZE))
         
-        # 创建墙壁
-        # 外框墙壁
-        self.walls.append(pygame.Rect(center_x - ROOM_SIZE//2, center_y - ROOM_SIZE//2, ROOM_SIZE, WALL_THICKNESS))  # 上
-        self.walls.append(pygame.Rect(center_x - ROOM_SIZE//2, center_y + ROOM_SIZE//2 - WALL_THICKNESS, ROOM_SIZE, WALL_THICKNESS))  # 下
-        self.walls.append(pygame.Rect(center_x - ROOM_SIZE//2, center_y - ROOM_SIZE//2, WALL_THICKNESS, ROOM_SIZE))  # 左
-        self.walls.append(pygame.Rect(center_x + ROOM_SIZE//2 - WALL_THICKNESS, center_y - ROOM_SIZE//2, WALL_THICKNESS, ROOM_SIZE))  # 右
+        self.generate_doors()
+        self.generate_walls()
+    
+    def generate_doors(self):
+        """生成门并记录位置"""
+        # 水平方向的门（左右连接房间）
+        for row in range(3):
+            for col in range(2):
+                door_x = (col + 1) * ROOM_SIZE - WALL_THICKNESS
+                door_y = row * ROOM_SIZE + (ROOM_SIZE - DOOR_SIZE) // 2
+                
+                door = Door(door_x, door_y, WALL_THICKNESS, DOOR_SIZE, is_vertical=False)
+                self.doors.append(door)
+                self.door_positions.append(door.original_rect)
         
-        # 创建门
-        # 上边门
-        self.doors.append(Door(center_x - DOOR_SIZE//2, center_y - ROOM_SIZE//2, DOOR_SIZE, WALL_THICKNESS))
-        # 下边门
-        self.doors.append(Door(center_x - DOOR_SIZE//2, center_y + ROOM_SIZE//2 - WALL_THICKNESS, DOOR_SIZE, WALL_THICKNESS))
-        # 左边门
-        self.doors.append(Door(center_x - ROOM_SIZE//2, center_y - DOOR_SIZE//2, WALL_THICKNESS, DOOR_SIZE, True))
-        # 右边门
-        self.doors.append(Door(center_x + ROOM_SIZE//2 - WALL_THICKNESS, center_y - DOOR_SIZE//2, WALL_THICKNESS, DOOR_SIZE, True))
+        # 垂直方向的门（上下连接房间）
+        for row in range(2):
+            for col in range(3):
+                door_x = col * ROOM_SIZE + (ROOM_SIZE - DOOR_SIZE) // 2
+                door_y = (row + 1) * ROOM_SIZE - WALL_THICKNESS
+                
+                door = Door(door_x, door_y, DOOR_SIZE, WALL_THICKNESS, is_vertical=True)
+                self.doors.append(door)
+                self.door_positions.append(door.original_rect)
+    
+    def generate_walls(self):
+        """生成墙壁，避开门的位置"""
+        # 外边界墙
+        self.walls.append(pygame.Rect(0, 0, ROOM_SIZE * 3, WALL_THICKNESS))
+        self.walls.append(pygame.Rect(0, ROOM_SIZE * 3 - WALL_THICKNESS, ROOM_SIZE * 3, WALL_THICKNESS))
+        self.walls.append(pygame.Rect(0, 0, WALL_THICKNESS, ROOM_SIZE * 3))
+        self.walls.append(pygame.Rect(ROOM_SIZE * 3 - WALL_THICKNESS, 0, WALL_THICKNESS, ROOM_SIZE * 3))
+        
+        self.generate_internal_walls()
+    
+    def generate_internal_walls(self):
+        """生成内部墙壁，智能避开门的位置"""
+        # 垂直内部墙
+        for col in range(1, 3):
+            wall_x = col * ROOM_SIZE - WALL_THICKNESS
+            
+            for row in range(3):
+                wall_segments = self.get_wall_segments_avoiding_doors(
+                    wall_x, row * ROOM_SIZE, WALL_THICKNESS, ROOM_SIZE, is_vertical=True
+                )
+                self.walls.extend(wall_segments)
+        
+        # 水平内部墙
+        for row in range(1, 3):
+            wall_y = row * ROOM_SIZE - WALL_THICKNESS
+            
+            for col in range(3):
+                wall_segments = self.get_wall_segments_avoiding_doors(
+                    col * ROOM_SIZE, wall_y, ROOM_SIZE, WALL_THICKNESS, is_vertical=False
+                )
+                self.walls.extend(wall_segments)
+    
+    def get_wall_segments_avoiding_doors(self, x, y, width, height, is_vertical):
+        """获取避开门的墙壁段"""
+        wall_rect = pygame.Rect(x, y, width, height)
+        segments = []
+        
+        overlapping_doors = []
+        for door_rect in self.door_positions:
+            if wall_rect.colliderect(door_rect):
+                overlapping_doors.append(door_rect)
+        
+        if not overlapping_doors:
+            segments.append(wall_rect)
+            return segments
+        
+        if is_vertical:
+            overlapping_doors.sort(key=lambda door: door.y)
+        else:
+            overlapping_doors.sort(key=lambda door: door.x)
+        
+        if is_vertical:
+            current_y = y
+            for door in overlapping_doors:
+                if current_y < door.y:
+                    segments.append(pygame.Rect(x, current_y, width, door.y - current_y))
+                current_y = door.y + door.height
+            
+            if current_y < y + height:
+                segments.append(pygame.Rect(x, current_y, width, y + height - current_y))
+        else:
+            current_x = x
+            for door in overlapping_doors:
+                if current_x < door.x:
+                    segments.append(pygame.Rect(current_x, y, door.x - current_x, height))
+                current_x = door.x + door.width
+            
+            if current_x < x + width:
+                segments.append(pygame.Rect(current_x, y, x + width - current_x, height))
+        
+        return segments
+    
+    def get_random_spawn_pos(self):
+        """获取随机出生位置"""
+        room_id = random.randint(0, 8)
+        room_row = room_id // 3
+        room_col = room_id % 3
+        
+        spawn_x = room_col * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
+        spawn_y = room_row * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
+        
+        spawn_x = max(room_col * ROOM_SIZE + 50, min(spawn_x, (room_col + 1) * ROOM_SIZE - 50))
+        spawn_y = max(room_row * ROOM_SIZE + 50, min(spawn_y, (room_row + 1) * ROOM_SIZE - 50))
+        
+        return [spawn_x, spawn_y]
+    
+    def update_doors(self, dt, network_manager):
+        """更新门状态"""
+        for i, door in enumerate(self.doors):
+            door.update(dt)
+            
+            # 从网络管理器同步门状态
+            if i in network_manager.doors:
+                door_state = network_manager.doors[i]
+                door.set_state(door_state)
     
     def update(self, dt):
-        """更新地图状态"""
+        """更新地图状态（不包含网络同步）"""
         for door in self.doors:
             door.update(dt)
     
