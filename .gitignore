@@ -11,3 +11,6 @@ dist_nuitka/main.dist
 dist_nuitka/main.exe
 dist_nuitka/main.dist/main.dll
 dist_nuitka
+dist/*
+build/*
+ZD-2D-Gunfight.spec
