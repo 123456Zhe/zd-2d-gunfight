@@ -32,6 +32,14 @@ from weapons import MeleeWeapon, Bullet, Ray
 from utils import *
 import ui
 
+# 尝试导入 pygame-gui UI 模块
+try:
+    import ui_pygame_gui
+    PYGAME_GUI_AVAILABLE = True
+except ImportError:
+    PYGAME_GUI_AVAILABLE = False
+    print("警告: pygame-gui 未安装，将使用原生 UI")
+
 # generate_default_player_name is now imported from network module
 
 # 初始化pygame
@@ -285,11 +293,42 @@ class Game:
         >>> game = Game()
         >>> game.run()  # 启动游戏主循环
     """
-    def __init__(self):
+    def __init__(self, use_pygame_gui=None):
+        """
+        初始化游戏
+        
+        Args:
+            use_pygame_gui: 是否使用 pygame-gui UI 系统
+                           None = 自动检测（如果可用则使用）
+                           True = 强制使用 pygame-gui（如果不可用则报错）
+                           False = 强制使用原生 UI
+        """
         self.running = True  
         self.clock = pygame.time.Clock()  
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("游戏")
+        
+        # UI 配置选项
+        if use_pygame_gui is None:
+            # 自动检测
+            self.use_pygame_gui = PYGAME_GUI_AVAILABLE
+        elif use_pygame_gui and not PYGAME_GUI_AVAILABLE:
+            # 强制使用但不可用
+            raise RuntimeError("pygame-gui 未安装，无法使用 pygame-gui UI 系统")
+        else:
+            # 使用指定的配置
+            self.use_pygame_gui = use_pygame_gui
+        
+        self.ui_manager_wrapper = None
+        self.menu_ui = None
+        self.game_hud = None  # GameHUD 实例（游戏进行中使用）
+        self.chat_ui = None  # ChatUI 实例（游戏进行中使用）
+        
+        # 打印 UI 系统信息
+        if self.use_pygame_gui:
+            print("✓ 使用 pygame-gui UI 系统")
+        else:
+            print("✓ 使用原生 UI 系统")
         
         # 游戏状态
         self.state = "MENU"  # MENU, SCANNING, CONNECTING, PLAYING, ERROR
@@ -369,6 +408,156 @@ class Game:
     
     def show_menu(self):
         """显示主菜单"""
+        # 根据配置选择使用哪个 UI 系统
+        if self.use_pygame_gui and PYGAME_GUI_AVAILABLE:
+            self._show_menu_pygame_gui()
+        else:
+            self._show_menu_native()
+    
+    def _show_menu_pygame_gui(self):
+        """使用 pygame-gui 显示主菜单"""
+        # 初始化 pygame-gui UI 管理器
+        if self.ui_manager_wrapper is None:
+            # 设置字体
+            ui_pygame_gui.setup_fonts_for_pygame_gui('theme.json')
+            
+            # 创建 UI 管理器
+            self.ui_manager_wrapper = ui_pygame_gui.UIManagerWrapper(
+                (SCREEN_WIDTH, SCREEN_HEIGHT),
+                'theme.json'
+            )
+            
+            # 创建菜单 UI
+            self.menu_ui = ui_pygame_gui.MenuUI(self.ui_manager_wrapper)
+            self.menu_ui.create_ui()
+        
+        # 菜单状态变量
+        show_server_name_input = False
+        show_player_name_input = False
+        creating_server = False
+        selected_server_ip = None
+        
+        # 自动开始扫描
+        if not self.scanning_servers and not self.found_servers:
+            self.start_server_scan()
+        
+        while self.state == "MENU":
+            time_delta = self.clock.tick(FPS) / 1000.0
+            
+            for event in pygame.event.get():
+                if event.type == QUIT:
+                    self.running = False
+                    return
+                elif event.type == KEYDOWN:
+                    if event.key == K_ESCAPE:
+                        self.running = False
+                        return
+                
+                # pygame-gui 处理事件
+                self.ui_manager_wrapper.process_events(event)
+                
+                # 处理 pygame-gui 事件
+                if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                    if event.ui_element == self.menu_ui.create_button:
+                        # 点击创建服务器按钮
+                        if not show_server_name_input:
+                            show_server_name_input = True
+                            self.menu_ui.show_server_name_input()
+                    
+                    elif event.ui_element == self.menu_ui.refresh_button:
+                        # 点击刷新按钮
+                        self.start_server_scan()
+                    
+                    elif event.ui_element == self.menu_ui.connect_button:
+                        # 点击手动连接按钮
+                        ip_text = self.menu_ui.ip_input.get_text().strip()
+                        if ip_text and not show_player_name_input:
+                            show_player_name_input = True
+                            creating_server = False
+                            selected_server_ip = None
+                            self.menu_ui.show_player_name_input(is_creating_server=False)
+                    
+                    elif event.ui_element == self.menu_ui.server_name_confirm_button:
+                        # 确认服务器名称
+                        server_name = self.menu_ui.server_name_input.get_text().strip()
+                        if server_name:
+                            show_server_name_input = False
+                            show_player_name_input = True
+                            creating_server = True
+                            self.menu_ui.show_player_name_input(is_creating_server=True)
+                    
+                    elif event.ui_element == self.menu_ui.player_name_confirm_button:
+                        # 确认玩家名称
+                        player_name = self.menu_ui.player_name_input.get_text().strip()
+                        if player_name:
+                            if creating_server:
+                                # 创建服务器
+                                server_name = self.menu_ui.server_name_input.get_text().strip()
+                                self.connection_info = {
+                                    'is_server': True,
+                                    'server_name': server_name,
+                                    'player_name': player_name
+                                }
+                            elif selected_server_ip:
+                                # 连接到选中的服务器
+                                self.connection_info = {
+                                    'is_server': False,
+                                    'server_ip': selected_server_ip,
+                                    'player_name': player_name
+                                }
+                            else:
+                                # 手动连接
+                                ip_text = self.menu_ui.ip_input.get_text().strip()
+                                self.connection_info = {
+                                    'is_server': False,
+                                    'server_ip': ip_text,
+                                    'player_name': player_name
+                                }
+                            
+                            self.state = "CONNECTING"
+                            self.connecting_start_time = time.time()
+                            
+                            # 清理菜单 UI
+                            self.menu_ui.destroy_ui()
+                            self.ui_manager_wrapper.clear()
+                            self.ui_manager_wrapper = None
+                            self.menu_ui = None
+                            return
+                    
+                    # 检查服务器列表项点击
+                    else:
+                        for server_item in self.menu_ui.server_items:
+                            if event.ui_element == server_item.get('button'):
+                                # 点击服务器列表项
+                                if not show_player_name_input:
+                                    show_player_name_input = True
+                                    creating_server = False
+                                    selected_server_ip = server_item['ip']
+                                    self.menu_ui.show_player_name_input(is_creating_server=False)
+                                break
+            
+            # 更新菜单状态
+            menu_state = {
+                'scanning_servers': self.scanning_servers,
+                'found_servers': self.found_servers,
+                'show_server_name_input': show_server_name_input,
+                'show_player_name_input': show_player_name_input,
+                'creating_server': creating_server,
+                'selected_server_ip': selected_server_ip
+            }
+            self.menu_ui.update(menu_state)
+            
+            # 更新 UI 管理器
+            self.ui_manager_wrapper.update(time_delta)
+            
+            # 绘制
+            self.screen.fill((0, 0, 0))  # 黑色背景
+            self.ui_manager_wrapper.draw_ui(self.screen)
+            
+            pygame.display.flip()
+    
+    def _show_menu_native(self):
+        """使用原生 UI 显示主菜单（备份方案）"""
         # 菜单状态
         selected_option = 0  # 0=创建服务器, 1=加入游戏, 2=刷新服务器
         input_text = ""
@@ -411,6 +600,7 @@ class Game:
         server_list_width = 450
         server_item_height = 60
         
+        # 原生 UI 主循环
         while self.state == "MENU":
             for event in pygame.event.get():
                 if event.type == QUIT:
@@ -877,6 +1067,28 @@ class Game:
             self.bullets = []  # 本地子弹对象
             self.camera_offset = pygame.Vector2(0, 0)
             
+            # 初始化 GameHUD（如果使用 pygame-gui）
+            if self.use_pygame_gui and PYGAME_GUI_AVAILABLE:
+                # 设置字体
+                ui_pygame_gui.setup_fonts_for_pygame_gui('theme.json')
+                
+                # 创建 UI 管理器
+                self.ui_manager_wrapper = ui_pygame_gui.UIManagerWrapper(
+                    (SCREEN_WIDTH, SCREEN_HEIGHT),
+                    'theme.json'
+                )
+                
+                # 创建 GameHUD
+                self.game_hud = ui_pygame_gui.GameHUD(self.ui_manager_wrapper)
+                self.game_hud.create_ui()
+                self.game_hud.set_debug_mode(self.debug_mode)
+                print("GameHUD 已初始化")
+                
+                # 创建 ChatUI
+                self.chat_ui = ui_pygame_gui.ChatUI(self.ui_manager_wrapper)
+                self.chat_ui.create_ui()
+                print("ChatUI 已初始化")
+            
             print(f"游戏初始化成功，玩家ID: {self.network_manager.player_id}")
             return True
             
@@ -892,6 +1104,10 @@ class Game:
     
     def handle_events(self):
         for event in pygame.event.get():
+            # pygame-gui 事件处理
+            if self.use_pygame_gui and self.ui_manager_wrapper:
+                self.ui_manager_wrapper.process_events(event)
+            
             if event.type == QUIT:
                 self.running = False
             elif event.type == KEYDOWN:
@@ -899,32 +1115,59 @@ class Game:
                     if self.chat_active:
                         self.chat_active = False
                         self.chat_input = ""
+                        # 如果使用 pygame-gui，关闭 ChatUI
+                        if self.use_pygame_gui and self.chat_ui:
+                            self.chat_ui.deactivate_input()
                     else:
                         self.running = False
                 elif event.key == K_y and not self.chat_active:  # 按Y开启聊天
                     self.chat_active = True
                     self.chat_input = ""
+                    # 如果使用 pygame-gui，激活 ChatUI
+                    if self.use_pygame_gui and self.chat_ui:
+                        self.chat_ui.activate_input()
                 elif event.key == K_3 and not self.chat_active:  # 按3切换武器
                     if self.player and not self.player.is_dead:
                         self.player.switch_weapon()
                 elif event.key == K_UP:
                     # 向上滚动（查看更早的消息）- 任何时候都可以使用
                     self.chat_scroll_offset += 1
+                    if self.use_pygame_gui and self.chat_ui:
+                        self.chat_ui.scroll_up()
                 elif event.key == K_DOWN:
                     # 向下滚动（查看更新的消息）- 任何时候都可以使用
                     self.chat_scroll_offset = max(0, self.chat_scroll_offset - 1)
+                    if self.use_pygame_gui and self.chat_ui:
+                        self.chat_ui.scroll_down()
                 elif self.chat_active:
                     # 聊天模式下的按键处理
                     if event.key == K_RETURN:
-                        if len(self.chat_input.strip()) > 0:
-                            self.network_manager.send_chat_message(self.chat_input.strip())
+                        # 获取输入文本
+                        if self.use_pygame_gui and self.chat_ui:
+                            chat_text = self.chat_ui.get_input_text().strip()
+                        else:
+                            chat_text = self.chat_input.strip()
+                        
+                        # 发送消息
+                        if len(chat_text) > 0:
+                            self.network_manager.send_chat_message(chat_text)
+                        
+                        # 关闭聊天
                         self.chat_active = False
                         self.chat_input = ""
                         self.chat_scroll_offset = 0  # 重置滚动偏移
+                        
+                        # 如果使用 pygame-gui，清空并关闭 ChatUI
+                        if self.use_pygame_gui and self.chat_ui:
+                            self.chat_ui.clear_input()
+                            self.chat_ui.deactivate_input()
                     elif event.key == K_BACKSPACE:
-                        self.chat_input = self.chat_input[:-1]
+                        # 原生 UI 的退格处理
+                        if not self.use_pygame_gui:
+                            self.chat_input = self.chat_input[:-1]
                     else:
-                        if len(self.chat_input) < MAX_CHAT_LENGTH:
+                        # 原生 UI 的文本输入处理
+                        if not self.use_pygame_gui and len(self.chat_input) < MAX_CHAT_LENGTH:
                             self.chat_input += event.unicode
                 elif not self.chat_active:
                     # 非聊天模式下的按键处理
@@ -933,6 +1176,9 @@ class Game:
                         self.player.reload_start = time.time()
                     elif event.key == K_F3:  # 切换调试模式
                         self.debug_mode = not self.debug_mode
+                        # 更新 GameHUD 调试模式
+                        if self.use_pygame_gui and self.game_hud:
+                            self.game_hud.set_debug_mode(self.debug_mode)
                     elif event.key == K_F4:  # 切换视角显示
                         self.show_vision = not self.show_vision
             elif event.type == MOUSEBUTTONDOWN and not self.chat_active:
@@ -1085,6 +1331,15 @@ class Game:
             if current_time - self.last_chat_cursor_blink > 500:
                 self.chat_cursor_blink = not self.chat_cursor_blink
                 self.last_chat_cursor_blink = current_time
+        
+        # 更新 ChatUI（如果使用 pygame-gui）
+        if self.use_pygame_gui and self.chat_ui:
+            chat_state = {
+                'chat_active': self.chat_active,
+                'recent_messages': self.network_manager.get_recent_chat_messages(),
+                'chat_scroll_offset': self.chat_scroll_offset
+            }
+            self.chat_ui.update(chat_state)
         
         # 更新红色滤镜效果
         if self.hit_effect_time > 0:
@@ -1348,7 +1603,7 @@ class Game:
             overlay.fill((255, 0, 0, alpha))
             self.screen.blit(overlay, (0, 0))
         
-        pygame.display.flip()
+        # pygame.display.flip() 已移至主循环，在 UI 绘制之后调用
     
     def render_vision_fan(self):
         """绘制视野扇形 - 高效率版本，考虑墙壁和门的遮挡"""
@@ -1550,7 +1805,14 @@ class Game:
             'bullets_count': len(self.bullets),
             'show_vision': self.show_vision
         }
-        ui.draw_hud(self.screen, hud_state)
+        
+        # 根据配置选择使用哪个 UI 系统
+        if self.use_pygame_gui and self.game_hud:
+            # 使用 pygame-gui GameHUD
+            self.game_hud.update(hud_state)
+        else:
+            # 使用原生 UI
+            ui.draw_hud(self.screen, hud_state)
 
     def render_multiline_text(self, text, font, color, x, y, line_spacing=5):
         """渲染多行文本，返回渲染的行数和总高度"""
@@ -1581,6 +1843,12 @@ class Game:
 
     def render_chat(self):
         """绘制聊天系统"""
+        # 如果使用 pygame-gui，ChatUI 会自动渲染，这里只处理原生 UI
+        if self.use_pygame_gui and self.chat_ui:
+            # pygame-gui 的 ChatUI 会在 UI 管理器的 draw_ui 中自动渲染
+            return
+        
+        # 原生 UI 渲染
         chat_state = {
             'chat_active': self.chat_active,
             'chat_input': self.chat_input,
@@ -1845,6 +2113,11 @@ class Game:
                 self.show_error_screen()
             elif self.state == "PLAYING":
                 dt = self.clock.tick(FPS) / 1000.0
+                
+                # 更新 pygame-gui UI 管理器
+                if self.use_pygame_gui and self.ui_manager_wrapper:
+                    self.ui_manager_wrapper.update(dt)
+                
                 self.handle_events()
                 self.update(dt)
                 
@@ -1853,11 +2126,40 @@ class Game:
                     continue
                     
                 self.render()
+                
+                # 绘制 pygame-gui UI（在所有其他内容之后）
+                if self.use_pygame_gui and self.ui_manager_wrapper:
+                    self.ui_manager_wrapper.draw_ui(self.screen)
+                    pygame.display.flip()
+                else:
+                    pygame.display.flip()
         
         if self.network_manager:
             self.network_manager.stop()
         pygame.quit()
 
 if __name__ == "__main__":
-    game = Game()
-    game.run()
+    import argparse
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='ZD-2D-Gunfight 多人射击游戏')
+    parser.add_argument('--ui', choices=['auto', 'pygame-gui', 'native'], default='auto',
+                       help='选择 UI 系统: auto (自动检测), pygame-gui (使用 pygame-gui), native (使用原生 UI)')
+    args = parser.parse_args()
+    
+    # 根据参数决定使用哪个 UI 系统
+    if args.ui == 'auto':
+        use_pygame_gui = None  # 自动检测
+    elif args.ui == 'pygame-gui':
+        use_pygame_gui = True  # 强制使用 pygame-gui
+    else:  # native
+        use_pygame_gui = False  # 强制使用原生 UI
+    
+    # 创建并运行游戏
+    try:
+        game = Game(use_pygame_gui=use_pygame_gui)
+        game.run()
+    except RuntimeError as e:
+        print(f"错误: {e}")
+        print("提示: 运行 'pip install pygame-gui' 安装 pygame-gui 库")
+        sys.exit(1)

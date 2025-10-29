@@ -1,0 +1,340 @@
+{
+  "defaults": {
+    "colours": {
+      "normal_bg": "#000000",
+      "hovered_bg": "#006400",
+      "disabled_bg": "#646464",
+      "selected_bg": "#0064C8",
+      "dark_bg": "#000000",
+      "normal_text": "#FFFFFF",
+      "hovered_text": "#FFFFFF",
+      "selected_text": "#FFFFFF",
+      "disabled_text": "#323232",
+      "link_text": "#ADD8E6",
+      "link_hover": "#00FFFF",
+      "link_selected": "#FFFF00",
+      "text_shadow": "#000000",
+      "normal_border": "#FFFFFF",
+      "hovered_border": "#00FF00",
+      "disabled_border": "#646464",
+      "selected_border": "#FFFF00",
+      "active_border": "#00FFFF",
+      "filled_bar": "#00FF00",
+      "unfilled_bar": "#646464"
+    },
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "20",
+      "bold": "0",
+      "italic": "0"
+    }
+  },
+  "button": {
+    "colours": {
+      "normal_bg": "#003264",
+      "hovered_bg": "#00FF00",
+      "disabled_bg": "#646464",
+      "selected_bg": "#0064C8",
+      "active_bg": "#00C800"
+    },
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "20"
+    }
+  },
+  "text_entry_line": {
+    "colours": {
+      "dark_bg": "#000000",
+      "normal_border": "#FFFFFF",
+      "active_border": "#FFFF00"
+    },
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "text_box": {
+    "colours": {
+      "dark_bg": "#00000080",
+      "normal_text": "#FFFFFF"
+    }
+  },
+  "label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "20"
+    }
+  },
+  "#@title_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "40",
+      "bold": "1"
+    },
+    "colours": {
+      "normal_text": "#00FF00"
+    }
+  },
+  "#@subtitle_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "24"
+    },
+    "colours": {
+      "normal_text": "#ADD8E6"
+    }
+  },
+  "#@create_button": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "22",
+      "bold": "1"
+    }
+  },
+  "#@refresh_button": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "22",
+      "bold": "1"
+    }
+  },
+  "#@ip_input": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@server_name_input": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@player_name_input": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@ip_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@server_name_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "14",
+      "bold": "1",
+      "regular_path": "C:/Windows/Fonts/msyh.ttc"
+    },
+    "colours": {
+      "normal_text": "#FFFFFF",
+      "dark_bg": "#00000000"
+    }
+  },
+  "#@player_name_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@connect_button": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@server_name_confirm_button": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@player_name_confirm_button": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18"
+    }
+  },
+  "#@server_list_panel": {
+    "colours": {
+      "dark_bg": "#00000080",
+      "normal_border": "#00FF00"
+    }
+  },
+  "#@server_list_title": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "20",
+      "bold": "1",
+      "regular_path": "C:/Windows/Fonts/msyh.ttc"
+    },
+    "colours": {
+      "normal_text": "#00FF00",
+      "dark_bg": "#00000000"
+    },
+    "misc": {
+      "text_horiz_alignment": "center",
+      "text_vert_alignment": "center",
+      "text_vert_alignment_padding": "5"
+    }
+  },
+  "#@server_item_button": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "13",
+      "regular_path": "C:/Windows/Fonts/msyh.ttc"
+    },
+    "colours": {
+      "normal_bg": "#003264",
+      "hovered_bg": "#006400",
+      "normal_text": "#FFFFFF",
+      "hovered_text": "#FFFFFF"
+    },
+    "misc": {
+      "text_horiz_alignment": "center",
+      "text_vert_alignment": "top",
+      "text_horiz_alignment_padding": "3",
+      "text_vert_alignment_padding": "0",
+      "line_spacing": "1.0"
+    }
+  },
+  "#@empty_list_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "14"
+    },
+    "colours": {
+      "normal_text": "#AAAAAA",
+      "dark_bg": "#00000000"
+    },
+    "misc": {
+      "text_horiz_alignment": "center",
+      "text_vert_alignment": "center"
+    }
+  },
+  "#@scanning_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "15",
+      "regular_path": "C:/Windows/Fonts/msyh.ttc"
+    },
+    "colours": {
+      "normal_text": "#FFFF00",
+      "dark_bg": "#00000000"
+    },
+    "misc": {
+      "text_horiz_alignment": "center",
+      "text_vert_alignment": "center",
+      "text_vert_alignment_padding": "5"
+    }
+  },
+  "#@server_list_container": {
+    "colours": {
+      "dark_bg": "#00000080"
+    },
+    "misc": {
+      "enable_vert_scroll": "1",
+      "enable_horiz_scroll": "0"
+    }
+  },
+  "#@server_item_panel": {
+    "colours": {
+      "dark_bg": "#003264",
+      "normal_border": "#FFFFFF",
+      "hovered_border": "#00FF00"
+    }
+  },
+  "#@server_ip_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "12",
+      "regular_path": "C:/Windows/Fonts/msyh.ttc"
+    },
+    "colours": {
+      "normal_text": "#AAAAAA",
+      "dark_bg": "#00000000"
+    }
+  },
+  "#@health_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "18",
+      "bold": "1"
+    },
+    "colours": {
+      "normal_text": "#00FF00",
+      "dark_bg": "#00000080"
+    }
+  },
+  "#@weapon_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "16"
+    },
+    "colours": {
+      "normal_text": "#FFFF00",
+      "dark_bg": "#00000080"
+    }
+  },
+  "#@ammo_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "16"
+    },
+    "colours": {
+      "normal_text": "#ADD8E6",
+      "dark_bg": "#00000080"
+    }
+  },
+  "#@reload_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "16",
+      "bold": "1"
+    },
+    "colours": {
+      "normal_text": "#FF6600",
+      "dark_bg": "#00000080"
+    }
+  },
+  "#@melee_status_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "16"
+    },
+    "colours": {
+      "normal_text": "#FF69B4",
+      "dark_bg": "#00000080"
+    }
+  },
+  "#@aim_label": {
+    "font": {
+      "name": "Microsoft YaHei,SimHei,SimSun,Arial Unicode MS,DejaVu Sans,Arial",
+      "size": "20",
+      "bold": "1"
+    },
+    "colours": {
+      "normal_text": "#00FFFF",
+      "dark_bg": "#00000080"
+    },
+    "misc": {
+      "text_horiz_alignment": "center",
+      "text_vert_alignment": "center"
+    }
+  },
+  "#@death_label": {
+    "colours": {
+      "normal_text": "#FF0000",
+      "dark_bg": "#000000E0",
+      "normal_border": "#FF0000"
+    },
+    "misc": {
+      "border_width": "3",
+      "text_horiz_alignment": "center",
+      "text_vert_alignment": "center"
+    }
+  }
+}

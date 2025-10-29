@@ -84,7 +84,10 @@ def load_fonts():
                     
                     # 检查渲染结果是否有效（宽度大于0）
                     if test_surface.get_width() > 0:
-                        print(f"✅ [{i:2d}] {font_name} - 加载成功，中文渲染正常")
+                        try:
+                            print(f"✅ [{i:2d}] {font_name} - 加载成功，中文渲染正常")
+                        except UnicodeEncodeError:
+                            print(f"[OK] [{i:2d}] {font_name} - 加载成功，中文渲染正常")
                         
                         return {
                             'font': pygame.font.SysFont(font_name, 20),
@@ -94,20 +97,35 @@ def load_fonts():
                             'font_name': font_name
                         }
                     else:
-                        print(f"❌ [{i:2d}] {font_name} - 中文渲染失败")
+                        try:
+                            print(f"❌ [{i:2d}] {font_name} - 中文渲染失败")
+                        except UnicodeEncodeError:
+                            print(f"[FAIL] [{i:2d}] {font_name} - 中文渲染失败")
                         
                 except Exception as render_error:
-                    print(f"❌ [{i:2d}] {font_name} - 中文渲染异常: {render_error}")
+                    try:
+                        print(f"❌ [{i:2d}] {font_name} - 中文渲染异常: {render_error}")
+                    except UnicodeEncodeError:
+                        print(f"[FAIL] [{i:2d}] {font_name} - 中文渲染异常: {render_error}")
                     continue
             else:
-                print(f"❌ [{i:2d}] {font_name} - 字体对象创建失败")
+                try:
+                    print(f"❌ [{i:2d}] {font_name} - 字体对象创建失败")
+                except UnicodeEncodeError:
+                    print(f"[FAIL] [{i:2d}] {font_name} - 字体对象创建失败")
                 
         except Exception as font_error:
-            print(f"❌ [{i:2d}] {font_name} - 字体加载异常: {font_error}")
+            try:
+                print(f"❌ [{i:2d}] {font_name} - 字体加载异常: {font_error}")
+            except UnicodeEncodeError:
+                print(f"[FAIL] [{i:2d}] {font_name} - 字体加载异常: {font_error}")
             continue
     
     # 如果所有字体都失败，使用默认字体
-    print("⚠️  警告: 无法加载任何系统字体，使用pygame默认字体")
+    try:
+        print("⚠️  警告: 无法加载任何系统字体，使用pygame默认字体")
+    except UnicodeEncodeError:
+        print("[WARNING] 无法加载任何系统字体，使用pygame默认字体")
     print("建议安装中文字体包以获得更好的显示效果")
     
     if system == 'linux':
