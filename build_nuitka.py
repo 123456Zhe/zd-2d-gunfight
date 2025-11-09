@@ -19,7 +19,7 @@ def build_with_nuitka():
         '--include-module=pygame',     # 包含pygame模块
         '--nofollow-import-to=tkinter',   # 排除tkinter
         '--nofollow-import-to=matplotlib', # 排除matplotlib
-        '--nofollow-import-to=numpy',    # 排除numpy
+        # '--nofollow-import-to=numpy',    # 排除numpy 现在用了这个库，不能排除了
         '--nofollow-import-to=pandas',   # 排除pandas
         '--output-dir=./dist_nuitka',  # 输出目录
         '--assume-yes-for-downloads',  # 自动下载依赖
@@ -109,11 +109,8 @@ setup(
         print("pip install cx_Freeze")
 
 if __name__ == "__main__":
-    print("请选择打包方式：")
-    print("1. Nuitka (推荐，文件更小)")
-    print("2. cx_Freeze")
     
-    choice = input("请输入选择 (1或2): ").strip()
+    choice = 1
     
     if choice == "1":
         build_with_nuitka()
