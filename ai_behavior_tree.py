@@ -191,6 +191,21 @@ class HasEnemyInSight(ConditionNode):
     def tick(self, ai_player, blackboard):
         enemies = blackboard.get('enemies', [])
         game_map = blackboard.get('game_map')
+        team_manager = blackboard.get('team_manager')
+        
+        # 过滤掉队友（双重检查）
+        filtered_enemies = []
+        for enemy in enemies:
+            if enemy.get('is_dead', False):
+                continue
+            # 检查是否是队友
+            if team_manager and hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
+                enemy_team_id = enemy.get('team_id')
+                if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
+                    continue
+                if team_manager.are_teammates(ai_player.id, enemy.get('id')):
+                    continue
+            filtered_enemies.append(enemy)
         
         # 检查是否有激进型AI特征（扩大检测范围）
         is_aggressive = False
@@ -205,10 +220,7 @@ class HasEnemyInSight(ConditionNode):
         closest_distance = float('inf')
         closest_has_los = False
         
-        for enemy in enemies:
-            if enemy.get('is_dead', False):
-                continue
-            
+        for enemy in filtered_enemies:
             enemy_pos = pygame.Vector2(*enemy['pos'])
             distance = ai_player.pos.distance_to(enemy_pos)
             
@@ -236,10 +248,19 @@ class HasEnemyInSoundRange(ConditionNode):
     
     def tick(self, ai_player, blackboard):
         enemies = blackboard.get('enemies', [])
+        team_manager = blackboard.get('team_manager')
         
         for enemy in enemies:
             if enemy.get('is_dead', False):
                 continue
+            
+            # 检查是否是队友
+            if team_manager and hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
+                enemy_team_id = enemy.get('team_id')
+                if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
+                    continue
+                if team_manager.are_teammates(ai_player.id, enemy.get('id')):
+                    continue
             
             enemy_pos = pygame.Vector2(*enemy['pos'])
             distance = ai_player.pos.distance_to(enemy_pos)
@@ -284,11 +305,20 @@ class IsInDanger(ConditionNode):
     
     def tick(self, ai_player, blackboard):
         enemies = blackboard.get('enemies', [])
+        team_manager = blackboard.get('team_manager')
         danger_count = 0
         
         for enemy in enemies:
             if enemy.get('is_dead', False):
                 continue
+            
+            # 检查是否是队友
+            if team_manager and hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
+                enemy_team_id = enemy.get('team_id')
+                if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
+                    continue
+                if team_manager.are_teammates(ai_player.id, enemy.get('id')):
+                    continue
             
             enemy_pos = pygame.Vector2(*enemy['pos'])
             distance = ai_player.pos.distance_to(enemy_pos)
@@ -308,6 +338,113 @@ class HasGoodCover(ConditionNode):
         # 这里可以调用代价计算器
         # 简化版本：检查附近是否有墙壁
         return NodeStatus.SUCCESS  # 暂时总是返回成功
+
+
+class HasTeammateInDanger(ConditionNode):
+    """检查是否有队友处于危险中"""
+    
+    def tick(self, ai_player, blackboard):
+        allies = blackboard.get('allies', [])
+        enemies = blackboard.get('enemies', [])
+        
+        if not allies:
+            return NodeStatus.FAILURE
+        
+        for ally in allies:
+            if ally.get('is_dead', False):
+                continue
+            
+            ally_pos = pygame.Vector2(*ally['pos'])
+            ally_health = ally.get('health', 100)
+            
+            # 检查队友附近是否有敌人
+            nearby_enemies = 0
+            closest_enemy_distance = float('inf')
+            closest_enemy = None
+            
+            for enemy in enemies:
+                if enemy.get('is_dead', False):
+                    continue
+                enemy_pos = pygame.Vector2(*enemy['pos'])
+                distance = ally_pos.distance_to(enemy_pos)
+                
+                if distance < 200:  # 危险距离
+                    nearby_enemies += 1
+                    if distance < closest_enemy_distance:
+                        closest_enemy_distance = distance
+                        closest_enemy = enemy
+            
+            # 如果队友生命值低且附近有敌人，或者有多个敌人靠近
+            if (ally_health < 50 and nearby_enemies > 0) or nearby_enemies >= 2:
+                blackboard['teammate_in_danger'] = ally
+                blackboard['teammate_danger_pos'] = ally_pos
+                if closest_enemy:
+                    blackboard['teammate_threat'] = closest_enemy
+                return NodeStatus.SUCCESS
+        
+        return NodeStatus.FAILURE
+
+
+class HasTeammateNearby(ConditionNode):
+    """检查附近是否有队友"""
+    
+    def __init__(self, name="HasTeammateNearby", max_distance=300):
+        super().__init__(name)
+        self.max_distance = max_distance
+    
+    def tick(self, ai_player, blackboard):
+        allies = blackboard.get('allies', [])
+        
+        if not allies:
+            return NodeStatus.FAILURE
+        
+        for ally in allies:
+            if ally.get('is_dead', False):
+                continue
+            
+            ally_pos = pygame.Vector2(*ally['pos'])
+            distance = ai_player.pos.distance_to(ally_pos)
+            
+            if distance <= self.max_distance:
+                blackboard['nearby_teammate'] = ally
+                return NodeStatus.SUCCESS
+        
+        return NodeStatus.FAILURE
+
+
+class HasTeammateEngaging(ConditionNode):
+    """检查是否有队友正在与敌人交火"""
+    
+    def tick(self, ai_player, blackboard):
+        allies = blackboard.get('allies', [])
+        enemies = blackboard.get('enemies', [])
+        
+        if not allies:
+            return NodeStatus.FAILURE
+        
+        for ally in allies:
+            if ally.get('is_dead', False):
+                continue
+            
+            # 检查队友是否在射击
+            if not ally.get('shooting', False):
+                continue
+            
+            ally_pos = pygame.Vector2(*ally['pos'])
+            
+            # 检查队友附近是否有敌人
+            for enemy in enemies:
+                if enemy.get('is_dead', False):
+                    continue
+                enemy_pos = pygame.Vector2(*enemy['pos'])
+                distance = ally_pos.distance_to(enemy_pos)
+                
+                if distance < 300:  # 交火距离
+                    blackboard['teammate_engaging'] = ally
+                    blackboard['teammate_target'] = enemy
+                    return NodeStatus.SUCCESS
+        
+        return NodeStatus.FAILURE
 
 
 # ==================== 行为节点 ====================
@@ -1119,7 +1256,7 @@ class AmbushAction(ActionNode):
 
 
 class TeamSupportAction(ActionNode):
-    """团队支援行为"""
+    """团队支援行为 - 移动到需要帮助的队友附近"""
     
     def __init__(self, name="TeamSupport"):
         super().__init__(name)
@@ -1127,72 +1264,324 @@ class TeamSupportAction(ActionNode):
     
     def tick(self, ai_player, blackboard):
         if self.cost_calculator is None:
-            from ai_cost_calculator import AICostCalculator
-            self.cost_calculator = AICostCalculator()
+            try:
+                from ai_cost_calculator import AICostCalculator
+                self.cost_calculator = AICostCalculator()
+            except ImportError:
+                self.cost_calculator = None
         
         allies = blackboard.get('allies', [])
         enemies = blackboard.get('enemies', [])
         game_map = blackboard.get('game_map')
+        teammate_in_danger = blackboard.get('teammate_in_danger')
         
-        if not allies:
+        if not allies and not teammate_in_danger:
             return NodeStatus.FAILURE
         
-        # 找到需要支援的队友（被敌人攻击的队友）
-        teammate_needing_help = None
-        min_distance = float('inf')
-        
-        for ally in allies:
-            if ally.get('is_dead', False):
-                continue
-            
-            ally_pos = pygame.Vector2(*ally['pos'])
-            ally_distance = ai_player.pos.distance_to(ally_pos)
-            
-            # 检查队友附近是否有敌人
-            nearby_enemies = 0
-            for enemy in enemies:
-                if enemy.get('is_dead', False):
+        # 优先帮助处于危险中的队友
+        target_teammate = teammate_in_danger
+        if not target_teammate:
+            # 找到需要支援的队友（被敌人攻击的队友）
+            min_distance = float('inf')
+            for ally in allies:
+                if ally.get('is_dead', False):
                     continue
-                enemy_pos = pygame.Vector2(*enemy['pos'])
-                if ally_pos.distance_to(enemy_pos) < 200:
-                    nearby_enemies += 1
-            
-            # 如果队友附近有敌人且距离较近，需要支援
-            if nearby_enemies > 0 and ally_distance < min_distance and ally_distance < 400:
-                teammate_needing_help = ally
-                min_distance = ally_distance
+                
+                ally_pos = pygame.Vector2(*ally['pos'])
+                ally_distance = ai_player.pos.distance_to(ally_pos)
+                
+                # 检查队友附近是否有敌人
+                nearby_enemies = 0
+                for enemy in enemies:
+                    if enemy.get('is_dead', False):
+                        continue
+                    enemy_pos = pygame.Vector2(*enemy['pos'])
+                    if ally_pos.distance_to(enemy_pos) < 200:
+                        nearby_enemies += 1
+                
+                # 如果队友附近有敌人且距离较近，需要支援
+                if nearby_enemies > 0 and ally_distance < min_distance and ally_distance < 400:
+                    target_teammate = ally
+                    min_distance = ally_distance
         
-        if not teammate_needing_help:
+        if not target_teammate:
             return NodeStatus.FAILURE
         
-        # 移动到队友附近的支援位置（不要靠得太近）
-        teammate_pos = pygame.Vector2(*teammate_needing_help['pos'])
+        # 移动到队友附近的支援位置
+        teammate_pos = pygame.Vector2(*target_teammate['pos'])
+        teammate_threat = blackboard.get('teammate_threat')
         
-        # 计算支援位置（在队友和敌人之间）
-        support_pos = teammate_pos
-        for enemy in enemies:
-            if enemy.get('is_dead', False):
-                continue
-            enemy_pos = pygame.Vector2(*enemy['pos'])
-            if teammate_pos.distance_to(enemy_pos) < 200:
-                # 在队友和敌人之间选择一个位置
-                direction = (teammate_pos - enemy_pos).normalize()
-                support_pos = teammate_pos + direction * 100
-                break
+        # 计算支援位置（在队友侧翼，可以攻击威胁队友的敌人）
+        if teammate_threat:
+            threat_pos = pygame.Vector2(*teammate_threat['pos'])
+            # 计算侧翼位置（垂直于队友到敌人的方向）
+            to_threat = threat_pos - teammate_pos
+            if to_threat.length() > 0:
+                perpendicular = pygame.Vector2(-to_threat.y, to_threat.x).normalize()
+                # 选择离敌人更近的侧翼位置
+                support_offset = perpendicular * 100
+                support_pos = teammate_pos + support_offset
+            else:
+                support_pos = teammate_pos + pygame.Vector2(100, 0)
+        else:
+            # 没有明确威胁，移动到队友附近
+            direction_to_teammate = teammate_pos - ai_player.pos
+            if direction_to_teammate.length() > 0:
+                # 保持一定距离（100-150像素）
+                if direction_to_teammate.length() < 100:
+                    support_pos = ai_player.pos + direction_to_teammate.normalize() * 120
+                elif direction_to_teammate.length() > 200:
+                    support_pos = teammate_pos
+                else:
+                    support_pos = teammate_pos
+            else:
+                support_pos = teammate_pos + pygame.Vector2(100, 0)
+        
+        # 确保在地图范围内
+        map_size = ROOM_SIZE * 3
+        support_pos.x = max(50, min(map_size - 50, support_pos.x))
+        support_pos.y = max(50, min(map_size - 50, support_pos.y))
         
         ai_player.update_pathfinding(support_pos)
         move_direction = ai_player.get_next_move_direction(game_map)
         
-        if move_direction.length() > 0:
+        # 如果路径规划失败，直接朝队友移动
+        if move_direction.length() < 0.1:
+            direction_to_support = support_pos - ai_player.pos
+            if direction_to_support.length() > 0:
+                move_direction = direction_to_support.normalize()
+        
+        # 面向威胁（如果有）
+        if teammate_threat:
+            threat_pos = pygame.Vector2(*teammate_threat['pos'])
+            direction_to_threat = threat_pos - ai_player.pos
+            if direction_to_threat.length() > 0:
+                dx = direction_to_threat.x
+                dy = direction_to_threat.y
+                ai_player.angle = math.degrees(math.atan2(-dy, dx))
+        elif move_direction.length() > 0:
             dx = move_direction.x
             dy = move_direction.y
             ai_player.angle = math.degrees(math.atan2(-dy, dx))
+        
+        # 如果靠近支援位置且能看到威胁，可以射击
+        can_shoot = False
+        if teammate_threat:
+            threat_pos = pygame.Vector2(*teammate_threat['pos'])
+            distance_to_threat = ai_player.pos.distance_to(threat_pos)
+            if distance_to_threat < 350 and ai_player.can_shoot_at_target(threat_pos, game_map):
+                can_shoot = (not ai_player.is_reloading and 
+                           ai_player.ammo > 0 and 
+                           time.time() - ai_player.last_shot_time >= BULLET_COOLDOWN)
         
         speed_multiplier = ai_player.get_movement_speed_multiplier()
         blackboard['action'] = {
             'move': move_direction * PLAYER_SPEED * speed_multiplier,
             'angle': ai_player.angle,
-            'shoot': False,
+            'shoot': can_shoot,
+            'reload': False
+        }
+        
+        # 检查是否到达支援位置
+        if ai_player.pos.distance_to(support_pos) < 50:
+            return NodeStatus.SUCCESS
+        
+        return NodeStatus.RUNNING
+
+
+class CoordinateAttackAction(ActionNode):
+    """协同攻击行为 - 与队友一起攻击同一目标"""
+    
+    def tick(self, ai_player, blackboard):
+        teammate_engaging = blackboard.get('teammate_engaging')
+        teammate_target = blackboard.get('teammate_target')
+        game_map = blackboard.get('game_map')
+        
+        if not teammate_engaging or not teammate_target:
+            return NodeStatus.FAILURE
+        
+        target_enemy = teammate_target
+        target_pos = pygame.Vector2(*target_enemy['pos'])
+        teammate_pos = pygame.Vector2(*teammate_engaging['pos'])
+        
+        # 计算协同攻击位置（与队友形成交叉火力）
+        direction_to_teammate = teammate_pos - target_pos
+        if direction_to_teammate.length() > 0:
+            # 选择与队友相对的位置
+            perpendicular = pygame.Vector2(-direction_to_teammate.y, direction_to_teammate.x).normalize()
+            # 随机选择一侧
+            side = 1 if random.random() > 0.5 else -1
+            attack_offset = perpendicular * (150 * side)
+            attack_pos = target_pos + attack_offset
+        else:
+            attack_pos = target_pos + pygame.Vector2(150, 0)
+        
+        # 确保在地图范围内
+        map_size = ROOM_SIZE * 3
+        attack_pos.x = max(50, min(map_size - 50, attack_pos.x))
+        attack_pos.y = max(50, min(map_size - 50, attack_pos.y))
+        
+        # 移动到攻击位置或直接攻击
+        distance_to_target = ai_player.pos.distance_to(target_pos)
+        distance_to_attack_pos = ai_player.pos.distance_to(attack_pos)
+        
+        # 如果距离目标较远，移动到攻击位置
+        if distance_to_attack_pos > 80:
+            ai_player.update_pathfinding(attack_pos)
+            move_direction = ai_player.get_next_move_direction(game_map)
+            
+            if move_direction.length() < 0.1:
+                direction_to_attack = attack_pos - ai_player.pos
+                if direction_to_attack.length() > 0:
+                    move_direction = direction_to_attack.normalize()
+        else:
+            # 已经在攻击位置，侧向移动保持距离
+            direction_to_target = target_pos - ai_player.pos
+            if direction_to_target.length() > 0:
+                perpendicular = pygame.Vector2(-direction_to_target.y, direction_to_target.x).normalize()
+                move_direction = perpendicular * 0.3
+            else:
+                move_direction = pygame.Vector2(0, 0)
+        
+        # 面向目标
+        direction_to_target = target_pos - ai_player.pos
+        if direction_to_target.length() > 0:
+            dx = direction_to_target.x
+            dy = direction_to_target.y
+            ai_player.angle = math.degrees(math.atan2(-dy, dx))
+        
+        # 如果能看到目标，射击
+        can_shoot = False
+        if distance_to_target < 350:
+            has_los = ai_player.can_shoot_at_target(target_pos, game_map)
+            can_shoot = (has_los and 
+                        not ai_player.is_reloading and 
+                        ai_player.ammo > 0 and 
+                        time.time() - ai_player.last_shot_time >= BULLET_COOLDOWN)
+        
+        speed_multiplier = ai_player.get_movement_speed_multiplier()
+        blackboard['action'] = {
+            'move': move_direction * PLAYER_SPEED * speed_multiplier,
+            'angle': ai_player.angle,
+            'shoot': can_shoot,
+            'reload': False
+        }
+        
+        return NodeStatus.RUNNING
+
+
+class CoverTeammateAction(ActionNode):
+    """掩护队友行为 - 为队友提供火力掩护"""
+    
+    def tick(self, ai_player, blackboard):
+        allies = blackboard.get('allies', [])
+        enemies = blackboard.get('enemies', [])
+        game_map = blackboard.get('game_map')
+        nearby_teammate = blackboard.get('nearby_teammate')
+        
+        if not allies and not nearby_teammate:
+            return NodeStatus.FAILURE
+        
+        # 选择最近的队友
+        target_teammate = nearby_teammate
+        if not target_teammate:
+            min_distance = float('inf')
+            for ally in allies:
+                if ally.get('is_dead', False):
+                    continue
+                ally_pos = pygame.Vector2(*ally['pos'])
+                distance = ai_player.pos.distance_to(ally_pos)
+                if distance < min_distance and distance < 300:
+                    target_teammate = ally
+                    min_distance = distance
+        
+        if not target_teammate:
+            return NodeStatus.FAILURE
+        
+        teammate_pos = pygame.Vector2(*target_teammate['pos'])
+        
+        # 寻找威胁队友的敌人
+        threat_enemy = None
+        min_threat_distance = float('inf')
+        
+        for enemy in enemies:
+            if enemy.get('is_dead', False):
+                continue
+            enemy_pos = pygame.Vector2(*enemy['pos'])
+            distance_to_teammate = teammate_pos.distance_to(enemy_pos)
+            
+            # 如果敌人靠近队友或在攻击范围内
+            if distance_to_teammate < 300:
+                if distance_to_teammate < min_threat_distance:
+                    threat_enemy = enemy
+                    min_threat_distance = distance_to_teammate
+        
+        # 移动到掩护位置（在队友后方，可以射击威胁）
+        if threat_enemy:
+            threat_pos = pygame.Vector2(*threat_enemy['pos'])
+            # 计算掩护位置（在队友和威胁之间，但偏向队友）
+            direction_to_threat = threat_pos - teammate_pos
+            if direction_to_threat.length() > 0:
+                cover_offset = -direction_to_threat.normalize() * 80  # 在队友后方
+                cover_pos = teammate_pos + cover_offset
+            else:
+                cover_pos = teammate_pos + pygame.Vector2(0, -80)
+        else:
+            # 没有威胁，保持在队友附近
+            direction_to_teammate = teammate_pos - ai_player.pos
+            if direction_to_teammate.length() > 150:
+                cover_pos = teammate_pos
+            else:
+                cover_pos = ai_player.pos
+        
+        # 确保在地图范围内
+        map_size = ROOM_SIZE * 3
+        cover_pos.x = max(50, min(map_size - 50, cover_pos.x))
+        cover_pos.y = max(50, min(map_size - 50, cover_pos.y))
+        
+        # 移动到掩护位置
+        distance_to_cover = ai_player.pos.distance_to(cover_pos)
+        if distance_to_cover > 50:
+            ai_player.update_pathfinding(cover_pos)
+            move_direction = ai_player.get_next_move_direction(game_map)
+            
+            if move_direction.length() < 0.1:
+                direction_to_cover = cover_pos - ai_player.pos
+                if direction_to_cover.length() > 0:
+                    move_direction = direction_to_cover.normalize()
+        else:
+            move_direction = pygame.Vector2(0, 0)
+        
+        # 面向威胁或队友
+        if threat_enemy:
+            threat_pos = pygame.Vector2(*threat_enemy['pos'])
+            direction_to_threat = threat_pos - ai_player.pos
+            if direction_to_threat.length() > 0:
+                dx = direction_to_threat.x
+                dy = direction_to_threat.y
+                ai_player.angle = math.degrees(math.atan2(-dy, dx))
+        elif direction_to_teammate.length() > 0:
+            dx = direction_to_teammate.x
+            dy = direction_to_teammate.y
+            ai_player.angle = math.degrees(math.atan2(-dy, dx))
+        
+        # 如果有威胁且能看到，射击
+        can_shoot = False
+        if threat_enemy:
+            threat_pos = pygame.Vector2(*threat_enemy['pos'])
+            distance_to_threat = ai_player.pos.distance_to(threat_pos)
+            if distance_to_threat < 350:
+                has_los = ai_player.can_shoot_at_target(threat_pos, game_map)
+                can_shoot = (has_los and 
+                           not ai_player.is_reloading and 
+                           ai_player.ammo > 0 and 
+                           time.time() - ai_player.last_shot_time >= BULLET_COOLDOWN)
+        
+        speed_multiplier = ai_player.get_movement_speed_multiplier()
+        blackboard['action'] = {
+            'move': move_direction * PLAYER_SPEED * speed_multiplier,
+            'angle': ai_player.angle,
+            'shoot': can_shoot,
             'reload': False
         }
         
@@ -1206,7 +1595,7 @@ class BehaviorTree:
         self.root = root_node
         self.blackboard = {}  # 黑板（共享数据）
     
-    def tick(self, ai_player, enemies, game_map):
+    def tick(self, ai_player, enemies, game_map, team_manager=None, allies=None):
         """
         执行行为树
         
@@ -1214,6 +1603,8 @@ class BehaviorTree:
             ai_player: AI玩家对象
             enemies: 敌人列表
             game_map: 游戏地图对象
+            team_manager: 团队管理器（可选）
+            allies: 队友列表（可选）
             
         Returns:
             dict: 执行的动作
@@ -1221,6 +1612,8 @@ class BehaviorTree:
         # 更新黑板
         self.blackboard['enemies'] = enemies
         self.blackboard['game_map'] = game_map
+        self.blackboard['team_manager'] = team_manager
+        self.blackboard['allies'] = allies or []
         self.blackboard['action'] = {
             'move': pygame.Vector2(0, 0),
             'angle': ai_player.angle,
@@ -1229,7 +1622,8 @@ class BehaviorTree:
         }
         
         # 执行根节点
-        self.root.tick(ai_player, self.blackboard)
+        if self.root:
+            self.root.tick(ai_player, self.blackboard)
         
         # 返回动作
         return self.blackboard.get('action', {
@@ -1240,7 +1634,7 @@ class BehaviorTree:
         })
     
     def create_aggressive_tree(self):
-        """创建激进型行为树"""
+        """创建激进型行为树 - 支持团队合作"""
         root = SelectorNode("Root")
         
         # 装填（优先处理，但只在弹药用完时）
@@ -1250,11 +1644,25 @@ class BehaviorTree:
             ReloadAction("ReloadAction")
         ]
         
+        # 团队支援（如果有队友需要帮助）
+        support_sequence = SequenceNode("SupportSequence")
+        support_sequence.children = [
+            HasTeammateInDanger("HasTeammateInDanger"),
+            TeamSupportAction("TeamSupportAction")
+        ]
+        
         # 优先攻击（激进型AI应该优先攻击）
         attack_sequence = SequenceNode("AttackSequence")
         attack_sequence.children = [
             HasEnemyInSight("HasEnemyInSight"),
             AttackAction("AttackAction")
+        ]
+        
+        # 协同攻击（与队友一起攻击）
+        coordinate_attack_sequence = SequenceNode("CoordinateAttackSequence")
+        coordinate_attack_sequence.children = [
+            HasTeammateEngaging("HasTeammateEngaging"),
+            CoordinateAttackAction("CoordinateAttackAction")
         ]
         
         # 追击（即使没有视线，也要追击）
@@ -1267,14 +1675,28 @@ class BehaviorTree:
         # 巡逻（最后的选择）
         patrol_action = PatrolAction("PatrolAction")
         
-        # 激进型AI的优先级：装填 > 攻击 > 追击 > 巡逻
-        root.children = [reload_sequence, attack_sequence, chase_sequence, patrol_action]
+        # 激进型AI的优先级：装填 > 支援队友 > 攻击 > 协同攻击 > 追击 > 巡逻
+        root.children = [
+            reload_sequence, 
+            support_sequence, 
+            attack_sequence, 
+            coordinate_attack_sequence,
+            chase_sequence, 
+            patrol_action
+        ]
         self.root = root
         return root
     
     def create_defensive_tree(self):
         """创建防御型行为树"""
         root = SelectorNode("Root")
+        
+        # 装填（防御型AI也应该在安全时换弹）
+        reload_sequence = SequenceNode("ReloadSequence")
+        reload_sequence.children = [
+            IsAmmoLow("IsAmmoLow", threshold=5),
+            ReloadAction("ReloadAction")
+        ]
         
         # 低生命值时撤退
         retreat_sequence = SequenceNode("RetreatSequence")
@@ -1301,12 +1723,12 @@ class BehaviorTree:
         # 巡逻
         patrol_action = PatrolAction("PatrolAction")
         
-        root.children = [retreat_sequence, cover_sequence, attack_sequence, patrol_action]
+        root.children = [reload_sequence, retreat_sequence, cover_sequence, attack_sequence, patrol_action]
         self.root = root
         return root
     
     def create_tactical_tree(self):
-        """创建战术型行为树"""
+        """创建战术型行为树 - 支持团队合作和战术配合"""
         root = SelectorNode("Root")
         
         # 装填
@@ -1316,12 +1738,33 @@ class BehaviorTree:
             ReloadAction("ReloadAction")
         ]
         
-        # 侧翼攻击
+        # 团队支援（最高优先级）
+        support_sequence = SequenceNode("SupportSequence")
+        support_sequence.children = [
+            HasTeammateInDanger("HasTeammateInDanger"),
+            TeamSupportAction("TeamSupportAction")
+        ]
+        
+        # 协同攻击
+        coordinate_attack_sequence = SequenceNode("CoordinateAttackSequence")
+        coordinate_attack_sequence.children = [
+            HasTeammateEngaging("HasTeammateEngaging"),
+            CoordinateAttackAction("CoordinateAttackAction")
+        ]
+        
+        # 侧翼攻击（有队友时更有效）
         flank_sequence = SequenceNode("FlankSequence")
         flank_sequence.children = [
             HasEnemyInSight("HasEnemyInSight"),
             FlankAction("FlankAction"),
             AttackAction("AttackAction")
+        ]
+        
+        # 掩护队友
+        cover_teammate_sequence = SequenceNode("CoverTeammateSequence")
+        cover_teammate_sequence.children = [
+            HasTeammateNearby("HasTeammateNearby", max_distance=300),
+            CoverTeammateAction("CoverTeammateAction")
         ]
         
         # 攻击
@@ -1341,7 +1784,17 @@ class BehaviorTree:
         # 巡逻
         patrol_action = PatrolAction("PatrolAction")
         
-        root.children = [reload_sequence, flank_sequence, attack_sequence, chase_sequence, patrol_action]
+        # 优先级：装填 > 支援 > 协同攻击 > 侧翼 > 掩护 > 攻击 > 追击 > 巡逻
+        root.children = [
+            reload_sequence, 
+            support_sequence, 
+            coordinate_attack_sequence,
+            flank_sequence, 
+            cover_teammate_sequence,
+            attack_sequence, 
+            chase_sequence, 
+            patrol_action
+        ]
         self.root = root
         return root
     
@@ -1385,7 +1838,7 @@ class BehaviorTree:
         return root
     
     def create_team_tree(self):
-        """创建团队型行为树"""
+        """创建团队型行为树 - 优先团队合作"""
         root = SelectorNode("Root")
         
         # 装填
@@ -1395,24 +1848,40 @@ class BehaviorTree:
             ReloadAction("ReloadAction")
         ]
         
-        # 团队支援
+        # 团队支援（最高优先级）- 帮助处于危险中的队友
         support_sequence = SequenceNode("SupportSequence")
         support_sequence.children = [
+            HasTeammateInDanger("HasTeammateInDanger"),
             TeamSupportAction("TeamSupportAction")
+        ]
+        
+        # 协同攻击 - 与队友一起攻击同一目标
+        coordinate_attack_sequence = SequenceNode("CoordinateAttackSequence")
+        coordinate_attack_sequence.children = [
+            HasTeammateEngaging("HasTeammateEngaging"),
+            CoordinateAttackAction("CoordinateAttackAction")
+        ]
+        
+        # 掩护队友 - 为队友提供火力掩护
+        cover_teammate_sequence = SequenceNode("CoverTeammateSequence")
+        cover_teammate_sequence.children = [
+            HasTeammateNearby("HasTeammateNearby", max_distance=300),
+            CoverTeammateAction("CoverTeammateAction")
+        ]
+        
+        # 攻击敌人（有视线）
+        attack_sequence = SequenceNode("AttackSequence")
+        attack_sequence.children = [
+            HasEnemyInSight("HasEnemyInSight"),
+            AttackAction("AttackAction")
         ]
         
         # 侧翼攻击
         flank_sequence = SequenceNode("FlankSequence")
         flank_sequence.children = [
             HasEnemyInSight("HasEnemyInSight"),
+            HasTeammateNearby("HasTeammateNearby", max_distance=400),  # 有队友时才侧翼
             FlankAction("FlankAction"),
-            AttackAction("AttackAction")
-        ]
-        
-        # 攻击
-        attack_sequence = SequenceNode("AttackSequence")
-        attack_sequence.children = [
-            HasEnemyInSight("HasEnemyInSight"),
             AttackAction("AttackAction")
         ]
         
@@ -1426,7 +1895,17 @@ class BehaviorTree:
         # 巡逻
         patrol_action = PatrolAction("PatrolAction")
         
-        root.children = [reload_sequence, support_sequence, flank_sequence, attack_sequence, chase_sequence, patrol_action]
+        # 优先级：装填 > 支援队友 > 协同攻击 > 掩护队友 > 攻击 > 侧翼 > 追击 > 巡逻
+        root.children = [
+            reload_sequence, 
+            support_sequence, 
+            coordinate_attack_sequence,
+            cover_teammate_sequence,
+            attack_sequence, 
+            flank_sequence, 
+            chase_sequence, 
+            patrol_action
+        ]
         self.root = root
         return root
 

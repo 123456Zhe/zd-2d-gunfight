@@ -420,6 +420,14 @@ class Bullet:
                 not player.is_dead and 
                 player.id not in self.has_hit):
                 
+                # 检查是否是队友（团队系统）
+                if network_manager:
+                    game_instance = getattr(network_manager, 'game_instance', None)
+                    if game_instance and hasattr(game_instance, 'team_manager'):
+                        if game_instance.team_manager.are_teammates(self.owner_id, player.id):
+                            # 队友不受伤害，跳过
+                            continue
+                
                 player_rect = pygame.Rect(
                     player.pos.x - PLAYER_RADIUS,
                     player.pos.y - PLAYER_RADIUS,

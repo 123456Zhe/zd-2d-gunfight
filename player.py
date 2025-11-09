@@ -30,6 +30,9 @@ class Player:
         self.last_respawn_check = 0
         self.last_door_interaction = 0
         
+        # 团队系统
+        self.team_id = None  # 所属团队ID
+        
         # 子弹散布相关属性
         self.last_movement_time = 0  # 上次移动时间
         self.shot_count = 0  # 连续射击计数
@@ -388,8 +391,18 @@ class Player:
                 # 检查近战攻击是否击中目标
                 targets = {}
                 if all_players:
+                    # 获取团队管理器（如果存在）
+                    team_manager = None
+                    if network_manager:
+                        game_instance = getattr(network_manager, 'game_instance', None)
+                        if game_instance and hasattr(game_instance, 'team_manager'):
+                            team_manager = game_instance.team_manager
+                    
                     for pid, player in all_players.items():
                         if pid != self.id and not player.is_dead:
+                            # 检查是否是队友，如果是队友则跳过（队友不受伤害）
+                            if team_manager and team_manager.are_teammates(self.id, pid):
+                                continue
                             targets[pid] = player.pos
                 
                 # 收集障碍物（墙壁和门）
@@ -581,8 +594,8 @@ class Player:
         
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False, is_aiming=False):
-        """绘制玩家（考虑视线遮挡）"""
+    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False, is_aiming=False, team_manager=None, local_player_id=None):
+        """绘制玩家（考虑视线遮挡和团队共享视野）"""
         player_screen_pos = pygame.Vector2(
             self.pos.x - camera_offset.x,
             self.pos.y - camera_offset.y
@@ -590,12 +603,19 @@ class Player:
         
         # 如果不是本地玩家，检查是否可见
         if not is_local_player and player_pos and player_angle and walls and doors:
-            # 导入工具函数
-            from utils import is_visible
-            # 根据瞄准状态选择视野角度
-            current_fov = 30 if is_aiming else 120
-            if not is_visible(player_pos, player_angle, self.pos, current_fov, walls, doors):
-                return  # 不可见，不绘制
+            # 检查是否是队友（团队共享视野）
+            is_teammate = False
+            if team_manager and local_player_id is not None:
+                is_teammate = team_manager.are_teammates(local_player_id, self.id)
+            
+            # 如果是队友，始终可见（共享视野）
+            if not is_teammate:
+                # 导入工具函数
+                from utils import is_visible
+                # 根据瞄准状态选择视野角度
+                current_fov = 30 if is_aiming else 120
+                if not is_visible(player_pos, player_angle, self.pos, current_fov, walls, doors):
+                    return  # 不可见，不绘制
         
         if self.is_dead:
             # 死亡状态绘制灰色圆圈和复活倒计时

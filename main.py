@@ -45,6 +45,9 @@ from weapons import MeleeWeapon, Bullet, Ray
 from utils import *
 import ui
 
+# 本地模块导入 - 团队系统
+from team import TeamManager
+
 # generate_default_player_name is now imported from network module
 
 # 初始化pygame
@@ -356,6 +359,12 @@ class Game:
         # AI玩家管理
         self.ai_players = {}  # AI玩家字典 {player_id: AIPlayer}
         self.next_ai_id = 100  # AI玩家ID从100开始
+        
+        # 团队系统
+        self.team_manager = TeamManager()
+        
+        # 聊天系统 - 团队聊天模式
+        self.team_chat_mode = False  # True=队内聊天, False=全局聊天
     
     def trigger_hit_effect(self):
         """触发被击中时的红色滤镜效果"""
@@ -930,7 +939,9 @@ class Game:
                     # 聊天模式下的按键处理
                     if event.key == K_RETURN:
                         if len(self.chat_input.strip()) > 0:
-                            self.network_manager.send_chat_message(self.chat_input.strip())
+                            # 检查是否是队内聊天模式
+                            is_team_chat = getattr(self, 'team_chat_mode', False)
+                            self.network_manager.send_chat_message(self.chat_input.strip(), is_team_chat=is_team_chat)
                         self.chat_active = False
                         self.chat_input = ""
                         self.chat_scroll_offset = 0  # 重置滚动偏移
@@ -1053,6 +1064,10 @@ class Game:
                     other_player.is_respawning = pdata.get('is_respawning', False)
                     other_player.name = pdata.get('name', f'玩家{pid}')
                     
+                    # 同步团队ID
+                    if 'team_id' in pdata:
+                        other_player.team_id = pdata['team_id']
+                    
                     # 同步状态（包括武器类型和瞄准状态）
                     other_player.sync_from_network(pdata)
             
@@ -1167,16 +1182,40 @@ class Game:
         for pid, player in all_players.items():
             players_data[pid] = {
                 'pos': [player.pos.x, player.pos.y],
-                'is_dead': player.is_dead
+                'is_dead': player.is_dead,
+                'shooting': getattr(player, 'shooting', False),
+                'is_reloading': getattr(player, 'is_reloading', False),
+                'is_walking': getattr(player, 'is_walking', False),
+                'team_id': getattr(player, 'team_id', None)  # 添加团队ID
             }
         
-        # 添加网络玩家数据
+        # 添加网络玩家数据（合并，优先使用网络数据中的完整信息）
         for pid, pdata in self.network_manager.players.items():
-            if pid not in players_data:
+            if pid in players_data:
+                # 合并数据，保留网络数据中的完整信息
+                players_data[pid].update({
+                    'shooting': pdata.get('shooting', False),
+                    'is_reloading': pdata.get('is_reloading', False),
+                    'is_walking': pdata.get('is_walking', False),
+                    'team_id': pdata.get('team_id', players_data[pid].get('team_id'))  # 优先使用网络数据中的team_id
+                })
+            else:
                 players_data[pid] = pdata
         
         # 更新每个AI玩家
         for ai_id, ai_player in list(self.ai_players.items()):
+            # 同步AI的team_id（从网络数据中获取）
+            if ai_id in self.network_manager.players:
+                network_team_id = self.network_manager.players[ai_id].get('team_id')
+                old_team_id = getattr(ai_player, 'team_id', None)
+                
+                # 如果team_id改变了，更新并重新初始化行为树（如果需要）
+                if network_team_id != old_team_id:
+                    ai_player.team_id = network_team_id
+                    # 如果使用了增强版AI，重新初始化行为树以适应新的团队状态
+                    if hasattr(ai_player, '_initialize_behavior_tree'):
+                        ai_player._initialize_behavior_tree()
+            
             # 检查AI是否需要复活
             if ai_player.is_dead:
                 current_time = time.time()
@@ -1193,8 +1232,9 @@ class Game:
                         self.network_manager.players[ai_id]['respawn_time'] = 0
                 continue
             
-            # 更新AI逻辑
-            action = ai_player.update(dt, players_data, self.game_map, self.bullets)
+            # 更新AI逻辑（传递team_manager以便AI识别队友）
+            team_manager = getattr(self, 'team_manager', None)
+            action = ai_player.update(dt, players_data, self.game_map, self.bullets, team_manager)
             
             if action:
                 # 应用移动
@@ -1297,9 +1337,18 @@ class Game:
                     ai_player.last_shot_time = time.time()
                 
                 # 处理装填
-                if action['reload']:
-                    ai_player.is_reloading = True
-                    ai_player.reload_start_time = time.time()
+                if action.get('reload', False):
+                    # 如果还没有开始换弹，则开始换弹
+                    if not ai_player.is_reloading:
+                        ai_player.is_reloading = True
+                        ai_player.reload_start_time = time.time()
+                
+                # 检查换弹是否完成
+                if ai_player.is_reloading:
+                    current_time = time.time()
+                    if current_time - ai_player.reload_start_time >= RELOAD_TIME:
+                        ai_player.ammo = MAGAZINE_SIZE
+                        ai_player.is_reloading = False
                 
                 # 处理门交互
                 if 'interact_door' in action and action['interact_door']:
@@ -1382,9 +1431,11 @@ class Game:
                 player.draw(self.screen, self.camera_offset, 
                          self.player.pos, self.player.angle, 
                          self.game_map.walls, self.game_map.doors, 
-                         is_local_player=False, is_aiming=self.player.is_aiming)
+                         is_local_player=False, is_aiming=self.player.is_aiming,
+                         team_manager=self.team_manager, local_player_id=self.player.id)
             else:
-                player.draw(self.screen, self.camera_offset, None, None, None, None, is_local_player=False)
+                player.draw(self.screen, self.camera_offset, None, None, None, None, is_local_player=False,
+                         team_manager=self.team_manager, local_player_id=self.player.id)
         
         # 本地玩家总是绘制
         self.player.draw(self.screen, self.camera_offset, None, None, None, None, is_local_player=True)
@@ -1513,6 +1564,51 @@ class Game:
             try:
                 # 使用抗锯齿绘制，提高视觉质量
                 pygame.draw.polygon(vision_surface, (*VISION_GROUND, 120), visible_points)
+                
+                # 合并队友的视野（团队共享视野）
+                teammates = self.team_manager.get_teammates(self.player.id) if hasattr(self, 'team_manager') else []
+                if teammates:
+                    # 为队友视野使用稍微不同的颜色（更亮一些，用于区分）
+                    teammate_vision_color = (min(255, VISION_GROUND[0] + 30), 
+                                            min(255, VISION_GROUND[1] + 30), 
+                                            min(255, VISION_GROUND[2] + 30), 100)
+                    
+                    # 为每个队友创建单独的视野区域
+                    for teammate_id in teammates:
+                        # 检查队友是否在游戏世界中
+                        teammate = None
+                        if teammate_id in self.other_players:
+                            teammate = self.other_players[teammate_id]
+                        elif teammate_id in self.ai_players:
+                            teammate = self.ai_players[teammate_id]
+                        else:
+                            continue
+                        
+                        if teammate and not teammate.is_dead:
+                            # 创建队友的视野扇形点
+                            teammate_fov = 120  # 队友使用正常视野
+                            teammate_pos_tuple = (teammate.pos.x, teammate.pos.y)
+                            teammate_points = create_vision_fan_points(
+                                teammate_pos_tuple, teammate.angle, teammate_fov, VISION_RANGE, 15
+                            )
+                            
+                            # 转换为屏幕坐标
+                            teammate_screen_points = []
+                            for point in teammate_points:
+                                if isinstance(point, (tuple, list)) and len(point) >= 2:
+                                    screen_x = point[0] - self.camera_offset.x
+                                    screen_y = point[1] - self.camera_offset.y
+                                    teammate_screen_points.append((screen_x, screen_y))
+                            
+                            # 绘制队友的视野区域（简化版：只绘制关键点构成的多边形）
+                            if len(teammate_screen_points) >= 3:
+                                try:
+                                    # 使用简化的视野区域绘制
+                                    pygame.draw.polygon(vision_surface, teammate_vision_color, teammate_screen_points)
+                                except Exception as e:
+                                    # 如果绘制失败，忽略（可能是点坐标超出屏幕范围）
+                                    pass
+                
                 self.screen.blit(vision_surface, (0, 0))
             except Exception as e:
                 # 如果绘制失败，降级到简单的圆形

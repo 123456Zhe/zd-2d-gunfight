@@ -28,6 +28,7 @@ class EnhancedAIPlayer:
         self.is_dead = False
         self.death_time = 0
         self.respawn_time = 0
+        self.team_id = None  # 团队ID
         
         # 武器状态
         self.ammo = MAGAZINE_SIZE
@@ -117,16 +118,19 @@ class EnhancedAIPlayer:
         """根据个性化特征初始化行为树"""
         tree_type = self.personality_traits.get_behavior_tree_type()
         
-        if tree_type == "aggressive":
-            self.behavior_tree.create_aggressive_tree()
+        # 根据行为树类型创建对应的行为树
+        if tree_type == "team":
+            self.behavior_tree.create_team_tree()
+        elif tree_type == "aggressive":
+            self.behavior_tree.create_aggressive_tree()  # 已支持团队合作
         elif tree_type == "defensive":
             self.behavior_tree.create_defensive_tree()
         elif tree_type == "tactical":
-            self.behavior_tree.create_tactical_tree()
+            self.behavior_tree.create_tactical_tree()  # 已支持团队合作
         elif tree_type == "stealthy":
             self.behavior_tree.create_stealthy_tree()
         else:
-            self.behavior_tree.create_tactical_tree()
+            self.behavior_tree.create_tactical_tree()  # 默认使用战术树（已支持团队）
     
     def generate_patrol_points(self, game_map):
         """生成巡逻路径点"""
@@ -496,14 +500,14 @@ class EnhancedAIPlayer:
             self.is_making_sound = False
             self.sound_volume = 0.0
     
-    def update(self, dt, players, game_map, bullets):
+    def update(self, dt, players, game_map, bullets, team_manager=None):
         """更新AI状态"""
         if self.is_dead:
             return None
         
         current_time = time.time()
         
-        # 更新装填状态
+        # 更新装填状态（检查换弹是否完成）
         if self.is_reloading:
             if current_time - self.reload_start_time >= RELOAD_TIME:
                 self.is_reloading = False
@@ -530,15 +534,29 @@ class EnhancedAIPlayer:
                 'is_reloading': pdata.get('is_reloading', False),
                 'is_walking': pdata.get('is_walking', False),
                 'is_making_sound': pdata.get('is_making_sound', False),
-                'sound_volume': pdata.get('sound_volume', 0.0)
+                'sound_volume': pdata.get('sound_volume', 0.0),
+                'team_id': pdata.get('team_id', None)
             }
             
-            # 这里简化处理：所有其他玩家都视为敌人
-            # 实际游戏中可以根据团队分配来区分
-            enemies.append(player_data)
+            # 根据团队管理器区分队友和敌人
+            is_teammate = False
+            if team_manager and self.team_id is not None:
+                other_team_id = player_data.get('team_id')
+                if other_team_id is not None and other_team_id == self.team_id:
+                    is_teammate = True
+                elif team_manager.are_teammates(self.id, pid):
+                    is_teammate = True
+                    # 同步team_id
+                    if other_team_id is None:
+                        player_data['team_id'] = self.team_id
+            
+            if is_teammate:
+                allies.append(player_data)
+            else:
+                enemies.append(player_data)
         
-        # 执行行为树
-        action = self.behavior_tree.tick(self, enemies, game_map)
+        # 执行行为树（传递team_manager和allies）
+        action = self.behavior_tree.tick(self, enemies, game_map, team_manager=team_manager, allies=allies)
         
         # 检查门交互
         door_to_open = self.check_door_interaction()

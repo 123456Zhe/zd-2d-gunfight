@@ -106,7 +106,7 @@ class AIPersonalityTraits:
         elif self.personality_type == AIPersonality.STEALTHY:
             return "stealthy"
         elif self.personality_type == AIPersonality.TEAM_PLAYER:
-            return "tactical"  # 团队型使用战术树
+            return "team"  # 团队型使用专门的团队树
         else:
             return "tactical"  # 默认使用战术树
     

@@ -48,6 +48,9 @@ class AIPlayer:
         # 名称
         self.name = f"AI_{player_id}"
         
+        # 团队系统
+        self.team_id = None  # 所属团队ID
+        
         # 路径规划
         self.current_path = []
         self.path_index = 0
@@ -298,7 +301,7 @@ class AIPlayer:
         
         return doors_to_open
     
-    def update_stealth_mode(self, players, game_map):
+    def update_stealth_mode(self, players, game_map, team_manager=None):
         """更新静步模式决策 - 综合视觉和声音威胁"""
         current_time = time.time()
         
@@ -309,8 +312,8 @@ class AIPlayer:
         self.last_stealth_decision = current_time
         
         # 检测当前威胁
-        detected_sounds = self.detect_sounds(players, game_map)
-        visual_contacts = self.detect_visual_enemies(players, game_map)
+        detected_sounds = self.detect_sounds(players, game_map, team_manager)
+        visual_contacts = self.detect_visual_enemies(players, game_map, team_manager)
         
         # 分析威胁等级
         min_threat_distance = float('inf')
@@ -505,7 +508,7 @@ class AIPlayer:
         return not (rect.right < min_x or rect.left > max_x or 
                    rect.bottom < min_y or rect.top > max_y)
     
-    def detect_sounds(self, players, game_map):
+    def detect_sounds(self, players, game_map, team_manager=None):
         """通过声音检测其他玩家"""
         current_time = time.time()
         detected_sounds = []
@@ -513,6 +516,11 @@ class AIPlayer:
         for player_id, player_data in players.items():
             if player_id == self.id or player_data.get('is_dead', False):
                 continue
+            
+            # 检查是否是队友（团队系统）
+            if team_manager:
+                if team_manager.are_teammates(self.id, player_id):
+                    continue  # 忽略队友
             
             player_pos = pygame.Vector2(player_data['pos'])
             distance = self.pos.distance_to(player_pos)
@@ -586,13 +594,18 @@ class AIPlayer:
         
         return detected_sounds
     
-    def detect_visual_enemies(self, players, game_map):
+    def detect_visual_enemies(self, players, game_map, team_manager=None):
         """通过视线检测敌人"""
         visual_contacts = []
         
         for player_id, player_data in players.items():
             if player_id == self.id or player_data.get('is_dead', False):
                 continue
+            
+            # 检查是否是队友（团队系统）
+            if team_manager:
+                if team_manager.are_teammates(self.id, player_id):
+                    continue  # 忽略队友
             
             player_pos = pygame.Vector2(player_data['pos'])
             distance = self.pos.distance_to(player_pos)
@@ -688,7 +701,7 @@ class AIPlayer:
         # 如果所有方向都不行，返回零向量
         return pygame.Vector2(0, 0)
     
-    def update(self, dt, players, game_map, bullets):
+    def update(self, dt, players, game_map, bullets, team_manager=None):
         """更新AI状态"""
         if self.is_dead:
             return None
@@ -702,12 +715,12 @@ class AIPlayer:
                 self.ammo = MAGAZINE_SIZE
         
         # 更新静步模式决策
-        self.update_stealth_mode(players, game_map)
+        self.update_stealth_mode(players, game_map, team_manager)
         
         # 决策更新
         if current_time - self.last_decision_time >= self.decision_interval:
             self.last_decision_time = current_time
-            self.make_decision(players, game_map)
+            self.make_decision(players, game_map, team_manager)
         
         # 检查门交互
         door_to_open = self.check_door_interaction()
@@ -734,13 +747,13 @@ class AIPlayer:
         
         return action
     
-    def make_decision(self, players, game_map):
+    def make_decision(self, players, game_map, team_manager=None):
         """AI决策逻辑 - 综合视线和声音感知"""
         current_time = time.time()
         
         # 检测声音和视线
-        detected_sounds = self.detect_sounds(players, game_map)
-        visual_contacts = self.detect_visual_enemies(players, game_map)
+        detected_sounds = self.detect_sounds(players, game_map, team_manager)
+        visual_contacts = self.detect_visual_enemies(players, game_map, team_manager)
         
         # 优先处理视觉接触（更可靠）
         closest_visual = None

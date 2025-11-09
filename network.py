@@ -9,7 +9,7 @@ from constants import (
     CHAT_DISPLAY_TIME, MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES,
     WHITE, RED, BLUE, GREEN, YELLOW, ORANGE, PURPLE,
     ROOM_SIZE, MAGAZINE_SIZE, CONNECTION_TIMEOUT, RESPAWN_TIME,
-    MELEE_DAMAGE, HEAVY_MELEE_DAMAGE
+    MELEE_DAMAGE, HEAVY_MELEE_DAMAGE, PLAYER_RADIUS
 )
 
 # 延迟导入以避免循环依赖
@@ -104,7 +104,8 @@ class NetworkManager:
                     'melee_direction': 0,
                     'weapon_type': 'gun',  # 新增：武器类型
                     'is_aiming': False,  # 新增：瞄准状态
-                    'name': self.player_name  # 修复：使用玩家名称而不是服务器名称
+                    'name': self.player_name,  # 修复：使用玩家名称而不是服务器名称
+                    'team_id': None  # 新增：团队ID
                 }
                 self.connected = True
                 
@@ -246,6 +247,11 @@ class NetworkManager:
                         self.chat_messages.append(leave_msg)
                         self.broadcast_chat_message(leave_msg)
                         
+                        # 清理团队信息
+                        game_instance = getattr(self, 'game_instance', None)
+                        if game_instance and hasattr(game_instance, 'team_manager'):
+                            game_instance.team_manager.remove_player(player_id)
+                        
                         # 回收玩家ID
                         self.recycle_player_id(player_id)
                         
@@ -357,6 +363,8 @@ class NetworkManager:
                     elif msg_type == 'respawn':
                         self._handle_respawn(msg_data)
                     elif msg_type == 'chat_message':
+                        # 服务端和客户端都使用_handle_chat_message
+                        # 服务端会处理队内聊天并转发，客户端直接接收
                         self._handle_chat_message(msg_data)
                     elif msg_type == 'chat_history':
                         self._handle_chat_history(msg_data)
@@ -416,7 +424,8 @@ class NetworkManager:
                 'melee_direction': 0,
                 'weapon_type': 'gun',  # 新增：武器类型
                 'is_aiming': False,  # 新增：瞄准状态
-                'name': player_name  # 新增：玩家名称
+                'name': player_name,  # 新增：玩家名称
+                'team_id': None  # 新增：团队ID
             }
             
             print(f"[服务端] 玩家{new_player_id}已连接，地址：{addr}，玩家名: {player_name}，当前玩家数: {len(self.players)}")
@@ -628,6 +637,13 @@ class NetworkManager:
                         # 获取玩家实例
                         game_instance = getattr(self, 'game_instance', None)
                         
+                        # 检查是否是队友（团队系统）
+                        if game_instance and hasattr(game_instance, 'team_manager'):
+                            if game_instance.team_manager.are_teammates(attacker_id, target_id):
+                                # 队友不受伤害
+                                print(f"[团队] 玩家{attacker_id}尝试攻击队友{target_id}，伤害被阻止")
+                                return
+                        
                         # 检查是否是AI玩家
                         if game_instance and hasattr(game_instance, 'ai_players') and target_id in game_instance.ai_players:
                             ai_player = game_instance.ai_players[target_id]
@@ -796,6 +812,7 @@ class NetworkManager:
             message = chat_data['message']
             player_id = chat_data['player_id']
             timestamp = chat_data.get('timestamp', time.time())
+            is_team_chat = chat_data.get('is_team_chat', False)  # 是否是队内聊天
             
             # 检查是否是服务端命令
             if self.is_server and message.startswith('.') and player_id != 0:
@@ -805,6 +822,58 @@ class NetworkManager:
             
             # 获取玩家名称 - 优先使用消息中包含的名称
             player_name = chat_data.get('player_name', self.players.get(player_id, {}).get('name', f'玩家{player_id}'))
+            
+            # 处理队内聊天
+            if is_team_chat and self.is_server:
+                game_instance = getattr(self, 'game_instance', None)
+                if game_instance and hasattr(game_instance, 'team_manager'):
+                    team = game_instance.team_manager.get_player_team(player_id)
+                    if team:
+                        # 只发送给队友
+                        player_name = f"[团队]{player_name}"
+                        msg = ChatMessage(
+                            player_id,
+                            player_name,
+                            message,
+                            timestamp
+                        )
+                        
+                        # 添加到聊天历史（只添加到队友的聊天历史）
+                        self.chat_messages.append(msg)
+                        
+                        # 保持聊天历史不超过最大数量
+                        if len(self.chat_messages) > MAX_CHAT_MESSAGES * 2:
+                            self.chat_messages = self.chat_messages[-MAX_CHAT_MESSAGES:]
+                        
+                        # 只广播给队友（包括发送者自己，以便在服务端也能看到）
+                        for teammate_id in team.members:
+                            # 找到队友的地址并发送消息
+                            if teammate_id == player_id:
+                                # 服务端玩家发送的队内聊天，添加到自己的聊天历史
+                                # 消息已经添加到chat_messages中了，这里只需要确保服务端玩家能看到
+                                continue
+                            else:
+                                # 发送给其他队友
+                                for addr, pid in self.clients.items():
+                                    if pid == teammate_id:
+                                        self.send_to_client({
+                                            'type': 'chat_message',
+                                            'data': {
+                                                'player_id': player_id,
+                                                'player_name': player_name,
+                                                'message': message,
+                                                'timestamp': timestamp,
+                                                'is_team_chat': True
+                                            }
+                                        }, addr)
+                                        break
+                        return
+                    else:
+                        # 玩家不在团队中，发送系统消息
+                        self._send_system_message("你不在任何团队中，无法使用队内聊天")
+                        return
+            
+            # 全局聊天
             msg = ChatMessage(
                 player_id,
                 player_name,
@@ -822,6 +891,69 @@ class NetworkManager:
             # 如果是服务端且不是系统消息，转发给所有客户端
             if self.is_server and player_id != 0:
                 self.broadcast_chat_message(msg)
+    
+    def _get_safe_spawn_pos_for_ai(self, game_instance, max_attempts=50):
+        """为AI玩家获取安全的生成位置（备用方法）"""
+        if not game_instance or not hasattr(game_instance, 'game_map'):
+            # 如果game_instance或game_map不存在，返回随机位置
+            return random.randint(100, ROOM_SIZE * 3 - 100), random.randint(100, ROOM_SIZE * 3 - 100)
+        
+        game_map = game_instance.game_map
+        
+        # 尝试使用房间中心位置（更安全）
+        for attempt in range(max_attempts):
+            room_id = random.randint(0, 8)
+            room_row = room_id // 3
+            room_col = room_id % 3
+            
+            # 在房间中心附近随机位置
+            spawn_x = room_col * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
+            spawn_y = room_row * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
+            
+            # 确保在房间边界内
+            spawn_x = max(room_col * ROOM_SIZE + 50, min(spawn_x, (room_col + 1) * ROOM_SIZE - 50))
+            spawn_y = max(room_row * ROOM_SIZE + 50, min(spawn_y, (room_row + 1) * ROOM_SIZE - 50))
+            
+            # 检查位置是否安全
+            if self._is_position_safe_for_ai(spawn_x, spawn_y, game_map):
+                return spawn_x, spawn_y
+        
+        # 如果所有尝试都失败，使用更保守的方法：在整个地图范围内随机尝试
+        for attempt in range(max_attempts):
+            spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
+            spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+            
+            if self._is_position_safe_for_ai(spawn_x, spawn_y, game_map):
+                return spawn_x, spawn_y
+        
+        # 如果还是找不到安全位置，返回地图中心（作为最后的备选）
+        return ROOM_SIZE * 1.5, ROOM_SIZE * 1.5
+    
+    def _is_position_safe_for_ai(self, x, y, game_map):
+        """检查位置是否安全（不与墙壁或门碰撞）"""
+        try:
+            import pygame
+            player_rect = pygame.Rect(
+                x - PLAYER_RADIUS,
+                y - PLAYER_RADIUS,
+                PLAYER_RADIUS * 2,
+                PLAYER_RADIUS * 2
+            )
+            
+            # 检查墙壁碰撞
+            for wall in game_map.walls:
+                if player_rect.colliderect(wall):
+                    return False
+            
+            # 检查门碰撞
+            for door in game_map.doors:
+                if door.check_collision(player_rect):
+                    return False
+            
+            return True
+        except Exception:
+            # 如果出现任何错误，返回False以触发重试
+            return False
                 
     def _handle_server_command(self, command, player_id):
         """处理服务端命令"""
@@ -1149,9 +1281,12 @@ class NetworkManager:
             ai_id = game_instance.next_ai_id
             game_instance.next_ai_id += 1
             
-            # 随机生成出生点
-            spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
-            spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+            # 使用安全位置生成出生点（避免卡在墙里）
+            if hasattr(game_instance, 'get_safe_spawn_pos'):
+                spawn_x, spawn_y = game_instance.get_safe_spawn_pos()
+            else:
+                # 如果没有get_safe_spawn_pos方法，使用带碰撞检测的随机位置
+                spawn_x, spawn_y = self._get_safe_spawn_pos_for_ai(game_instance)
             
             # 创建AI玩家（延迟导入以避免循环依赖）
             # 检查是否使用增强版AI
@@ -1216,7 +1351,8 @@ class NetworkManager:
                 'melee_direction': 0,
                 'weapon_type': ai_player.weapon_type,
                 'is_aiming': ai_player.is_aiming,
-                'name': ai_player_name
+                'name': ai_player_name,
+                'team_id': getattr(ai_player, 'team_id', None)  # 添加团队ID
             }
             
             # 添加增强版AI特有的属性
@@ -1293,6 +1429,200 @@ class NetworkManager:
             
             self._send_system_message(f"AI玩家列表({len(ai_list)}):\n" + "\n".join(ai_list))
         
+        elif cmd == '.createteam':
+            # 创建团队
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance or not hasattr(game_instance, 'team_manager'):
+                self._send_system_message("团队系统未启用")
+                return
+            
+            team_name = " ".join(args) if args else None
+            team = game_instance.team_manager.create_team(player_id, team_name)
+            
+            if team:
+                self._send_system_message(f"已创建团队: {team.name} (ID: {team.team_id})")
+                # 同步团队信息到网络
+                self._sync_team_info(player_id, team.team_id)
+            else:
+                self._send_system_message("创建团队失败：你已经在团队中")
+        
+        elif cmd == '.jointeam':
+            # 加入团队
+            if not args:
+                self._send_system_message("用法: .jointeam <团队ID>")
+                return
+            
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance or not hasattr(game_instance, 'team_manager'):
+                self._send_system_message("团队系统未启用")
+                return
+            
+            try:
+                team_id = int(args[0])
+                if game_instance.team_manager.join_team(player_id, team_id):
+                    self._send_system_message(f"已加入团队: {team_id}")
+                    # 同步团队信息到网络
+                    self._sync_team_info(player_id, team_id)
+                else:
+                    self._send_system_message("加入团队失败：团队不存在或已满，或你已在团队中")
+            except ValueError:
+                self._send_system_message(f"无效的团队ID: {args[0]}")
+        
+        elif cmd == '.leaveteam':
+            # 离开团队
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance or not hasattr(game_instance, 'team_manager'):
+                self._send_system_message("团队系统未启用")
+                return
+            
+            if game_instance.team_manager.leave_team(player_id):
+                self._send_system_message("已离开团队")
+                # 同步团队信息到网络
+                self._sync_team_info(player_id, None)
+            else:
+                self._send_system_message("离开团队失败：你不在任何团队中")
+        
+        elif cmd == '.team' or cmd == '.teaminfo':
+            # 显示团队信息
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance or not hasattr(game_instance, 'team_manager'):
+                self._send_system_message("团队系统未启用")
+                return
+            
+            team = game_instance.team_manager.get_player_team(player_id)
+            if team:
+                members_list = ", ".join([f"玩家{pid}" for pid in team.members])
+                self._send_system_message(f"团队信息:\n名称: {team.name}\nID: {team.team_id}\n成员: {members_list}\n队长: 玩家{team.leader_id}")
+            else:
+                self._send_system_message("你不在任何团队中")
+        
+        elif cmd == '.listteams':
+            # 列出所有团队
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance or not hasattr(game_instance, 'team_manager'):
+                self._send_system_message("团队系统未启用")
+                return
+            
+            teams = game_instance.team_manager.list_teams()
+            if teams:
+                team_list = []
+                for team_info in teams:
+                    members_list = ", ".join([f"玩家{pid}" for pid in team_info['members']])
+                    team_list.append(f"团队{team_info['team_id']}: {team_info['name']} (成员: {members_list})")
+                self._send_system_message("所有团队:\n" + "\n".join(team_list))
+            else:
+                self._send_system_message("当前没有团队")
+        
+        elif cmd == '.invite' or cmd == '.teaminvite':
+            # 邀请玩家加入团队（仅队长可用）
+            if not args:
+                self._send_system_message("用法: .invite <玩家ID>")
+                return
+            
+            game_instance = getattr(self, 'game_instance', None)
+            if not game_instance or not hasattr(game_instance, 'team_manager'):
+                self._send_system_message("团队系统未启用")
+                return
+            
+            try:
+                invitee_id = int(args[0])
+                
+                # 检查被邀请者是否存在（可以是玩家或AI）
+                is_player = invitee_id in self.players
+                is_ai = False
+                if game_instance and hasattr(game_instance, 'ai_players'):
+                    is_ai = invitee_id in game_instance.ai_players
+                
+                if not is_player and not is_ai:
+                    self._send_system_message(f"玩家{invitee_id}不存在")
+                    return
+                
+                # 不能邀请自己
+                if invitee_id == player_id:
+                    self._send_system_message("不能邀请自己")
+                    return
+                
+                # 获取被邀请者名称
+                if is_player:
+                    invitee_name = self.players[invitee_id].get('name', f'玩家{invitee_id}')
+                else:
+                    # AI玩家
+                    ai_player = game_instance.ai_players[invitee_id]
+                    invitee_name = getattr(ai_player, 'name', f'AI{invitee_id}')
+                
+                # 使用团队管理器邀请
+                success, message = game_instance.team_manager.invite_to_team(player_id, invitee_id)
+                
+                if success:
+                    # 同步团队信息
+                    team = game_instance.team_manager.get_player_team(player_id)
+                    if team:
+                        self._sync_team_info(invitee_id, team.team_id)
+                        
+                        # 如果被邀请的是AI，更新AI的team_id
+                        if is_ai:
+                            ai_player = game_instance.ai_players[invitee_id]
+                            if hasattr(ai_player, 'team_id'):
+                                ai_player.team_id = team.team_id
+                                # 如果是增强版AI，重新初始化行为树
+                                if hasattr(ai_player, '_initialize_behavior_tree'):
+                                    ai_player._initialize_behavior_tree()
+                        
+                        # 发送成功消息给邀请者
+                        inviter_name = self.players.get(player_id, {}).get('name', f'玩家{player_id}')
+                        self._send_system_message(f"已邀请 {invitee_name} 加入团队")
+                        
+                        # 发送系统消息通知被邀请者（通过聊天系统）
+                        invite_msg = ChatMessage(
+                            0,
+                            "[系统]",
+                            f"{inviter_name} 邀请你加入了团队 {team.name}",
+                            time.time()
+                        )
+                        self.chat_messages.append(invite_msg)
+                        # 如果是玩家，直接发送给该玩家；如果是AI，AI会看到聊天消息
+                        if is_player:
+                            # 查找被邀请玩家的地址并发送消息
+                            for addr, pid in self.clients.items():
+                                if pid == invitee_id:
+                                    self.send_to_client({
+                                        'type': 'chat_message',
+                                        'data': {
+                                            'player_id': 0,
+                                            'player_name': '[系统]',
+                                            'message': f"{inviter_name} 邀请你加入了团队 {team.name}",
+                                            'timestamp': time.time()
+                                        }
+                                    }, addr)
+                                    break
+                        # 也广播给所有玩家（包括AI可以看到）
+                        self.broadcast_chat_message(invite_msg)
+                    else:
+                        self._send_system_message("邀请失败：无法获取团队信息")
+                else:
+                    self._send_system_message(message)
+                    
+            except ValueError:
+                self._send_system_message(f"无效的玩家ID: {args[0]}")
+        
+        elif cmd == '.teamchat' or cmd == '.tc':
+            # 切换到队内聊天模式
+            game_instance = getattr(self, 'game_instance', None)
+            if game_instance and hasattr(game_instance, 'team_chat_mode'):
+                game_instance.team_chat_mode = True
+                self._send_system_message("已切换到队内聊天模式（输入 .all 或 .global 切换回全局聊天）")
+            else:
+                self._send_system_message("团队聊天功能未启用")
+        
+        elif cmd == '.all' or cmd == '.global':
+            # 切换到全局聊天模式
+            game_instance = getattr(self, 'game_instance', None)
+            if game_instance and hasattr(game_instance, 'team_chat_mode'):
+                game_instance.team_chat_mode = False
+                self._send_system_message("已切换到全局聊天模式（输入 .teamchat 或 .tc 切换回队内聊天）")
+            else:
+                self._send_system_message("团队聊天功能未启用")
+        
         elif cmd == '.help':
             # 显示可用命令
             if is_admin:
@@ -1313,6 +1643,14 @@ class NetworkManager:
                     "  示例: .addai normal aggressive 或 .addai hard tactical",
                     ".removeai <AI_ID|all> - 移除AI玩家",
                     ".listai - 列出所有AI玩家",
+                    ".createteam [名称] - 创建团队",
+                    ".jointeam <团队ID> - 加入团队",
+                    ".leaveteam - 离开团队",
+                    ".team 或 .teaminfo - 显示团队信息",
+                    ".listteams - 列出所有团队",
+                    ".invite 或 .teaminvite <玩家ID> - 邀请玩家/AI加入团队（仅队长可用）",
+                    ".teamchat 或 .tc - 切换到队内聊天",
+                    ".all 或 .global - 切换到全局聊天",
                     ".help - 显示此帮助信息"
                 ]
                 self._send_system_message("可用命令:\n" + "\n".join(commands))
@@ -1321,6 +1659,14 @@ class NetworkManager:
                     ".list 或 .players - 显示在线玩家列表",
                     ".kill - 自杀",
                     ".listai - 列出所有AI玩家",
+                    ".createteam [名称] - 创建团队",
+                    ".jointeam <团队ID> - 加入团队",
+                    ".leaveteam - 离开团队",
+                    ".team 或 .teaminfo - 显示团队信息",
+                    ".listteams - 列出所有团队",
+                    ".invite 或 .teaminvite <玩家ID> - 邀请玩家/AI加入团队（仅队长可用）",
+                    ".teamchat 或 .tc - 切换到队内聊天",
+                    ".all 或 .global - 切换到全局聊天",
                     ".help - 显示此帮助信息"
                 ]
                 self._send_system_message("可用命令:\n" + "\n".join(commands))
@@ -1354,6 +1700,26 @@ class NetworkManager:
         # 广播给所有客户端
         self.broadcast_chat_message(msg)
     
+    def _sync_team_info(self, player_id, team_id):
+        """同步团队信息到网络"""
+        # 更新玩家数据中的团队ID
+        if player_id in self.players:
+            self.players[player_id]['team_id'] = team_id
+        
+        # 同步到游戏实例中的玩家对象
+        game_instance = getattr(self, 'game_instance', None)
+        if game_instance:
+            if player_id == self.player_id and hasattr(game_instance, 'player'):
+                game_instance.player.team_id = team_id
+            elif hasattr(game_instance, 'other_players') and player_id in game_instance.other_players:
+                game_instance.other_players[player_id].team_id = team_id
+            # 同步到AI玩家
+            if hasattr(game_instance, 'ai_players') and player_id in game_instance.ai_players:
+                game_instance.ai_players[player_id].team_id = team_id
+        
+        # 广播团队更新给所有客户端（通过玩家更新消息）
+        # 团队信息会随着玩家数据一起同步
+    
     def _handle_chat_history(self, history_data):
         """处理聊天历史（客户端接收）"""
         if not self.is_server and isinstance(history_data, dict) and 'messages' in history_data:
@@ -1366,6 +1732,7 @@ class NetworkManager:
                     msg_data['timestamp']
                 )
                 self.chat_messages.append(msg)
+    
 
     def send_data(self, data):
         """发送数据到服务端或所有客户端"""
@@ -1411,7 +1778,7 @@ class NetworkManager:
         except Exception as e:
             print(f"[网络错误] 发送到{addr}失败: {e}")
 
-    def send_chat_message(self, message):
+    def send_chat_message(self, message, is_team_chat=False):
         """发送聊天消息"""
         if len(message.strip()) == 0:
             return
@@ -1424,7 +1791,8 @@ class NetworkManager:
                 'player_id': self.player_id,
                 'player_name': player_name,
                 'message': message[:MAX_CHAT_LENGTH],
-                'timestamp': time.time()
+                'timestamp': time.time(),
+                'is_team_chat': is_team_chat
             }
         }
         
