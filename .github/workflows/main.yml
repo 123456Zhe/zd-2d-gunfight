@@ -1,0 +1,75 @@
+name: Build Windows Release (Nuitka)
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  windows-build:
+    name: Build and release on Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Upgrade pip and install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pygame nuitka pathfinding numpy
+
+      - name: Run build_nuitka.py (single-file)
+        shell: pwsh
+        run: |
+          if (Test-Path 'build_nuitka.py') {
+            Write-Host "Found build_nuitka.py. Trying with --onefile first."
+            try {
+              python build_nuitka.py
+            } catch {
+              Write-Host "build_nuitka.py --onefile failed or not supported, retrying without --onefile"
+              python build_nuitka.py
+            }
+          } else {
+            throw "build_nuitka.py not found in repo root"
+          }
+
+      - name: List build output
+        run: |
+          if (Test-Path dist) { Get-ChildItem -Recurse dist } else { Write-Host "dist/ not found" }
+
+      - name: Create beta prerelease and upload dist/*
+        uses: ncipollo/release-action@v1
+        with:
+          tag: beta-${{ github.run_number }}
+          name: Beta release ${{ github.run_number }}
+          body: Automated beta build from ${{ github.sha }} (windows)
+          prerelease: true
+          files: dist/*
+
+  ubuntu-setup:
+    name: Ubuntu - install deps (no packaging)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Upgrade pip and install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pygame nuitka pathfinding numpy
+
+      - name: Skip packaging on Ubuntu
+        run: |
+          echo "Packaging on Ubuntu is disabled temporarily. This job only installs dependencies."
