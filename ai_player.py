@@ -91,27 +91,27 @@ class AIPlayer:
     def _get_decision_interval(self):
         """根据难度获取决策间隔"""
         if self.difficulty == 'easy':
-            return random.uniform(0.8, 1.2)
+            return random.uniform(1.2, 1.8)  # 降低难度：增加决策间隔
         elif self.difficulty == 'normal':
-            return random.uniform(0.4, 0.8)
+            return random.uniform(0.6, 1.0)  # 降低难度：增加决策间隔
         else:  # hard
             return random.uniform(0.2, 0.4)
     
     def _get_reaction_time(self):
         """根据难度获取反应时间"""
         if self.difficulty == 'easy':
-            return random.uniform(0.5, 1.0)
+            return random.uniform(1.0, 1.8)  # 降低难度：增加反应时间
         elif self.difficulty == 'normal':
-            return random.uniform(0.2, 0.5)
+            return random.uniform(0.4, 0.8)  # 降低难度：增加反应时间
         else:  # hard
             return random.uniform(0.1, 0.2)
     
     def _get_accuracy(self):
         """根据难度获取射击精度（角度偏差）"""
         if self.difficulty == 'easy':
-            return random.uniform(15, 30)
+            return random.uniform(25, 45)  # 降低难度：增加偏差
         elif self.difficulty == 'normal':
-            return random.uniform(5, 15)
+            return random.uniform(10, 20)  # 降低难度：增加偏差
         else:  # hard
             return random.uniform(0, 5)
     
@@ -631,6 +631,62 @@ class AIPlayer:
     def can_shoot_at_target(self, target_pos, game_map):
         """检查是否可以向目标射击（不会打到墙）"""
         return self.has_line_of_sight(target_pos, game_map)
+    
+    def can_move_in_direction(self, direction, game_map, distance=30):
+        """检查在指定方向是否可以移动（不会碰撞）"""
+        if direction.length() < 0.1:
+            return False
+        
+        # 计算测试位置
+        test_pos = self.pos + direction.normalize() * distance
+        player_rect = pygame.Rect(
+            test_pos.x - PLAYER_RADIUS,
+            test_pos.y - PLAYER_RADIUS,
+            PLAYER_RADIUS * 2,
+            PLAYER_RADIUS * 2
+        )
+        
+        # 检查墙壁碰撞
+        for wall in game_map.walls:
+            if player_rect.colliderect(wall):
+                return False
+        
+        # 检查门碰撞
+        for door in game_map.doors:
+            if door.check_collision(player_rect):
+                return False
+        
+        return True
+    
+    def find_valid_move_direction(self, game_map, preferred_directions=None):
+        """找到可以移动的方向，优先使用preferred_directions"""
+        if preferred_directions is None:
+            # 默认尝试8个方向
+            preferred_directions = [
+                pygame.Vector2(1, 0),      # 右
+                pygame.Vector2(-1, 0),     # 左
+                pygame.Vector2(0, 1),       # 下
+                pygame.Vector2(0, -1),      # 上
+                pygame.Vector2(1, 1).normalize(),   # 右下
+                pygame.Vector2(-1, 1).normalize(),  # 左下
+                pygame.Vector2(1, -1).normalize(),  # 右上
+                pygame.Vector2(-1, -1).normalize(), # 左上
+            ]
+        
+        # 首先尝试preferred_directions
+        for direction in preferred_directions:
+            if self.can_move_in_direction(direction, game_map):
+                return direction.normalize()
+        
+        # 如果preferred_directions都不行，尝试更多方向
+        for angle in range(0, 360, 15):  # 每15度尝试一次
+            angle_rad = math.radians(angle)
+            direction = pygame.Vector2(math.cos(angle_rad), -math.sin(angle_rad))
+            if self.can_move_in_direction(direction, game_map):
+                return direction.normalize()
+        
+        # 如果所有方向都不行，返回零向量
+        return pygame.Vector2(0, 0)
     
     def update(self, dt, players, game_map, bullets):
         """更新AI状态"""

@@ -22,7 +22,20 @@ from pygame.locals import *
 from constants import *
 
 # 本地模块导入 - 游戏组件
-from ai_player import AIPlayer
+# AI系统选择：True使用增强版AI（行为树+个性化），False使用原版AI
+USE_ENHANCED_AI = True
+
+if USE_ENHANCED_AI:
+    try:
+        from ai_player_enhanced import EnhancedAIPlayer as AIPlayer
+        print("[AI系统] 使用增强版AI系统（行为树+个性化特征）")
+    except ImportError as e:
+        print(f"[AI系统] 增强版AI导入失败: {e}，使用原版AI系统")
+        from ai_player import AIPlayer
+else:
+    from ai_player import AIPlayer
+    print("[AI系统] 使用原版AI系统")
+
 from map import Map, Door
 from network import NetworkManager, ChatMessage, generate_default_player_name
 from player import Player
@@ -1092,6 +1105,58 @@ class Game:
             if self.hit_effect_time < 0:
                 self.hit_effect_time = 0
 
+    def is_position_safe(self, x, y):
+        """检查位置是否安全（不与墙壁或门碰撞）"""
+        player_rect = pygame.Rect(
+            x - PLAYER_RADIUS,
+            y - PLAYER_RADIUS,
+            PLAYER_RADIUS * 2,
+            PLAYER_RADIUS * 2
+        )
+        
+        # 检查墙壁碰撞
+        for wall in self.game_map.walls:
+            if player_rect.colliderect(wall):
+                return False
+        
+        # 检查门碰撞
+        for door in self.game_map.doors:
+            if door.check_collision(player_rect):
+                return False
+        
+        return True
+    
+    def get_safe_spawn_pos(self, max_attempts=50):
+        """获取安全的复活位置（不与墙壁或门碰撞）"""
+        # 尝试使用房间中心位置（更安全）
+        for attempt in range(max_attempts):
+            room_id = random.randint(0, 8)
+            room_row = room_id // 3
+            room_col = room_id % 3
+            
+            # 在房间中心附近随机位置
+            spawn_x = room_col * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
+            spawn_y = room_row * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
+            
+            # 确保在房间边界内
+            spawn_x = max(room_col * ROOM_SIZE + 50, min(spawn_x, (room_col + 1) * ROOM_SIZE - 50))
+            spawn_y = max(room_row * ROOM_SIZE + 50, min(spawn_y, (room_row + 1) * ROOM_SIZE - 50))
+            
+            # 检查位置是否安全
+            if self.is_position_safe(spawn_x, spawn_y):
+                return spawn_x, spawn_y
+        
+        # 如果所有尝试都失败，使用更保守的方法：在整个地图范围内随机尝试
+        for attempt in range(max_attempts):
+            spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
+            spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+            
+            if self.is_position_safe(spawn_x, spawn_y):
+                return spawn_x, spawn_y
+        
+        # 如果还是找不到安全位置，返回地图中心（作为最后的备选）
+        return ROOM_SIZE * 1.5, ROOM_SIZE * 1.5
+
     def update_ai_players(self, dt, all_players):
         """更新AI玩家（仅服务端）"""
         if not self.network_manager.is_server:
@@ -1116,9 +1181,8 @@ class Game:
             if ai_player.is_dead:
                 current_time = time.time()
                 if current_time >= ai_player.respawn_time:
-                    # 随机复活点
-                    spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
-                    spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+                    # 获取安全的复活位置（不与墙壁或门碰撞）
+                    spawn_x, spawn_y = self.get_safe_spawn_pos()
                     ai_player.respawn(spawn_x, spawn_y)
                     
                     # 更新网络数据

@@ -1124,9 +1124,21 @@ class NetworkManager:
             
         elif cmd == '.addai' and is_admin:
             # 添加AI玩家
-            difficulty = args[0] if args else 'normal'
-            if difficulty not in ['easy', 'normal', 'hard']:
-                difficulty = 'normal'
+            # 支持命令格式: .addai [difficulty] [personality]
+            # 例如: .addai normal aggressive
+            difficulty = 'normal'
+            personality = None
+            
+            if args:
+                # 第一个参数是难度
+                if args[0] in ['easy', 'normal', 'hard']:
+                    difficulty = args[0]
+                    # 第二个参数是性格（如果提供）
+                    if len(args) > 1:
+                        personality = args[1]
+                else:
+                    # 如果第一个参数不是难度，可能是性格
+                    personality = args[0]
             
             # 生成AI玩家ID
             game_instance = getattr(self, 'game_instance', None)
@@ -1142,13 +1154,54 @@ class NetworkManager:
             spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
             
             # 创建AI玩家（延迟导入以避免循环依赖）
-            from ai_player import AIPlayer
-            ai_player = AIPlayer(ai_id, spawn_x, spawn_y, difficulty)
-            ai_player.generate_patrol_points(game_instance.game_map)
+            # 检查是否使用增强版AI
+            try:
+                # 尝试导入增强版AI
+                from ai_player_enhanced import EnhancedAIPlayer
+                from ai_personality import AIPersonality, AIPersonalityTraits
+                
+                # 处理性格参数
+                if personality:
+                    # 尝试解析性格
+                    personality_map = {
+                        'aggressive': AIPersonality.AGGRESSIVE,
+                        'defensive': AIPersonality.DEFENSIVE,
+                        'tactical': AIPersonality.TACTICAL,
+                        'stealthy': AIPersonality.STEALTHY,
+                        'team': AIPersonality.TEAM_PLAYER,
+                        'team_player': AIPersonality.TEAM_PLAYER,
+                        'random': AIPersonality.RANDOM
+                    }
+                    
+                    if personality.lower() in personality_map:
+                        personality_traits = AIPersonalityTraits(personality_map[personality.lower()])
+                    else:
+                        # 无效的性格，使用随机
+                        personality_traits = AIPersonalityTraits.random_personality()
+                else:
+                    # 没有指定性格，随机生成
+                    personality_traits = AIPersonalityTraits.random_personality()
+                
+                # 创建增强版AI
+                ai_player = EnhancedAIPlayer(ai_id, spawn_x, spawn_y, difficulty, personality_traits)
+                ai_player_name = ai_player.name
+                use_enhanced_ai = True
+                
+            except ImportError:
+                # 如果增强版AI不可用，使用原版AI
+                from ai_player import AIPlayer
+                ai_player = AIPlayer(ai_id, spawn_x, spawn_y, difficulty)
+                ai_player_name = f'AI_{difficulty}_{ai_id}'
+                use_enhanced_ai = False
+            
+            # 生成巡逻点（如果方法存在）
+            if hasattr(ai_player, 'generate_patrol_points'):
+                ai_player.generate_patrol_points(game_instance.game_map)
+            
             game_instance.ai_players[ai_id] = ai_player
             
             # 添加到玩家列表
-            self.players[ai_id] = {
+            player_data = {
                 'pos': [spawn_x, spawn_y],
                 'angle': ai_player.angle,
                 'health': ai_player.health,
@@ -1163,10 +1216,26 @@ class NetworkManager:
                 'melee_direction': 0,
                 'weapon_type': ai_player.weapon_type,
                 'is_aiming': ai_player.is_aiming,
-                'name': f'AI_{difficulty}_{ai_id}'
+                'name': ai_player_name
             }
             
-            self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, ID: {ai_id})")
+            # 添加增强版AI特有的属性
+            if use_enhanced_ai:
+                player_data['is_walking'] = getattr(ai_player, 'is_walking', False)
+                player_data['is_making_sound'] = getattr(ai_player, 'is_making_sound', False)
+                player_data['sound_volume'] = getattr(ai_player, 'sound_volume', 0.0)
+            
+            self.players[ai_id] = player_data
+            
+            # 生成消息
+            if use_enhanced_ai and personality:
+                personality_name = personality_traits.personality_type.value
+                self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, 性格: {personality_name}, ID: {ai_id})")
+            elif use_enhanced_ai:
+                personality_name = personality_traits.personality_type.value
+                self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, 性格: {personality_name}, ID: {ai_id})")
+            else:
+                self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, ID: {ai_id})")
         
         elif cmd == '.removeai' and is_admin:
             # 移除AI玩家
@@ -1215,7 +1284,12 @@ class NetworkManager:
             ai_list = []
             for ai_id, ai_player in game_instance.ai_players.items():
                 status = "死亡" if ai_player.is_dead else f"生命值:{ai_player.health}"
-                ai_list.append(f"ID:{ai_id} - {ai_player.name} (难度:{ai_player.difficulty}, {status})")
+                # 检查是否有性格信息（增强版AI）
+                if hasattr(ai_player, 'personality_traits'):
+                    personality_name = ai_player.personality_traits.personality_type.value
+                    ai_list.append(f"ID:{ai_id} - {ai_player.name} (难度:{ai_player.difficulty}, 性格:{personality_name}, {status})")
+                else:
+                    ai_list.append(f"ID:{ai_id} - {ai_player.name} (难度:{ai_player.difficulty}, {status})")
             
             self._send_system_message(f"AI玩家列表({len(ai_list)}):\n" + "\n".join(ai_list))
         
@@ -1233,7 +1307,10 @@ class NetworkManager:
                     ".weapon - 切换武器类型",
                     ".ammo - 补充弹药",
                     ".speed [倍率] [持续时间] - 临时提高移动速度",
-                    ".addai [easy|normal|hard] - 添加AI玩家",
+                    ".addai [difficulty] [personality] - 添加AI玩家",
+                    "  难度: easy/normal/hard (默认: normal)",
+                    "  性格: aggressive/defensive/tactical/stealthy/team/random (默认: random)",
+                    "  示例: .addai normal aggressive 或 .addai hard tactical",
                     ".removeai <AI_ID|all> - 移除AI玩家",
                     ".listai - 列出所有AI玩家",
                     ".help - 显示此帮助信息"
