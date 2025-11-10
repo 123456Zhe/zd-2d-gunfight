@@ -643,6 +643,25 @@ class NetworkManager:
                                 # 队友不受伤害
                                 print(f"[团队] 玩家{attacker_id}尝试攻击队友{target_id}，伤害被阻止")
                                 return
+                        # 回退：直接比较网络玩家数据的team_id或对象的team_id
+                        try:
+                            attacker_team_id = self.players.get(attacker_id, {}).get('team_id', None)
+                            target_team_id = self.players.get(target_id, {}).get('team_id', None)
+                            if attacker_team_id is None or target_team_id is None:
+                                # 从游戏实例对象补全
+                                if hasattr(game_instance, 'players') and attacker_id in getattr(game_instance, 'players', {}):
+                                    attacker_team_id = attacker_team_id or getattr(game_instance.players[attacker_id], 'team_id', None)
+                                if hasattr(game_instance, 'ai_players') and attacker_id in getattr(game_instance, 'ai_players', {}):
+                                    attacker_team_id = attacker_team_id or getattr(game_instance.ai_players[attacker_id], 'team_id', None)
+                                if hasattr(game_instance, 'players') and target_id in getattr(game_instance, 'players', {}):
+                                    target_team_id = target_team_id or getattr(game_instance.players[target_id], 'team_id', None)
+                                if hasattr(game_instance, 'ai_players') and target_id in getattr(game_instance, 'ai_players', {}):
+                                    target_team_id = target_team_id or getattr(game_instance.ai_players[target_id], 'team_id', None)
+                            if attacker_team_id is not None and target_team_id is not None and attacker_team_id == target_team_id:
+                                print(f"[团队] 玩家{attacker_id}尝试攻击同队目标{target_id}（基于team_id对比），伤害被阻止")
+                                return
+                        except Exception:
+                            pass
                         
                         # 检查是否是AI玩家
                         if game_instance and hasattr(game_instance, 'ai_players') and target_id in game_instance.ai_players:

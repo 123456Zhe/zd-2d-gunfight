@@ -1565,8 +1565,32 @@ class Game:
                 # 使用抗锯齿绘制，提高视觉质量
                 pygame.draw.polygon(vision_surface, (*VISION_GROUND, 120), visible_points)
                 
-                # 合并队友的视野（团队共享视野）
-                teammates = self.team_manager.get_teammates(self.player.id) if hasattr(self, 'team_manager') else []
+                # 合并队友的视野（团队共享视野 - 所有队员都能看到其他队员的视野）
+                teammates = []
+                # 优先使用团队管理器
+                if hasattr(self, 'team_manager'):
+                    team = self.team_manager.get_player_team(self.player.id)
+                    if team:
+                        for member_id in team.members:
+                            if member_id != self.player.id:
+                                teammates.append(member_id)
+                        if team.leader_id and team.leader_id != self.player.id and team.leader_id not in teammates:
+                            teammates.append(team.leader_id)
+                # 回退：基于network_manager的team_id推断队友（客户端可能没有完整的team_manager状态）
+                if not teammates and hasattr(self, 'network_manager') and hasattr(self.network_manager, 'players'):
+                    try:
+                        local_team_id = None
+                        # 本地玩家team_id可能存于自身或网络表
+                        local_team_id = getattr(self.player, 'team_id', None)
+                        if local_team_id is None:
+                            local_team_id = self.network_manager.players.get(self.player.id, {}).get('team_id', None)
+                        if local_team_id is not None:
+                            for pid, pdata in self.network_manager.players.items():
+                                if pid != self.player.id and pdata.get('team_id', None) == local_team_id:
+                                    teammates.append(pid)
+                    except Exception:
+                        pass
+                
                 if teammates:
                     # 为队友视野使用稍微不同的颜色（更亮一些，用于区分）
                     teammate_vision_color = (min(255, VISION_GROUND[0] + 30), 
@@ -1577,34 +1601,124 @@ class Game:
                     for teammate_id in teammates:
                         # 检查队友是否在游戏世界中
                         teammate = None
-                        if teammate_id in self.other_players:
-                            teammate = self.other_players[teammate_id]
-                        elif teammate_id in self.ai_players:
-                            teammate = self.ai_players[teammate_id]
+                        # 如果队友是本地玩家（虽然理论上不应该发生，但为了安全起见）
+                        if teammate_id == self.player.id:
+                            teammate = self.player
                         else:
+                            # 兼容不同来源的ID类型（int/str）
+                            candidate_ids = []
+                            try:
+                                candidate_ids.append(int(teammate_id))
+                            except Exception:
+                                pass
+                            # 同时尝试字符串形式
+                            candidate_ids.append(str(teammate_id))
+                            
+                            # 在其他玩家中查找
+                            found = False
+                            for cid in candidate_ids:
+                                if cid in self.other_players:
+                                    teammate = self.other_players[cid]
+                                    found = True
+                                    break
+                            
+                            # 在AI玩家中查找
+                            if not found:
+                                for cid in candidate_ids:
+                                    if cid in self.ai_players:
+                                        teammate = self.ai_players[cid]
+                                        found = True
+                                        break
+                            
+                            if not found:
+                                # 尝试最后再直接使用原始ID（避免遗漏）
+                                if teammate_id in self.other_players:
+                                    teammate = self.other_players[teammate_id]
+                                elif teammate_id in self.ai_players:
+                                    teammate = self.ai_players[teammate_id]
+                        
+                        # 队友不在游戏世界中，跳过
+                        if teammate is None:
                             continue
                         
                         if teammate and not teammate.is_dead:
-                            # 创建队友的视野扇形点
+                            # 为队友使用相同的射线检测方法创建真实视野
                             teammate_fov = 120  # 队友使用正常视野
-                            teammate_pos_tuple = (teammate.pos.x, teammate.pos.y)
-                            teammate_points = create_vision_fan_points(
-                                teammate_pos_tuple, teammate.angle, teammate_fov, VISION_RANGE, 15
+                            teammate_half_fov = teammate_fov / 2
+                            
+                            # 使用与本地玩家相同的光线数量
+                            teammate_ray_count = 40 if teammate_fov > 60 else 20
+                            teammate_angle_step = teammate_fov / teammate_ray_count
+                            
+                            # 收集队友的可见点
+                            teammate_screen_pos = (
+                                teammate.pos.x - self.camera_offset.x,
+                                teammate.pos.y - self.camera_offset.y
                             )
+                            teammate_visible_points = [teammate_screen_pos]
                             
-                            # 转换为屏幕坐标
-                            teammate_screen_points = []
-                            for point in teammate_points:
-                                if isinstance(point, (tuple, list)) and len(point) >= 2:
-                                    screen_x = point[0] - self.camera_offset.x
-                                    screen_y = point[1] - self.camera_offset.y
-                                    teammate_screen_points.append((screen_x, screen_y))
+                            # 预先筛选可能与队友视野相交的墙壁和门
+                            teammate_potential_walls = []
+                            for wall in self.game_map.walls:
+                                wall_center_x = wall.x + wall.width / 2
+                                wall_center_y = wall.y + wall.height / 2
+                                distance = math.sqrt((teammate.pos.x - wall_center_x)**2 + (teammate.pos.y - wall_center_y)**2)
+                                if distance <= VISION_RANGE * 1.5:
+                                    teammate_potential_walls.append(wall)
                             
-                            # 绘制队友的视野区域（简化版：只绘制关键点构成的多边形）
-                            if len(teammate_screen_points) >= 3:
+                            teammate_potential_doors = []
+                            for door in self.game_map.doors:
+                                if not door.is_open:
+                                    door_center_x = door.rect.x + door.rect.width / 2
+                                    door_center_y = door.rect.y + door.rect.height / 2
+                                    distance = math.sqrt((teammate.pos.x - door_center_x)**2 + (teammate.pos.y - door_center_y)**2)
+                                    if distance <= VISION_RANGE * 1.5:
+                                        teammate_potential_doors.append(door)
+                            
+                            # 为队友进行射线检测
+                            for i in range(teammate_ray_count + 1):
+                                angle = teammate.angle - teammate_half_fov + (teammate_angle_step * i)
+                                angle_rad = math.radians(angle)
+                                ray_end_x = teammate.pos.x + math.cos(angle_rad) * VISION_RANGE
+                                ray_end_y = teammate.pos.y - math.sin(angle_rad) * VISION_RANGE
+                                ray_end = pygame.Vector2(ray_end_x, ray_end_y)
+                                
+                                closest_hit = None
+                                closest_distance = float('inf')
+                                
+                                # 检查墙壁碰撞
+                                for wall in teammate_potential_walls:
+                                    intersection = self.get_line_rect_intersection(teammate.pos, ray_end, wall)
+                                    if intersection:
+                                        distance = teammate.pos.distance_to(intersection)
+                                        if distance < closest_distance:
+                                            closest_distance = distance
+                                            closest_hit = intersection
+                                
+                                # 检查门碰撞
+                                for door in teammate_potential_doors:
+                                    intersection = self.get_line_rect_intersection(teammate.pos, ray_end, door.rect)
+                                    if intersection:
+                                        distance = teammate.pos.distance_to(intersection)
+                                        if distance < closest_distance:
+                                            closest_distance = distance
+                                            closest_hit = intersection
+                                
+                                # 确定最终点位置
+                                if closest_hit:
+                                    final_point = closest_hit
+                                else:
+                                    final_point = ray_end
+                                
+                                # 转换为屏幕坐标
+                                screen_x = final_point.x - self.camera_offset.x
+                                screen_y = final_point.y - self.camera_offset.y
+                                teammate_visible_points.append((screen_x, screen_y))
+                            
+                            # 绘制队友的视野区域
+                            if len(teammate_visible_points) >= 3:
                                 try:
-                                    # 使用简化的视野区域绘制
-                                    pygame.draw.polygon(vision_surface, teammate_vision_color, teammate_screen_points)
+                                    pygame.draw.polygon(vision_surface, teammate_vision_color, teammate_visible_points)
                                 except Exception as e:
                                     # 如果绘制失败，忽略（可能是点坐标超出屏幕范围）
                                     pass
@@ -1751,7 +1865,7 @@ class Game:
         ui.draw_chat(self.screen, chat_state)
 
     def render_minimap(self):
-        """绘制小地图（不显示其他玩家）"""
+        """绘制小地图（显示所有队员的位置）"""
         minimap_width, minimap_height = 200, 150
         minimap_surface = pygame.Surface((minimap_width, minimap_height))
         minimap_surface.fill(BLACK)
@@ -1791,6 +1905,93 @@ class Game:
         if self.player.weapon_type == "melee":
             player_color = MELEE_COLOR
         pygame.draw.circle(minimap_surface, player_color, (int(minimap_center_x), int(minimap_center_y)), 4)
+
+        # 绘制所有队员的位置
+        teammates = []
+        team_obj = None
+        # 优先通过团队管理器获取
+        if hasattr(self, 'team_manager'):
+            try:
+                teammates = list(self.team_manager.get_teammates(self.player.id))
+                team_obj = self.team_manager.get_player_team(self.player.id)
+            except Exception:
+                teammates = []
+                team_obj = None
+        # 回退：从网络玩家表按相同 team_id 聚合
+        if not teammates and hasattr(self, 'network_manager') and hasattr(self.network_manager, 'players'):
+            try:
+                local_team_id = getattr(self.player, 'team_id', None)
+                if local_team_id is None:
+                    local_team_id = self.network_manager.players.get(self.player.id, {}).get('team_id', None)
+                if local_team_id is not None:
+                    for pid, pdata in self.network_manager.players.items():
+                        if pid == self.player.id:
+                            continue
+                        if pdata.get('team_id', None) == local_team_id:
+                            teammates.append(pid)
+            except Exception:
+                pass
+        # 开始绘制队友
+        for teammate_id in teammates:
+            # 检查队友是否在游戏世界中（包括本地玩家，可能是队长）
+            teammate = None
+            if teammate_id == self.player.id:
+                # 队友是本地玩家（可能是队长），但本地玩家已经绘制了，跳过
+                continue
+            else:
+                # 在 other_players / ai_players 中查找（兼容不同 ID 类型）
+                # 直接尝试
+                if teammate_id in self.other_players:
+                    teammate = self.other_players[teammate_id]
+                elif teammate_id in self.ai_players:
+                    teammate = self.ai_players[teammate_id]
+                else:
+                    # 尝试在转换类型后查找
+                    cand_ids = []
+                    try:
+                        cand_ids.append(int(teammate_id))
+                    except Exception:
+                        pass
+                    cand_ids.append(str(teammate_id))
+                    for cid in cand_ids:
+                        if cid in self.other_players:
+                            teammate = self.other_players[cid]
+                            break
+                        if cid in self.ai_players:
+                            teammate = self.ai_players[cid]
+                            break
+                
+                if teammate:
+                    # 计算队友在小地图上的相对位置
+                    rel_x = (teammate.pos.x - self.player.pos.x) * minimap_scale + minimap_center_x
+                    rel_y = (teammate.pos.y - self.player.pos.y) * minimap_scale + minimap_center_y
+                    
+                    # 只绘制在小地图范围内的队友
+                    if 0 <= rel_x < minimap_width and 0 <= rel_y < minimap_height:
+                        # 获取队友颜色
+                        teammate_color = DEAD_COLOR if teammate.is_dead else teammate.color
+                        if hasattr(teammate, 'weapon_type') and teammate.weapon_type == "melee":
+                            teammate_color = MELEE_COLOR
+                        
+                        # 绘制队友位置（稍小一点，以区分本地玩家）
+                        pygame.draw.circle(minimap_surface, teammate_color, (int(rel_x), int(rel_y)), 3)
+                        
+                        # 如果是队长，绘制一个小标记
+                        # 使用已获取到的 team_obj；若没有则尝试从 team_manager 获取
+                        team = team_obj
+                        if team is None and hasattr(self, 'team_manager'):
+                            try:
+                                team = self.team_manager.get_player_team(self.player.id)
+                            except Exception:
+                                team = None
+                        if team and team.is_leader(teammate_id):
+                            # 在队友位置上方绘制一个小三角形表示队长
+                            triangle_points = [
+                                (int(rel_x), int(rel_y) - 6),
+                                (int(rel_x) - 3, int(rel_y) - 3),
+                                (int(rel_x) + 3, int(rel_y) - 3)
+                            ]
+                            pygame.draw.polygon(minimap_surface, teammate_color, triangle_points)
 
         # 在小地图上显示大概方位（不显示精确位置）
         for sound_info in self.nearby_sound_players:

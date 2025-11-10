@@ -423,10 +423,29 @@ class Bullet:
                 # 检查是否是队友（团队系统）
                 if network_manager:
                     game_instance = getattr(network_manager, 'game_instance', None)
+                    # 先用团队管理器判定
                     if game_instance and hasattr(game_instance, 'team_manager'):
                         if game_instance.team_manager.are_teammates(self.owner_id, player.id):
-                            # 队友不受伤害，跳过
                             continue
+                    # 回退：直接比较双方的team_id（网络数据或对象属性）
+                    try:
+                        owner_team_id = None
+                        target_team_id = None
+                        if hasattr(network_manager, 'players'):
+                            owner_team_id = network_manager.players.get(self.owner_id, {}).get('team_id', None)
+                            target_team_id = network_manager.players.get(player.id, {}).get('team_id', None)
+                        if owner_team_id is None and game_instance:
+                            # 从游戏实例对象获取（玩家或AI）
+                            if hasattr(game_instance, 'players') and self.owner_id in getattr(game_instance, 'players', {}):
+                                owner_team_id = getattr(game_instance.players[self.owner_id], 'team_id', None)
+                            if hasattr(game_instance, 'ai_players') and self.owner_id in getattr(game_instance, 'ai_players', {}):
+                                owner_team_id = getattr(game_instance.ai_players[self.owner_id], 'team_id', None)
+                        if target_team_id is None:
+                            target_team_id = getattr(player, 'team_id', None)
+                        if owner_team_id is not None and target_team_id is not None and owner_team_id == target_team_id:
+                            continue
+                    except Exception:
+                        pass
                 
                 player_rect = pygame.Rect(
                     player.pos.x - PLAYER_RADIUS,

@@ -193,18 +193,20 @@ class HasEnemyInSight(ConditionNode):
         game_map = blackboard.get('game_map')
         team_manager = blackboard.get('team_manager')
         
-        # 过滤掉队友（双重检查）
+        # 过滤掉队友（优先使用团队管理器判断，其次使用team_id对比）
         filtered_enemies = []
         for enemy in enemies:
             if enemy.get('is_dead', False):
                 continue
-            # 检查是否是队友
-            if team_manager and hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
-                enemy_team_id = enemy.get('team_id')
-                if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
-                    continue
+            # 检查是否是队友（先用are_teammates，避免ID类型/同步问题）
+            if team_manager:
                 if team_manager.are_teammates(ai_player.id, enemy.get('id')):
                     continue
+                # 补充：如果双方都有team_id字段，也进行一次直接对比（防守）
+                if hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
+                    enemy_team_id = enemy.get('team_id')
+                    if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
+                        continue
             filtered_enemies.append(enemy)
         
         # 检查是否有激进型AI特征（扩大检测范围）
@@ -254,13 +256,14 @@ class HasEnemyInSoundRange(ConditionNode):
             if enemy.get('is_dead', False):
                 continue
             
-            # 检查是否是队友
-            if team_manager and hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
-                enemy_team_id = enemy.get('team_id')
-                if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
-                    continue
+            # 检查是否是队友（先用are_teammates，其次team_id）
+            if team_manager:
                 if team_manager.are_teammates(ai_player.id, enemy.get('id')):
                     continue
+                if hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
+                    enemy_team_id = enemy.get('team_id')
+                    if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
+                        continue
             
             enemy_pos = pygame.Vector2(*enemy['pos'])
             distance = ai_player.pos.distance_to(enemy_pos)
@@ -312,13 +315,14 @@ class IsInDanger(ConditionNode):
             if enemy.get('is_dead', False):
                 continue
             
-            # 检查是否是队友
-            if team_manager and hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
-                enemy_team_id = enemy.get('team_id')
-                if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
-                    continue
+            # 检查是否是队友（先用are_teammates，其次team_id）
+            if team_manager:
                 if team_manager.are_teammates(ai_player.id, enemy.get('id')):
                     continue
+                if hasattr(ai_player, 'team_id') and ai_player.team_id is not None:
+                    enemy_team_id = enemy.get('team_id')
+                    if enemy_team_id is not None and enemy_team_id == ai_player.team_id:
+                        continue
             
             enemy_pos = pygame.Vector2(*enemy['pos'])
             distance = ai_player.pos.distance_to(enemy_pos)

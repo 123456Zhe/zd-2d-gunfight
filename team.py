@@ -75,6 +75,31 @@ class TeamManager:
         self.next_team_id = 1
         self.max_team_size = 5  # 最大团队人数
     
+    def _resolve_team_id_for_player(self, player_id):
+        """
+        兼容不同类型的玩家ID（int/str），返回其所属team_id；如果未找到返回None
+        """
+        # 直接命中
+        if player_id in self.player_teams:
+            return self.player_teams[player_id]
+        
+        # 尝试类型转换
+        candidates = []
+        try:
+            candidates.append(int(player_id))
+        except Exception:
+            pass
+        try:
+            candidates.append(str(player_id))
+        except Exception:
+            pass
+        
+        for cid in candidates:
+            if cid in self.player_teams:
+                return self.player_teams[cid]
+        
+        return None
+    
     def create_team(self, player_id: int, team_name: str = None) -> Optional[Team]:
         """创建团队"""
         # 检查玩家是否已在团队中
@@ -135,22 +160,22 @@ class TeamManager:
     
     def get_player_team(self, player_id: int) -> Optional[Team]:
         """获取玩家所在的团队"""
-        if player_id not in self.player_teams:
+        team_id = self._resolve_team_id_for_player(player_id)
+        if team_id is None:
             return None
-        
-        team_id = self.player_teams[player_id]
         return self.teams.get(team_id)
     
     def get_player_team_id(self, player_id: int) -> Optional[int]:
         """获取玩家所在的团队ID"""
-        return self.player_teams.get(player_id)
+        return self._resolve_team_id_for_player(player_id)
     
     def are_teammates(self, player1_id: int, player2_id: int) -> bool:
         """检查两个玩家是否是队友"""
-        if player1_id not in self.player_teams or player2_id not in self.player_teams:
+        team1 = self._resolve_team_id_for_player(player1_id)
+        team2 = self._resolve_team_id_for_player(player2_id)
+        if team1 is None or team2 is None:
             return False
-        
-        return self.player_teams[player1_id] == self.player_teams[player2_id]
+        return team1 == team2
     
     def get_teammates(self, player_id: int) -> List[int]:
         """获取玩家的所有队友"""

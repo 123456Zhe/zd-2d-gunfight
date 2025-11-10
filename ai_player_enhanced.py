@@ -538,17 +538,18 @@ class EnhancedAIPlayer:
                 'team_id': pdata.get('team_id', None)
             }
             
-            # 根据团队管理器区分队友和敌人
+            # 根据团队管理器区分队友和敌人（优先使用are_teammates，其次对比team_id）
             is_teammate = False
-            if team_manager and self.team_id is not None:
-                other_team_id = player_data.get('team_id')
-                if other_team_id is not None and other_team_id == self.team_id:
+            if team_manager:
+                if team_manager.are_teammates(self.id, pid):
                     is_teammate = True
-                elif team_manager.are_teammates(self.id, pid):
-                    is_teammate = True
-                    # 同步team_id
-                    if other_team_id is None:
-                        player_data['team_id'] = self.team_id
+                elif self.team_id is not None:
+                    other_team_id = player_data.get('team_id')
+                    if other_team_id is not None and other_team_id == self.team_id:
+                        is_teammate = True
+                    elif other_team_id is None:
+                        # 如果通过are_teammates没有确认，但后续确认了队友，可在外部同步
+                        pass
             
             if is_teammate:
                 allies.append(player_data)

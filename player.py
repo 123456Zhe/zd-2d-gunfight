@@ -403,6 +403,13 @@ class Player:
                             # 检查是否是队友，如果是队友则跳过（队友不受伤害）
                             if team_manager and team_manager.are_teammates(self.id, pid):
                                 continue
+                            # 回退：比较本地对象上的team_id
+                            try:
+                                if getattr(self, 'team_id', None) is not None and getattr(player, 'team_id', None) is not None:
+                                    if self.team_id == player.team_id:
+                                        continue
+                            except Exception:
+                                pass
                             targets[pid] = player.pos
                 
                 # 收集障碍物（墙壁和门）
@@ -603,12 +610,12 @@ class Player:
         
         # 如果不是本地玩家，检查是否可见
         if not is_local_player and player_pos and player_angle and walls and doors:
-            # 检查是否是队友（团队共享视野）
+            # 检查是否是队友（团队共享视野 - 所有队员都能看到其他队员）
             is_teammate = False
             if team_manager and local_player_id is not None:
                 is_teammate = team_manager.are_teammates(local_player_id, self.id)
             
-            # 如果是队友，始终可见（共享视野）
+            # 如果是队友，始终可见（所有队员共享视野，不只是队长）
             if not is_teammate:
                 # 导入工具函数
                 from utils import is_visible
