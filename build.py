@@ -108,6 +108,9 @@ def resolve_profile(mode: str) -> dict[str, str | Path | list[str]]:
 
     if system == "windows":
         profile["binary_name"] = "ZD-2D-Gunfight.exe"
+        # Force Nuitka to use MinGW64 and automatically accept required downloads
+        # to avoid interactive prompts inside CI runners.
+        profile["flags"] = ["--mingw64", "--assume-yes-for-downloads"]
     elif system == "darwin":
         profile["binary_name"] = "ZD-2D-Gunfight.app"
         profile["flags"] = ["--macos-create-app-bundle"]

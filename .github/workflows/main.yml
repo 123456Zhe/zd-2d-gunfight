@@ -43,6 +43,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Install MinGW toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install mingw --yes --no-progress
+          $mingwPath = 'C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin'
+          if (-not (Test-Path $mingwPath)) {
+            throw "Expected MinGW path not found: $mingwPath"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $mingwPath
+          $env:Path = "$mingwPath;$env:Path"
+          gcc --version
+
       - name: Run Nuitka build
         run: |
           python build.py --clean --onefile ${{ matrix.extra_args }}
