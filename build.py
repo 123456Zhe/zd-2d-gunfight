@@ -142,7 +142,7 @@ def build_command(args: argparse.Namespace, profile: dict[str, str | Path | list
     if args.onefile:
         base_flags.append("--onefile")
 
-    if args.disable-console and system == "windows":
+    if args.disable_console and system == "windows":
         base_flags.append("--windows-console-mode=disable")
 
     base_flags.extend(profile["flags"])
