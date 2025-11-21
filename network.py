@@ -82,6 +82,11 @@ class NetworkManager:
         self.active_bullets = []  # 当前活动的子弹
         self.next_bullet_id = 1
         
+        # 系统消息去重：近期团队加入广播
+        self._recent_team_join_announcements = {}
+        self._last_jointeam_command = {}
+        self._recent_message_hashes = {}
+        
         if self.is_server:
             try:
                 self.socket.bind(('0.0.0.0', SERVER_PORT))
@@ -841,6 +846,12 @@ class NetworkManager:
             
             # 获取玩家名称 - 优先使用消息中包含的名称
             player_name = chat_data.get('player_name', self.players.get(player_id, {}).get('name', f'玩家{player_id}'))
+            current_time = time.time()
+            dedup_key = (player_id, message, bool(is_team_chat))
+            last_time = self._recent_message_hashes.get(dedup_key)
+            if last_time and current_time - last_time < 2.0:
+                return
+            self._recent_message_hashes[dedup_key] = current_time
             
             # 处理队内聊天
             if is_team_chat and self.is_server:
@@ -1478,8 +1489,14 @@ class NetworkManager:
             
             try:
                 team_id = int(args[0])
+                now = time.time()
+                key = (player_id, team_id)
+                last_time = self._last_jointeam_command.get(key)
+                if last_time and now - last_time < 5.0:
+                    return
+                self._last_jointeam_command[key] = now
                 if game_instance.team_manager.join_team(player_id, team_id):
-                    self._send_system_message(f"已加入团队: {team_id}")
+                    self._announce_team_join(player_id, team_id)
                     # 同步团队信息到网络
                     self._sync_team_info(player_id, team_id)
                 else:
@@ -1614,8 +1631,7 @@ class NetworkManager:
                                         }
                                     }, addr)
                                     break
-                        # 也广播给所有玩家（包括AI可以看到）
-                        self.broadcast_chat_message(invite_msg)
+                        
                     else:
                         self._send_system_message("邀请失败：无法获取团队信息")
                 else:
@@ -1718,6 +1734,38 @@ class NetworkManager:
         
         # 广播给所有客户端
         self.broadcast_chat_message(msg)
+    
+    def _announce_team_join(self, player_id, team_id):
+        """广播玩家加入团队的系统消息，避免重复发送"""
+        if not self.is_server:
+            return
+        
+        now = time.time()
+        key = (player_id, team_id)
+        
+        # 清理过期记录
+        cleanup_threshold = 10.0
+        for recorded_key, recorded_time in list(self._recent_team_join_announcements.items()):
+            if now - recorded_time > cleanup_threshold:
+                del self._recent_team_join_announcements[recorded_key]
+        
+        # 若短时间内已广播相同事件，则跳过
+        last_announce_time = self._recent_team_join_announcements.get(key)
+        if last_announce_time and now - last_announce_time < 5.0:
+            return
+        
+        self._recent_team_join_announcements[key] = now
+        
+        player_name = self.players.get(player_id, {}).get('name', f'玩家{player_id}')
+        team_label = f"团队 {team_id}"
+        
+        game_instance = getattr(self, 'game_instance', None)
+        if game_instance and hasattr(game_instance, 'team_manager'):
+            team = game_instance.team_manager.get_player_team(player_id)
+            if team:
+                team_label = f"团队 {team.name} (ID: {team.team_id})"
+        
+        self._send_system_message(f"{player_name} 加入了{team_label}")
     
     def _sync_team_info(self, player_id, team_id):
         """同步团队信息到网络"""

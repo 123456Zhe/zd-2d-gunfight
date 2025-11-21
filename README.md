@@ -56,7 +56,7 @@ zd-2d-gunfight/
 ├── README_Ubuntu.md     # Ubuntu支持文档
 ├── Ubuntu使用说明.md    # Ubuntu快速指南
 ├── 字体修复说明.md      # 字体兼容性说明
-└── build_*.py           # 打包脚本
+└── build.py             # 跨平台Nuitka打包脚本
 ```
 
 ### 模块说明
@@ -1044,73 +1044,59 @@ A: 是的。团队型AI和加入团队的AI会自动执行团队战术，包括�
 
 ## 打包发布
 
-### Windows打包
+项目现已统一使用 `build.py`（Nuitka）进行跨平台打包。脚本会根据当前操作系统自动选择输出目录、可执行文件名，并启用对 `pygame` 与 `pathfinding` 等外部库的完整打包支持。
 
-#### 方法1: 标准PyInstaller打包
-```bash
-python build_exe.py
-```
-- 输出: `dist/ZD-2D-Gunfight.exe`
-- 大小: ~240MB
-- 兼容性: 高
-
-#### 方法2: 最小化打包
-```bash
-python build_minimal.py
-```
-- 输出: `dist_minimal/ZD-2D-Gunfight-Mini.exe`
-- 大小: ~180MB
-- 优化: 排除不必要模块
-
-#### 方法3: Nuitka编译（推荐）
-```bash
-# 安装Nuitka
-pip install nuitka
-
-# 打包
-python build_nuitka.py
-```
-- 输出: `dist_nuitka/main.exe`
-- 大小: ~120MB
-- 性能: 原生编译，运行更快
-
-#### 方法4: cx_Freeze打包
-```bash
-# 安装cx_Freeze
-pip install cx_Freeze
-
-# 打包
-python setup_cxfreeze.py build
-```
-- 输出: `build/exe.win-amd64-3.x/`
-- 大小: ~200MB
-- 结构: 多文件模式
-
-### Ubuntu打包
+### 依赖准备
 
 ```bash
-# 运行打包脚本
-python3 build_ubuntu.py
-
-# 输出文件
-dist_ubuntu/
-├── zd-2d-gunfight              # 可执行文件
-├── zd-2d-gunfight.desktop      # 桌面快捷方式
-└── install.sh                  # 安装脚本
-
-# 安装到系统
-cd dist_ubuntu
-./install.sh
+pip install --upgrade nuitka ordered-set
 ```
 
-### 打包工具对比
+> 提示：首次运行 `build.py` 时如果检测到未安装 Nuitka，会自动执行 `pip install nuitka`。
 
-| 方法 | 文件大小 | 打包时间 | 兼容性 | 性能 | 推荐指数 |
-|------|----------|----------|--------|------|----------|
-| PyInstaller标准 | ~240MB | 中等 | 高 | 标准 | ⭐⭐⭐ |
-| PyInstaller最小化 | ~180MB | 中等 | 高 | 标准 | ⭐⭐⭐⭐ |
-| Nuitka | ~120MB | 较长 | 高 | 优秀 | ⭐⭐⭐⭐⭐ |
-| cx_Freeze | ~200MB | 较短 | 中 | 标准 | ⭐⭐⭐ |
+### 基本用法
+
+```bash
+# Windows / macOS
+python build.py --clean --onefile
+
+# Linux
+python3 build.py --clean
+```
+
+- `--clean`：删除旧的 `dist/<os>/` 输出目录后再构建。
+- `--onefile`：生成单文件可执行程序（Windows/macOS/Linux均可用）。
+- `--disable-console`：仅在 Windows 上隐藏控制台窗口。
+- `--jobs N`：设置并行编译进程数，默认使用 CPU 核心数 - 1。
+- `--dry-run`：只打印即将执行的 Nuitka 命令，便于调试。
+- `--extra-arg ...`：将附加参数直接传递给 Nuitka，可重复使用多次。
+- `--mode {auto,windows,linux,mac}`：切换脚本的配置档案。仅影响输出目录与命名，仍需在目标操作系统上完成编译。
+
+### 输出结构
+
+- Windows：`dist/windows/ZD-2D-Gunfight.exe`
+- Linux：`dist/linux/ZD-2D-Gunfight`
+- macOS：`dist/darwin/ZD-2D-Gunfight.app`
+
+同一台机器可多次运行脚本，所有构建产物会按系统维度分别存放，互不覆盖。
+
+### 常见示例
+
+```bash
+# Windows，一键打包并隐藏控制台
+python build.py --clean --onefile --disable-console
+
+# Linux，生成多文件目录结构，保留控制台
+python3 build.py --clean
+
+# macOS，生成 .app Bundle
+python3 build.py --clean --onefile
+
+# 仅查看命令行而不真正编译
+python build.py --dry-run --onefile
+```
+
+构建完成后，`dist/<os>/` 下会包含完整的可执行文件和依赖库，可直接压缩后分发给同平台玩家。
 
 ---
 
@@ -1370,10 +1356,7 @@ pip install pyinstaller
 - **易于维护**: 代码结构清晰，便于后续开发和维护
 
 #### 打包脚本
-- `build_exe.py` - Windows标准打包
-- `build_minimal.py` - Windows最小化打包
-- `build_nuitka.py` - Nuitka编译打包
-- `build_ubuntu.py` - Ubuntu打包
+- `build.py` - Nuitka统一打包脚本（自动识别平台和依赖）
 - `setup_cxfreeze.py` - cx_Freeze打包配置
 
 #### 工具脚本
