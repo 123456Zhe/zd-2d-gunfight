@@ -1,0 +1,8 @@
+# Core runtime dependencies
+pygame>=2.5
+pathfinding>=1.0
+numpy>=1.26
+
+# Build tooling
+nuitka>=2.4
+

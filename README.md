@@ -169,7 +169,8 @@ zd-2d-gunfight/
 #### Windows
 ```bash
 # 安装依赖
-pip install pygame pathfinding
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 
 # 运行游戏
 python main.py
@@ -178,7 +179,8 @@ python main.py
 #### Ubuntu/Linux
 ```bash
 # 安装依赖
-pip3 install pygame pathfinding
+python3 -m pip install --upgrade pip
+pip3 install -r requirements.txt
 
 # 安装中文字体（推荐）
 sudo apt install fonts-noto-cjk
