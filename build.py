@@ -14,12 +14,14 @@ import platform
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
 DEFAULT_TARGET = PROJECT_ROOT / "main.py"
 THIRD_PARTY_PACKAGES = ("pygame", "pathfinding")
+OPTIONAL_PLUGINS = ("pygame",)
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,7 +139,8 @@ def build_command(args: argparse.Namespace, profile: dict[str, str | Path | list
     for package in THIRD_PARTY_PACKAGES:
         base_flags.append(f"--include-package={package}")
 
-    base_flags.append("--enable-plugin=pygame")
+    for plugin in resolve_available_plugins():
+        base_flags.append(f"--enable-plugin={plugin}")
 
     if args.onefile:
         base_flags.append("--onefile")
@@ -149,6 +152,50 @@ def build_command(args: argparse.Namespace, profile: dict[str, str | Path | list
     base_flags.extend(args.extra_arg)
     base_flags.append(str(target))
     return [flag for flag in base_flags if flag]  # remove empty strings
+
+
+@lru_cache(maxsize=1)
+def resolve_available_plugins() -> tuple[str, ...]:
+    """Return a tuple of Nuitka plugins we should enable, filtered by availability."""
+
+    requested_plugins = set(OPTIONAL_PLUGINS)
+    if not requested_plugins:
+        return ()
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "nuitka", "--list-plugins"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        print("[build] Unable to inspect Nuitka plugins. Proceeding without optional plugins.")
+        return ()
+
+    if result.returncode != 0:
+        print("[build] 'nuitka --list-plugins' failed. Optional plugins will be skipped.")
+        return ()
+
+    available: set[str] = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name = line.split(":", 1)[0]
+        if " " in name or not name:
+            continue
+        available.add(name)
+
+    enabled = tuple(sorted(plugin for plugin in requested_plugins if plugin in available))
+    missing = requested_plugins - set(enabled)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        print(f"[build] Skipping unavailable Nuitka plugins: {missing_str}")
+    if enabled:
+        enabled_str = ", ".join(enabled)
+        print(f"[build] Enabling Nuitka plugins: {enabled_str}")
+    return enabled
 
 
 def clean_previous_outputs(output_dir: Path) -> None:
