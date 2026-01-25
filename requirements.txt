@@ -1,5 +1,6 @@
 # Core runtime dependencies
 pygame>=2.5
+pygame-menu>=4.0
 pathfinding>=1.0
 numpy>=1.26
 

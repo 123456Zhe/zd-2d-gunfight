@@ -51,6 +51,8 @@ from team import TeamManager
 # generate_default_player_name is now imported from network module
 
 # 初始化pygame
+import os
+os.environ['SDL_IME_SHOW_UI'] = '1'
 pygame.init()
 pygame.font.init()
 
@@ -151,6 +153,8 @@ def scan_for_servers():
         - 扫描过程会打印详细的调试信息
     """
     found_servers = []
+    seen_server_ids = set()
+    server_list_lock = threading.Lock()
     local_ip = get_local_ip()
     
     print(f"开始扫描，本机IP: {local_ip}")
@@ -220,8 +224,19 @@ def scan_for_servers():
                     _, info = response.split(":", 1)
                     server_info = json.loads(info)
                     server_info['ip'] = str(ip)
-                    found_servers.append(server_info)
-                    print(f"找到服务器: {ip} - {server_info.get('name', '未知')}")
+                    
+                    # 使用服务器ID去重
+                    server_id = server_info.get('id')
+                    
+                    with server_list_lock:
+                        if server_id and server_id in seen_server_ids:
+                            # 已经发现过这个服务器（可能是通过另一个IP）
+                            pass
+                        else:
+                            if server_id:
+                                seen_server_ids.add(server_id)
+                            found_servers.append(server_info)
+                            print(f"找到服务器: {ip} - {server_info.get('name', '未知')}")
             except socket.timeout:
                 pass
             except Exception as e:
@@ -365,6 +380,16 @@ class Game:
         
         # 聊天系统 - 团队聊天模式
         self.team_chat_mode = False  # True=队内聊天, False=全局聊天
+        
+        # 初始化聊天菜单管理器
+        self.chat_menu_manager = ui.ChatMenuManager(self.screen, self)
+        
+        # 初始化游戏内界面管理器（使用 pygame-menu 重构）
+        self.hud_manager = ui.HUDManager(self.screen, self)
+        self.info_panel_manager = ui.InfoPanelManager(self.screen, self)
+        self.chat_history_manager = ui.ChatHistoryManager(self.screen, self)
+        self.control_hints_manager = ui.ControlHintsManager(self.screen, self)
+        self.minimap_manager = ui.MinimapManager(self.screen, self)
     
     def trigger_hit_effect(self):
         """触发被击中时的红色滤镜效果"""
@@ -390,7 +415,39 @@ class Game:
             self.scanning_servers = False
     
     def show_menu(self):
-        """显示主菜单"""
+        """显示主菜单 - 使用 pygame-menu"""
+        from ui import MenuManager
+        
+        # 创建菜单管理器
+        menu_manager = MenuManager(self.screen, self)
+        
+        # 自动开始扫描服务器
+        if not self.scanning_servers and not self.found_servers:
+            self.start_server_scan()
+        
+        while self.state == "MENU":
+            events = pygame.event.get()
+            
+            for event in events:
+                if event.type == QUIT:
+                    self.running = False
+                    return
+                elif event.type == KEYDOWN:
+                    if event.key == K_ESCAPE:
+                        self.running = False
+                        return
+            
+            # 更新菜单
+            menu_manager.update(events)
+            
+            # 绘制菜单
+            menu_manager.draw()
+            
+            pygame.display.flip()
+            self.clock.tick(FPS)
+    
+    def _show_menu_legacy(self):
+        """[已弃用] 旧版主菜单显示方法"""
         # 菜单状态
         selected_option = 0  # 0=创建服务器, 1=加入游戏, 2=刷新服务器
         input_text = ""
@@ -913,53 +970,52 @@ class Game:
         print(f"接收到服务器名称: {server_name}")
     
     def handle_events(self):
-        for event in pygame.event.get():
+        events = pygame.event.get()
+        
+        # 如果聊天激活，优先交给聊天管理器处理
+        if self.chat_active:
+            self.chat_menu_manager.update(events)
+            # 处理 ESC 退出（同步状态）
+            if not self.chat_menu_manager.is_enabled():
+                self.chat_active = False
+            
+            # 即使聊天激活，我们也需要处理 QUIT 事件
+            for event in events:
+                if event.type == QUIT:
+                    self.running = False
+                elif event.type == pygame.KEYDOWN:
+                    # 聊天激活时，上下键用于滚动查看历史消息
+                    if event.key == pygame.K_UP:
+                        self.chat_history_manager.scroll_up()
+                    elif event.key == pygame.K_DOWN:
+                        self.chat_history_manager.scroll_down()
+            return
+
+        # 非聊天模式下的标准处理
+        for event in events:
             if event.type == QUIT:
                 self.running = False
             elif event.type == KEYDOWN:
                 if event.key == K_ESCAPE:
-                    if self.chat_active:
-                        self.chat_active = False
-                        self.chat_input = ""
-                    else:
-                        self.running = False
-                elif event.key == K_y and not self.chat_active:  # 按Y开启聊天
+                    self.running = False
+                elif event.key == K_y:  # 按Y开启聊天
                     self.chat_active = True
-                    self.chat_input = ""
-                elif event.key == K_3 and not self.chat_active:  # 按3切换武器
+                    self.chat_menu_manager.enable()
+                elif event.key == K_3:  # 按3切换武器
                     if self.player and not self.player.is_dead:
                         self.player.switch_weapon()
-                elif event.key == K_UP:
-                    # 向上滚动（查看更早的消息）- 任何时候都可以使用
-                    self.chat_scroll_offset += 1
+                elif event.key == K_UP:  # 非聊天模式下，上下键用于滚动查看历史
+                    self.chat_history_manager.scroll_up()
                 elif event.key == K_DOWN:
-                    # 向下滚动（查看更新的消息）- 任何时候都可以使用
-                    self.chat_scroll_offset = max(0, self.chat_scroll_offset - 1)
-                elif self.chat_active:
-                    # 聊天模式下的按键处理
-                    if event.key == K_RETURN:
-                        if len(self.chat_input.strip()) > 0:
-                            # 检查是否是队内聊天模式
-                            is_team_chat = getattr(self, 'team_chat_mode', False)
-                            self.network_manager.send_chat_message(self.chat_input.strip(), is_team_chat=is_team_chat)
-                        self.chat_active = False
-                        self.chat_input = ""
-                        self.chat_scroll_offset = 0  # 重置滚动偏移
-                    elif event.key == K_BACKSPACE:
-                        self.chat_input = self.chat_input[:-1]
-                    else:
-                        if len(self.chat_input) < MAX_CHAT_LENGTH:
-                            self.chat_input += event.unicode
-                elif not self.chat_active:
-                    # 非聊天模式下的按键处理
-                    if event.key == K_r and not self.player.is_reloading and not self.player.is_dead and self.player.weapon_type == "gun":
-                        self.player.is_reloading = True
-                        self.player.reload_start = time.time()
-                    elif event.key == K_F3:  # 切换调试模式
-                        self.debug_mode = not self.debug_mode
-                    elif event.key == K_F4:  # 切换视角显示
-                        self.show_vision = not self.show_vision
-            elif event.type == MOUSEBUTTONDOWN and not self.chat_active:
+                    self.chat_history_manager.scroll_down()
+                elif event.key == K_r and not self.player.is_reloading and not self.player.is_dead and self.player.weapon_type == "gun":
+                    self.player.is_reloading = True
+                    self.player.reload_start = time.time()
+                elif event.key == K_F3:  # 切换调试模式
+                    self.debug_mode = not self.debug_mode
+                elif event.key == K_F4:  # 切换视角显示
+                    self.show_vision = not self.show_vision
+            elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
                     if self.player.weapon_type == "melee":  # 近战武器时触发轻击
                         self.player.start_melee_attack(is_heavy=False)
@@ -970,7 +1026,7 @@ class Game:
                         self.player.start_melee_attack(is_heavy=True)
                     else:  # 其他武器时瞄准
                         self.player.is_aiming = True
-            elif event.type == MOUSEBUTTONUP and not self.chat_active:
+            elif event.type == MOUSEBUTTONUP:
                 if event.button == 1:  # 左键释放
                     if self.player.weapon_type != "melee":  # 非近战武器时停止射击
                         self.player.shooting = False
@@ -1016,7 +1072,7 @@ class Game:
                     print(f"[调试] 添加AI玩家{ai_id}到all_players，位置=({wrapper.pos.x}, {wrapper.pos.y}), 死亡={wrapper.is_dead}")
         
         # 更新本地玩家
-        self.player.update(dt, self.game_map, self.bullets, self.network_manager, all_players)
+        self.player.update(dt, self.game_map, self.bullets, self.network_manager, all_players, chat_active=self.chat_active)
         
         # 控制网络同步频率
         if current_time - self.last_sync_time > self.sync_interval:
@@ -1447,9 +1503,6 @@ class Game:
         # 绘制UI（总是在最上层）
         self.render_ui()
         
-        # 小地图
-        self.render_minimap()
-        
         # 聊天系统
         self.render_chat()
         
@@ -1814,17 +1867,21 @@ class Game:
         # 移除了视角边缘线和中心线的绘制
     
     def render_ui(self):
-        """绘制UI元素"""
-        hud_state = {
-            'player': self.player,
-            'player_count': len(self.other_players) + 1,
-            'debug_mode': self.debug_mode,
-            'network_manager': self.network_manager,
-            'nearby_sound_players': self.nearby_sound_players,
-            'bullets_count': len(self.bullets),
-            'show_vision': self.show_vision
-        }
-        ui.draw_hud(self.screen, hud_state)
+        """绘制UI元素（使用新的 pygame-menu 管理器）"""
+        # 更新并绘制 HUD
+        self.hud_manager.update()
+        self.hud_manager.draw()
+        
+        # 更新并绘制信息面板
+        self.info_panel_manager.update()
+        self.info_panel_manager.draw()
+        
+        # 更新并绘制控制提示
+        self.control_hints_manager.update()
+        self.control_hints_manager.draw()
+        
+        # 更新并绘制小地图
+        self.minimap_manager.draw()
 
     def render_multiline_text(self, text, font, color, x, y, line_spacing=5):
         """渲染多行文本，返回渲染的行数和总高度"""
@@ -1854,15 +1911,171 @@ class Game:
         return len(lines), total_height, max_width
 
     def render_chat(self):
-        """绘制聊天系统"""
-        chat_state = {
-            'chat_active': self.chat_active,
-            'chat_input': self.chat_input,
-            'chat_cursor_blink': self.chat_cursor_blink,
-            'recent_messages': self.network_manager.get_recent_chat_messages(),
-            'chat_scroll_offset': self.chat_scroll_offset
-        }
-        ui.draw_chat(self.screen, chat_state)
+        """绘制聊天系统（使用新的 pygame-menu 管理器）"""
+        # 绘制聊天输入框
+        if self.chat_active:
+            self.chat_menu_manager.draw()
+        
+        # 更新并绘制聊天历史
+        self.chat_history_manager.update()
+        self.chat_history_manager.draw()
+
+    def process_local_command(self, text):
+        """
+        处理本地命令（以.开头的命令）
+        """
+        cmd_parts = text.split()
+        if not cmd_parts:
+            return
+            
+        cmd = cmd_parts[0].lower()
+        
+        # 定义系统颜色
+        from network import ChatMessage
+        
+        if cmd == ".help":
+            help_msg = """可用命令:
+.help - 显示此帮助
+.kill - 自杀
+.list - 列出当前玩家
+.listai - 列出AI玩家
+.team - 切换团队聊天
+.all - 切换全局聊天
+.addai [难度] [性格] - 添加AI (难度: easy/normal/hard, 性格: aggressive/defensive/tactical/stealthy/team/random)
+.removeai <ID|all> - 移除AI
+.createteam [名称] - 创建团队
+.jointeam <ID> - 加入团队
+.leaveteam - 离开团队
+.listteams - 列出团队"""
+            self.network_manager.chat_messages.append(ChatMessage(0, "系统", help_msg))
+        
+        elif cmd == ".kill":
+            if self.player and not self.player.is_dead:
+                self.player.health = 0
+                self.player.is_dead = True
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "你选择了自杀。"))
+        
+        elif cmd == ".list":
+            if self.network_manager:
+                player_list = [f"{p.get('name', '未知')} (ID: {pid})" for pid, p in self.network_manager.players.items()]
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "当前玩家:\n" + "\n".join(player_list)))
+        
+        elif cmd == ".listai":
+            if not self.network_manager.is_server:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "只有服务器可以管理AI"))
+                return
+            
+            if not self.ai_players:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "当前没有AI玩家"))
+            else:
+                ai_list = [f"AI-{ai_id} ({ai.personality})" for ai_id, ai in self.ai_players.items()]
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "AI玩家:\n" + "\n".join(ai_list)))
+        
+        elif cmd == ".team":
+            self.team_chat_mode = True
+            self.network_manager.chat_messages.append(ChatMessage(0, "系统", "已切换到团队聊天模式"))
+        
+        elif cmd == ".all":
+            self.team_chat_mode = False
+            self.network_manager.chat_messages.append(ChatMessage(0, "系统", "已切换到全局聊天模式"))
+        
+        elif cmd == ".addai":
+            if not self.network_manager.is_server:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "只有服务器可以添加AI"))
+                return
+            
+            # 解析参数
+            difficulty = "normal"  # 默认难度
+            personality = "random"  # 默认性格
+            
+            if len(cmd_parts) > 1:
+                difficulty = cmd_parts[1].lower()
+                if difficulty not in ["easy", "normal", "hard"]:
+                    self.network_manager.chat_messages.append(ChatMessage(0, "系统", "难度必须是 easy/normal/hard"))
+                    return
+            
+            if len(cmd_parts) > 2:
+                personality = cmd_parts[2].lower()
+                if personality not in ["aggressive", "defensive", "tactical", "stealthy", "team", "random"]:
+                    self.network_manager.chat_messages.append(ChatMessage(0, "系统", "性格必须是 aggressive/defensive/tactical/stealthy/team/random"))
+                    return
+            
+            # 添加AI
+            self.add_ai_player(difficulty, personality)
+        
+        elif cmd == ".removeai":
+            if not self.network_manager.is_server:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "只有服务器可以移除AI"))
+                return
+            
+            if len(cmd_parts) < 2:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "用法: .removeai <ID|all>"))
+                return
+            
+            target = cmd_parts[1]
+            if target.lower() == "all":
+                # 移除所有AI
+                count = len(self.ai_players)
+                for ai_id in list(self.ai_players.keys()):
+                    self.remove_ai_player(ai_id)
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", f"已移除所有AI ({count}个)"))
+            else:
+                # 移除指定AI
+                try:
+                    ai_id = int(target)
+                    if ai_id in self.ai_players:
+                        self.remove_ai_player(ai_id)
+                        self.network_manager.chat_messages.append(ChatMessage(0, "系统", f"已移除AI-{ai_id}"))
+                    else:
+                        self.network_manager.chat_messages.append(ChatMessage(0, "系统", f"找不到AI-{ai_id}"))
+                except ValueError:
+                    self.network_manager.chat_messages.append(ChatMessage(0, "系统", "ID必须是数字"))
+        
+        elif cmd == ".createteam":
+            if not self.network_manager.is_server:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "只有服务器可以创建团队"))
+                return
+            
+            team_name = " ".join(cmd_parts[1:]) if len(cmd_parts) > 1 else f"团队{len(self.team_manager.teams) + 1}"
+            team = self.team_manager.create_team(team_name, self.player.id)
+            self.network_manager.chat_messages.append(ChatMessage(0, "系统", f"已创建团队: {team_name} (ID: {team.team_id})"))
+        
+        elif cmd == ".jointeam":
+            if len(cmd_parts) < 2:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "用法: .jointeam <团队ID>"))
+                return
+            
+            try:
+                team_id = int(cmd_parts[1])
+                if self.team_manager.join_team(self.player.id, team_id):
+                    team = self.team_manager.get_player_team(self.player.id)
+                    self.network_manager.chat_messages.append(ChatMessage(0, "系统", f"已加入团队: {team.name}"))
+                else:
+                    self.network_manager.chat_messages.append(ChatMessage(0, "系统", "加入团队失败（团队不存在或已满）"))
+            except ValueError:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "团队ID必须是数字"))
+        
+        elif cmd == ".leaveteam":
+            if self.team_manager.leave_team(self.player.id):
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "已离开团队"))
+            else:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "你不在任何团队中"))
+        
+        elif cmd == ".listteams":
+            teams = self.team_manager.get_all_teams()
+            if not teams:
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "当前没有团队"))
+            else:
+                team_info = []
+                for team in teams:
+                    member_names = [self.network_manager.players.get(mid, {}).get('name', f'未知-{mid}') 
+                                   for mid in team.members 
+                                   if mid in self.network_manager.players]
+                    team_info.append(f"{team.name} (ID: {team.team_id}) - 成员: {', '.join(member_names)}")
+                self.network_manager.chat_messages.append(ChatMessage(0, "系统", "团队列表:\n" + "\n".join(team_info)))
+        
+        else:
+            self.network_manager.chat_messages.append(ChatMessage(0, "系统", f"未知命令: {cmd}\n输入 .help 查看可用命令"))
 
     def render_minimap(self):
         """绘制小地图（显示所有队员的位置）"""

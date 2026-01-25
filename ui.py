@@ -1,9 +1,12 @@
 """
 UI模块 - 处理所有用户界面相关功能
+使用 pygame-menu 重写菜单系统
 包括字体加载、菜单绘制、HUD显示、聊天界面等
 """
 
 import pygame
+import pygame_menu
+from pygame_menu import themes
 import platform
 from constants import *
 
@@ -84,7 +87,7 @@ def load_fonts():
                     
                     # 检查渲染结果是否有效（宽度大于0）
                     if test_surface.get_width() > 0:
-                        print(f"✅ [{i:2d}] {font_name} - 加载成功，中文渲染正常")
+                        print(f"[OK] [{i:2d}] {font_name} - 加载成功，中文渲染正常")
                         
                         return {
                             'font': pygame.font.SysFont(font_name, 20),
@@ -94,20 +97,20 @@ def load_fonts():
                             'font_name': font_name
                         }
                     else:
-                        print(f"❌ [{i:2d}] {font_name} - 中文渲染失败")
+                        print(f"[FAIL] [{i:2d}] {font_name} - 中文渲染失败")
                         
                 except Exception as render_error:
-                    print(f"❌ [{i:2d}] {font_name} - 中文渲染异常: {render_error}")
+                    print(f"[FAIL] [{i:2d}] {font_name} - 中文渲染异常: {render_error}")
                     continue
             else:
-                print(f"❌ [{i:2d}] {font_name} - 字体对象创建失败")
+                print(f"[FAIL] [{i:2d}] {font_name} - 字体对象创建失败")
                 
         except Exception as font_error:
-            print(f"❌ [{i:2d}] {font_name} - 字体加载异常: {font_error}")
+            print(f"[FAIL] [{i:2d}] {font_name} - 字体加载异常: {font_error}")
             continue
     
     # 如果所有字体都失败，使用默认字体
-    print("⚠️  警告: 无法加载任何系统字体，使用pygame默认字体")
+    print("[WARN] 警告: 无法加载任何系统字体，使用pygame默认字体")
     print("建议安装中文字体包以获得更好的显示效果")
     
     if system == 'linux':
@@ -152,198 +155,576 @@ def get_fonts():
     }
 
 
+# ========== pygame-menu 菜单系统 ==========
+
+def create_custom_theme():
+    """创建自定义菜单主题"""
+    custom_theme = themes.THEME_DARK.copy()
+    
+    # 使用已加载的全局字体对象
+    global font, title_font
+    if font:
+        custom_theme.widget_font = font
+    if title_font:
+        custom_theme.title_font = title_font
+    
+    # 自定义颜色
+    custom_theme.background_color = (20, 20, 30, 230)
+    custom_theme.title_background_color = (40, 60, 100)
+    custom_theme.title_font_color = WHITE
+    custom_theme.widget_font_color = WHITE
+    custom_theme.selection_color = (0, 200, 255)
+    
+    # 按钮样式
+    custom_theme.widget_margin = (0, 15)
+    custom_theme.title_font_size = 45
+    custom_theme.widget_font_size = 22
+    
+    return custom_theme
+
+
+class MenuManager:
+    """
+    使用 pygame-menu 管理游戏菜单的类
+    """
+    
+    def __init__(self, screen, game_instance):
+        """
+        初始化菜单管理器
+        
+        参数:
+            screen: pygame 屏幕对象
+            game_instance: Game 类的实例，用于回调
+        """
+        self.screen = screen
+        self.game = game_instance
+        self.theme = create_custom_theme()
+        
+        # 菜单状态
+        self.server_name = "我的服务器"
+        self.player_name = ""
+        self.manual_ip = ""
+        self.selected_server_ip = None
+        
+        # 服务器列表更新状态跟踪
+        self.last_server_count = 0
+        self.last_scanning_state = False
+        
+        # 创建主菜单
+        self.main_menu = self._create_main_menu()
+        
+        # 子菜单
+        self.server_name_menu = None
+        self.player_name_menu = None
+        self.server_list_menu = None
+        
+    def _create_main_menu(self):
+        """创建主菜单"""
+        menu = pygame_menu.Menu(
+            '多人射击游戏',
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+            theme=self.theme
+        )
+        
+        # 副标题
+        menu.add.label('武器切换 + 瞄准系统', font_size=18, font_color=LIGHT_BLUE)
+        menu.add.vertical_margin(20)
+        
+        # 创建服务器按钮
+        menu.add.button('创建服务器', self._show_create_server_menu)
+        
+        # 刷新服务器按钮
+        menu.add.button('刷新服务器列表', self._refresh_servers)
+        
+        # 手动输入IP
+        menu.add.vertical_margin(10)
+        menu.add.label('─── 手动连接 ───', font_size=16, font_color=GRAY)
+        self.ip_input = menu.add.text_input(
+            'IP地址: ',
+            default='',
+            maxchar=50,
+            onchange=self._on_ip_change
+        )
+        menu.add.button('手动连接', self._manual_connect)
+        
+        # 服务器列表区域（初始为空标签）
+        menu.add.vertical_margin(20)
+        menu.add.label('─── 局域网服务器 ───', font_size=16, font_color=GRAY)
+        self.server_list_frame = menu.add.frame_v(400, 200, background_color=(30, 30, 40))
+        # 禁用 margin 警告
+        self.server_list_frame._pack_margin_warning = False
+        self.no_server_label = self.server_list_frame.pack(
+            menu.add.label('正在扫描服务器...', font_size=14, font_color=YELLOW)
+        )
+        
+        return menu
+    
+    def _show_create_server_menu(self):
+        """显示创建服务器的子菜单（服务器名称输入）"""
+        self.server_name_menu = pygame_menu.Menu(
+            '创建服务器',
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+            theme=self.theme
+        )
+        
+        self.server_name_menu.add.label('请输入服务器名称：', font_size=18)
+        self.server_name_input = self.server_name_menu.add.text_input(
+            '服务器名称: ',
+            default='我的服务器',
+            maxchar=20
+        )
+        self.server_name_menu.add.vertical_margin(20)
+        self.server_name_menu.add.button('下一步', self._on_server_name_confirm)
+        self.server_name_menu.add.button('返回', pygame_menu.events.BACK)
+        
+        self.main_menu._open(self.server_name_menu)
+    
+    def _on_server_name_confirm(self):
+        """服务器名称确认后，进入玩家名称输入"""
+        self.server_name = self.server_name_input.get_value().strip()
+        if not self.server_name:
+            self.server_name = "我的服务器"
+        
+        self._show_player_name_menu(is_server=True)
+    
+    def _show_player_name_menu(self, is_server=False, server_ip=None):
+        """显示玩家名称输入菜单"""
+        from network import generate_default_player_name
+        
+        self.player_name_menu = pygame_menu.Menu(
+            '输入玩家名称',
+            SCREEN_WIDTH,
+            SCREEN_HEIGHT,
+            theme=self.theme
+        )
+        
+        self.player_name_menu.add.label('请输入你的玩家名称：', font_size=18)
+        self.player_name_input = self.player_name_menu.add.text_input(
+            '玩家名称: ',
+            default=generate_default_player_name(),
+            maxchar=16
+        )
+        self.player_name_menu.add.vertical_margin(20)
+        
+        if is_server:
+            self.player_name_menu.add.button('创建服务器', lambda: self._start_game(is_server=True))
+        else:
+            self.selected_server_ip = server_ip
+            self.player_name_menu.add.button('连接服务器', lambda: self._start_game(is_server=False))
+        
+        self.player_name_menu.add.button('返回', pygame_menu.events.BACK)
+        
+        if self.server_name_menu:
+            self.server_name_menu._open(self.player_name_menu)
+        else:
+            self.main_menu._open(self.player_name_menu)
+    
+    def _start_game(self, is_server):
+        """开始游戏（创建服务器或连接）"""
+        self.player_name = self.player_name_input.get_value().strip()
+        if not self.player_name:
+            from network import generate_default_player_name
+            self.player_name = generate_default_player_name()
+        
+        if is_server:
+            self.game.connection_info = {
+                'is_server': True,
+                'server_name': self.server_name,
+                'player_name': self.player_name
+            }
+        else:
+            server_ip = self.selected_server_ip or self.manual_ip
+            self.game.connection_info = {
+                'is_server': False,
+                'server_ip': server_ip,
+                'player_name': self.player_name
+            }
+        
+        self.game.state = "CONNECTING"
+        self.game.connecting_start_time = __import__('time').time()
+        self.main_menu.disable()
+    
+    def _on_ip_change(self, value):
+        """IP输入变化时的回调"""
+        self.manual_ip = value
+    
+    def _manual_connect(self):
+        """手动连接按钮点击"""
+        ip = self.ip_input.get_value().strip()
+        if ip:
+            self.manual_ip = ip
+            self._show_player_name_menu(is_server=False, server_ip=ip)
+    
+    def _refresh_servers(self):
+        """刷新服务器列表"""
+        self.game.start_server_scan()
+        self._update_server_list_display()
+    
+    def _update_server_list_display(self):
+        """更新服务器列表显示"""
+        # 显式从菜单中移除旧的 widget，防止重叠和内存泄漏
+        if hasattr(self.server_list_frame, 'get_widgets'):
+            for widget in self.server_list_frame.get_widgets():
+                try:
+                    self.main_menu.remove_widget(widget)
+                except:
+                    pass
+        
+        # 清空现有服务器列表区域
+        self.server_list_frame.clear()
+        
+        if self.game.scanning_servers:
+            label = self.main_menu.add.label('正在扫描服务器...', font_size=14, font_color=YELLOW)
+            self.server_list_frame.pack(label)
+        elif self.game.found_servers:
+            for i, server in enumerate(self.game.found_servers[:5]):
+                server_name = server.get('name', '未知服务器')
+                server_ip = server.get('ip', '?')
+                players = server.get('players', 0)
+                max_players = server.get('max_players', '?')
+                
+                btn_text = f"{server_name} ({server_ip}) [{players}/{max_players}]"
+                btn = self.main_menu.add.button(
+                    btn_text,
+                    lambda ip=server_ip: self._on_server_selected(ip),
+                    font_size=14
+                )
+                self.server_list_frame.pack(btn)
+        else:
+            label = self.main_menu.add.label('未找到局域网服务器', font_size=14, font_color=GRAY)
+            self.server_list_frame.pack(label)
+        
+        # 只要不在扫描中，就显示刷新按钮
+        if not self.game.scanning_servers:
+            # 添加间隔
+            self.server_list_frame.pack(self.main_menu.add.vertical_margin(10))
+            # 添加手动刷新按钮
+            refresh_btn = self.main_menu.add.button('刷新列表', self._refresh_servers, font_size=14)
+            self.server_list_frame.pack(refresh_btn)
+        
+        # 强制更新菜单布局以防止 UI 消失
+        # 这是一个 workaround，解决动态修改 frame 内容后可能导致的渲染问题
+        try:
+            if hasattr(self.server_list_frame, '_update_position'):
+                self.server_list_frame._update_position()
+            
+            # 强制菜单重新计算布局
+            self.main_menu.resize(self.main_menu.get_width(), self.main_menu.get_height())
+        except Exception as e:
+            print(f"UI更新警告: {e}")
+    
+    def _on_server_selected(self, server_ip):
+        """服务器列表项被点击"""
+        self._show_player_name_menu(is_server=False, server_ip=server_ip)
+    
+    def update(self, events):
+        """更新菜单状态"""
+        # 只在服务器列表状态变化时更新显示
+        current_server_count = len(self.game.found_servers)
+        current_scanning = self.game.scanning_servers
+        
+        if (current_server_count != self.last_server_count or 
+            current_scanning != self.last_scanning_state):
+            self._update_server_list_display()
+            self.last_server_count = current_server_count
+            self.last_scanning_state = current_scanning
+        
+        if self.main_menu.is_enabled():
+            # 简化的事件过滤逻辑：
+            # 1. 拦截 TEXTINPUT 并放行，由 pygame-menu 本生处理（处理中文 IME 最稳）
+            # 2. 过滤掉产生可打印字符的 KEYDOWN，防止与 TEXTINPUT 重复导致双打
+            # 3. 放行所有控制键（退格、回车等）
+            filtered_events = []
+            for event in events:
+                if event.type == pygame.KEYDOWN:
+                    # 如果是有 unicode 的可打印字符，过滤掉，依赖 TEXTINPUT
+                    if event.unicode and event.unicode.isprintable():
+                        continue
+                filtered_events.append(event)
+
+            self.main_menu.update(filtered_events)
+    
+    def draw(self):
+        """绘制菜单"""
+        if self.main_menu.is_enabled():
+            self.main_menu.draw(self.screen)
+    
+    def is_enabled(self):
+        """菜单是否启用"""
+        return self.main_menu.is_enabled()
+    
+    def enable(self):
+        """启用菜单"""
+        self.main_menu.enable()
+    
+    def disable(self):
+        """禁用菜单"""
+        self.main_menu.disable()
+
+
+class ChatMenuManager:
+    """
+    游戏内聊天菜单管理器
+    支持中文输入的聊天系统
+    """
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        self.enabled = False
+        self.input_text = ""
+        self.cursor_pos = 0  # 光标位置
+        self.cursor_blink = True
+        self.last_blink_time = 0
+        self.held_keys_on_enable = set()
+        
+        # 聊天框尺寸
+        self.chat_width = SCREEN_WIDTH - 120
+        self.chat_height = 70
+        self.chat_x = 60
+        self.chat_y = SCREEN_HEIGHT - 90
+        
+        # IME编辑状态
+        self.ime_editing = False
+        self.ime_editing_text = ""
+        self.ime_editing_pos = 0
+        
+    def enable(self):
+        """开启聊天输入"""
+        self.enabled = True
+        self.input_text = ""
+        self.cursor_pos = 0
+        self.cursor_blink = True
+        self.game.chat_active = True
+        
+        # 启动文本输入
+        pygame.key.start_text_input()
+        
+        # 设置输入法候选框位置
+        input_rect = pygame.Rect(self.chat_x + 10, self.chat_y + 30, self.chat_width - 20, 30)
+        pygame.key.set_text_input_rect(input_rect)
+        
+        # 记录当前按下的键，防止按键泄露
+        keys = pygame.key.get_pressed()
+        self.held_keys_on_enable = {i for i in range(len(keys)) if keys[i]}
+        
+    def disable(self):
+        """关闭聊天输入"""
+        self.enabled = False
+        self.input_text = ""
+        self.cursor_pos = 0
+        self.game.chat_active = False
+        self.game.chat_input = ""
+        
+        # 停止文本输入
+        pygame.key.stop_text_input()
+        
+    def is_enabled(self):
+        """是否启用"""
+        return self.enabled
+        
+    def update(self, events):
+        """更新聊天菜单"""
+        if not self.enabled:
+            return
+            
+        # 更新光标闪烁
+        current_time = pygame.time.get_ticks()
+        if current_time - self.last_blink_time > 500:
+            self.cursor_blink = not self.cursor_blink
+            self.last_blink_time = current_time
+            
+        for event in events:
+            # ESC 关闭聊天
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.disable()
+                return
+                
+            # Enter 发送消息
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                # 如果正在使用输入法编辑，不发送消息
+                if not self.ime_editing:
+                    self._send_message()
+                return
+                
+            # 处理 KEYDOWN 事件
+            if event.type == pygame.KEYDOWN:
+                # 过滤初始按下的键
+                if event.key in self.held_keys_on_enable:
+                    continue
+                    
+                # 退格键
+                if event.key == pygame.K_BACKSPACE:
+                    if self.ime_editing:
+                        # IME编辑模式下，退格键由系统处理
+                        pass
+                    elif self.cursor_pos > 0:
+                        self.input_text = self.input_text[:self.cursor_pos-1] + self.input_text[self.cursor_pos:]
+                        self.cursor_pos -= 1
+                        
+                # Delete 键
+                elif event.key == pygame.K_DELETE:
+                    if not self.ime_editing and self.cursor_pos < len(self.input_text):
+                        self.input_text = self.input_text[:self.cursor_pos] + self.input_text[self.cursor_pos+1:]
+                        
+                # 左箭头
+                elif event.key == pygame.K_LEFT:
+                    if not self.ime_editing:
+                        self.cursor_pos = max(0, self.cursor_pos - 1)
+                        
+                # 右箭头
+                elif event.key == pygame.K_RIGHT:
+                    if not self.ime_editing:
+                        self.cursor_pos = min(len(self.input_text), self.cursor_pos + 1)
+                        
+                # Home 键
+                elif event.key == pygame.K_HOME:
+                    if not self.ime_editing:
+                        self.cursor_pos = 0
+                        
+                # End 键
+                elif event.key == pygame.K_END:
+                    if not self.ime_editing:
+                        self.cursor_pos = len(self.input_text)
+                        
+            # TEXTINPUT 事件 - 用于接收输入法输入的文本
+            elif event.type == pygame.TEXTINPUT:
+                self.ime_editing = False
+                self.ime_editing_text = ""
+                
+                # 在光标位置插入文本
+                if len(self.input_text) + len(event.text) <= MAX_CHAT_LENGTH:
+                    self.input_text = self.input_text[:self.cursor_pos] + event.text + self.input_text[self.cursor_pos:]
+                    self.cursor_pos += len(event.text)
+                    
+            # TEXTEDITING 事件 - 输入法正在编辑
+            elif event.type == pygame.TEXTEDITING:
+                self.ime_editing = True
+                self.ime_editing_text = event.text
+                self.ime_editing_pos = event.start
+                        
+        # 同步到 game
+        self.game.chat_input = self.input_text
+        
+    def _send_message(self):
+        """发送消息"""
+        text = self.input_text.strip()
+        if text:
+            if text.startswith('.'):
+                # 本地命令
+                if hasattr(self.game, 'process_local_command'):
+                    self.game.process_local_command(text)
+            else:
+                # 普通聊天
+                is_team_chat = getattr(self.game, 'team_chat_mode', False)
+                if self.game.network_manager:
+                    self.game.network_manager.send_chat_message(text, is_team_chat=is_team_chat)
+        self.disable()
+        
+    def draw(self):
+        """绘制聊天菜单"""
+        if not self.enabled:
+            return
+            
+        global font, small_font
+        
+        # 绘制背景
+        bg_rect = pygame.Rect(self.chat_x, self.chat_y, self.chat_width, self.chat_height)
+        pygame.draw.rect(self.screen, (15, 15, 20, 220), bg_rect)
+        pygame.draw.rect(self.screen, (100, 100, 120), bg_rect, 2)
+        
+        # 聊天模式标签
+        is_team_chat = getattr(self.game, 'team_chat_mode', False)
+        mode_text = "团队聊天" if is_team_chat else "全局聊天"
+        mode_color = GREEN if is_team_chat else LIGHT_BLUE
+        mode_surface = small_font.render(mode_text, True, mode_color)
+        self.screen.blit(mode_surface, (self.chat_x + 10, self.chat_y + 8))
+        
+        # 输入框背景
+        input_rect = pygame.Rect(self.chat_x + 10, self.chat_y + 30, self.chat_width - 20, 30)
+        pygame.draw.rect(self.screen, (30, 30, 40, 230), input_rect)
+        pygame.draw.rect(self.screen, (60, 60, 80), input_rect, 1)
+        
+        # 绘制输入文字
+        text_x = input_rect.x + 8
+        text_y = input_rect.y + 5
+        
+        if self.ime_editing:
+            # IME编辑模式：显示光标前的文本 + 编辑中的文本 + 光标后的文本
+            # 光标前的文本
+            text_before = self.input_text[:self.cursor_pos]
+            text_before_surface = font.render(text_before, True, WHITE)
+            self.screen.blit(text_before_surface, (text_x, text_y))
+            
+            # 编辑中的文本（带下划线）
+            text_editing = self.ime_editing_text
+            if text_editing:
+                text_editing_surface = font.render(text_editing, True, (0, 200, 255))
+                edit_x = text_x + text_before_surface.get_width()
+                self.screen.blit(text_editing_surface, (edit_x, text_y))
+                
+                # 绘制下划线
+                underline_y = text_y + font.get_height() + 2
+                pygame.draw.line(self.screen, (0, 200, 255),
+                               (edit_x, underline_y),
+                               (edit_x + text_editing_surface.get_width(), underline_y), 2)
+            
+            # 光标位置
+            if self.cursor_blink:
+                cursor_x = text_x + text_before_surface.get_width()
+                if text_editing:
+                    cursor_x += text_editing_surface.get_width()
+                cursor_y = text_y
+                pygame.draw.line(self.screen, (0, 200, 255), 
+                               (cursor_x, cursor_y), 
+                               (cursor_x, cursor_y + font.get_height()), 2)
+        else:
+            # 普通模式：显示所有文本
+            text_surface = font.render(self.input_text, True, WHITE)
+            self.screen.blit(text_surface, (text_x, text_y))
+            
+            # 光标位置
+            if self.cursor_blink:
+                # 计算光标位置
+                text_before_cursor = self.input_text[:self.cursor_pos]
+                text_before_surface = font.render(text_before_cursor, True, WHITE)
+                cursor_x = text_x + text_before_surface.get_width()
+                cursor_y = text_y
+                pygame.draw.line(self.screen, (0, 200, 255), 
+                               (cursor_x, cursor_y), 
+                               (cursor_x, cursor_y + font.get_height()), 2)
+        
+        # 提示文字
+        hint_text = "ESC 关闭 | Enter 发送"
+        hint_surface = small_font.render(hint_text, True, GRAY)
+        hint_x = self.chat_x + self.chat_width - hint_surface.get_width() - 10
+        hint_y = self.chat_y + 8
+        self.screen.blit(hint_surface, (hint_x, hint_y))
+
+
+# ========== 旧的 draw_menu 函数（保留以兼容，但标记为弃用） ==========
+
 def draw_menu(screen, menu_state):
     """
-    绘制主菜单
+    [已弃用] 绘制主菜单 - 请使用 MenuManager 类
     
     参数:
         screen: pygame屏幕对象
-        menu_state: 包含菜单状态的字典，包括:
-            - selected_option: 当前选中的选项
-            - input_text: IP输入框文本
-            - input_active: IP输入框是否激活
-            - server_name_input: 服务器名称输入
-            - player_name_input: 玩家名称输入
-            - server_name_active: 服务器名称输入框是否激活
-            - player_name_active: 玩家名称输入框是否激活
-            - show_server_name_input: 是否显示服务器名称输入框
-            - show_player_name_input: 是否显示玩家名称输入框
-            - scanning_servers: 是否正在扫描服务器
-            - found_servers: 找到的服务器列表
-            - button_rects: 按钮矩形字典
+        menu_state: 包含菜单状态的字典
     """
+    print("警告: draw_menu 已弃用，请使用 MenuManager 类")
     # 清空屏幕
     screen.fill(BLACK)
     
-    # 标题
-    title = title_font.render("多人射击游戏", True, WHITE)
-    screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 50))
+    # 简单显示一个提示
+    if title_font:
+        title = title_font.render("多人射击游戏", True, WHITE)
+        screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 50))
     
-    # 副标题
-    subtitle = font.render("武器切换 + 瞄准系统", True, LIGHT_BLUE)
-    screen.blit(subtitle, (SCREEN_WIDTH//2 - subtitle.get_width()//2, 100))
-    
-    # 左侧控制面板
-    panel_title = large_font.render("游戏控制", True, WHITE)
-    screen.blit(panel_title, (50, 120))
-    
-    # 获取按钮矩形
-    button_create = menu_state['button_rects']['button_create']
-    button_refresh = menu_state['button_rects']['button_refresh']
-    input_box = menu_state['button_rects']['input_box']
-    button_connect = menu_state['button_rects']['button_connect']
-    server_name_box = menu_state['button_rects']['server_name_box']
-    server_name_button = menu_state['button_rects']['server_name_button']
-    player_name_box = menu_state['button_rects']['player_name_box']
-    player_name_button = menu_state['button_rects']['player_name_button']
-    
-    # 创建服务器按钮
-    create_color = GREEN if menu_state['selected_option'] == 0 else DARK_BLUE
-    pygame.draw.rect(screen, create_color, button_create)
-    pygame.draw.rect(screen, WHITE, button_create, 3)
-    create_text = font.render("创建服务器", True, WHITE)
-    screen.blit(create_text, (button_create.x + (button_create.width - create_text.get_width())//2,
-                             button_create.y + (button_create.height - create_text.get_height())//2))
-    
-    # 刷新服务器按钮
-    refresh_color = GREEN if menu_state['selected_option'] == 2 else DARK_BLUE
-    pygame.draw.rect(screen, refresh_color, button_refresh)
-    pygame.draw.rect(screen, WHITE, button_refresh, 3)
-    refresh_text = font.render("刷新服务器列表", True, WHITE)
-    screen.blit(refresh_text, (button_refresh.x + (button_refresh.width - refresh_text.get_width())//2,
-                              button_refresh.y + (button_refresh.height - refresh_text.get_height())//2))
-    
-    # IP输入框
-    input_color = YELLOW if menu_state['input_active'] else WHITE
-    pygame.draw.rect(screen, BLACK, input_box)
-    pygame.draw.rect(screen, input_color, input_box, 2)
-    
-    ip_label = font.render("手动输入IP:", True, WHITE)
-    screen.blit(ip_label, (input_box.x, input_box.y - 30))
-    
-    input_surface = font.render(menu_state['input_text'], True, WHITE)
-    screen.blit(input_surface, (input_box.x + 10, input_box.y + 7))
-    
-    # 光标
-    if menu_state['input_active'] and pygame.time.get_ticks() % 1000 < 500:
-        cursor_x = input_box.x + 10 + input_surface.get_width()
-        pygame.draw.line(screen, WHITE, 
-                       (cursor_x, input_box.y + 5), 
-                       (cursor_x, input_box.y + input_box.height - 5), 2)
-    
-    # 手动连接按钮
-    connect_enabled = len(menu_state['input_text'].strip()) > 0
-    connect_color = GREEN if connect_enabled else GRAY
-    pygame.draw.rect(screen, connect_color, button_connect)
-    pygame.draw.rect(screen, WHITE, button_connect, 2)
-    connect_text = font.render("手动连接", True, WHITE if connect_enabled else DARK_GRAY)
-    screen.blit(connect_text, (button_connect.x + (button_connect.width - connect_text.get_width())//2,
-                              button_connect.y + (button_connect.height - connect_text.get_height())//2))
-    
-    # 服务器命名输入框
-    if menu_state['show_server_name_input'] and not menu_state['show_player_name_input']:
-        server_name_color = YELLOW if menu_state['server_name_active'] else WHITE
-        pygame.draw.rect(screen, BLACK, server_name_box)
-        pygame.draw.rect(screen, server_name_color, server_name_box, 2)
-        
-        server_name_label = font.render("服务器名称:", True, WHITE)
-        screen.blit(server_name_label, (server_name_box.x, server_name_box.y - 30))
-        
-        server_name_surface = font.render(menu_state['server_name_input'], True, WHITE)
-        screen.blit(server_name_surface, (server_name_box.x + 10, server_name_box.y + 7))
-        
-        # 光标
-        if menu_state['server_name_active'] and pygame.time.get_ticks() % 1000 < 500:
-            cursor_x = server_name_box.x + 10 + server_name_surface.get_width()
-            pygame.draw.line(screen, WHITE, 
-                           (cursor_x, server_name_box.y + 5), 
-                           (cursor_x, server_name_box.y + server_name_box.height - 5), 2)
-        
-        # 确认按钮
-        server_name_enabled = len(menu_state['server_name_input'].strip()) > 0
-        server_name_btn_color = GREEN if server_name_enabled else GRAY
-        pygame.draw.rect(screen, server_name_btn_color, server_name_button)
-        pygame.draw.rect(screen, WHITE, server_name_button, 2)
-        server_name_btn_text = font.render("确认创建", True, WHITE if server_name_enabled else DARK_GRAY)
-        screen.blit(server_name_btn_text, (server_name_button.x + (server_name_button.width - server_name_btn_text.get_width())//2,
-                                          server_name_button.y + (server_name_button.height - server_name_btn_text.get_height())//2))
-    
-    # 玩家命名输入框
-    if menu_state['show_player_name_input']:
-        player_name_color = YELLOW if menu_state['player_name_active'] else WHITE
-        pygame.draw.rect(screen, BLACK, player_name_box)
-        pygame.draw.rect(screen, player_name_color, player_name_box, 2)
-        
-        player_name_label = font.render("玩家名称:", True, WHITE)
-        screen.blit(player_name_label, (player_name_box.x, player_name_box.y - 30))
-        
-        player_name_surface = font.render(menu_state['player_name_input'], True, WHITE)
-        screen.blit(player_name_surface, (player_name_box.x + 10, player_name_box.y + 7))
-        
-        # 光标
-        if menu_state['player_name_active'] and pygame.time.get_ticks() % 1000 < 500:
-            cursor_x = player_name_box.x + 10 + player_name_surface.get_width()
-            pygame.draw.line(screen, WHITE, 
-                           (cursor_x, player_name_box.y + 5), 
-                           (cursor_x, player_name_box.y + player_name_box.height - 5), 2)
-        
-        # 确认按钮
-        player_name_enabled = len(menu_state['player_name_input'].strip()) > 0
-        player_name_btn_color = GREEN if player_name_enabled else GRAY
-        pygame.draw.rect(screen, player_name_btn_color, player_name_button)
-        pygame.draw.rect(screen, WHITE, player_name_button, 2)
-        player_name_btn_text = font.render("确认连接", True, WHITE if player_name_enabled else DARK_GRAY)
-        screen.blit(player_name_btn_text, (player_name_button.x + (player_name_button.width - player_name_btn_text.get_width())//2,
-                                          player_name_button.y + (player_name_button.height - player_name_btn_text.get_height())//2))
-    
-    # 右侧服务器列表
-    server_list_x = menu_state['server_list_x']
-    server_list_y = menu_state['server_list_y']
-    server_list_width = menu_state['server_list_width']
-    server_item_height = menu_state['server_item_height']
-    
-    list_title = large_font.render("局域网服务器", True, WHITE)
-    screen.blit(list_title, (server_list_x, 120))
-    
-    if menu_state['scanning_servers']:
-        # 显示扫描状态
-        scan_text = font.render("正在扫描局域网服务器...", True, YELLOW)
-        screen.blit(scan_text, (server_list_x, server_list_y))
-        
-        # 动画点
-        dots = "." * ((pygame.time.get_ticks() // 500) % 4)
-        dots_text = font.render(dots, True, YELLOW)
-        screen.blit(dots_text, (server_list_x + scan_text.get_width() + 10, server_list_y))
-        
-    elif menu_state['found_servers']:
-        # 显示找到的服务器
-        for i, server in enumerate(menu_state['found_servers'][:5]):  # 最多显示5个服务器
-            server_rect = pygame.Rect(server_list_x, server_list_y + i * (server_item_height + 10), 
-                                    server_list_width, server_item_height)
-            
-            # 服务器背景
-            pygame.draw.rect(screen, DARK_BLUE, server_rect)
-            pygame.draw.rect(screen, WHITE, server_rect, 2)
-            
-            # 服务器信息
-            server_name = font.render(server.get('name', '未知服务器'), True, WHITE)
-            server_ip = small_font.render(f"IP: {server['ip']}", True, LIGHT_BLUE)
-            player_info = small_font.render(f"玩家: {server.get('players', 0)}/{server.get('max_players', '?')}", True, GREEN)
-            
-            screen.blit(server_name, (server_rect.x + 10, server_rect.y + 5))
-            screen.blit(server_ip, (server_rect.x + 10, server_rect.y + 25))
-            screen.blit(player_info, (server_rect.x + 10, server_rect.y + 40))
-            
-            # 连接提示
-            connect_hint = small_font.render("点击连接", True, YELLOW)
-            screen.blit(connect_hint, (server_rect.x + server_rect.width - connect_hint.get_width() - 10, 
-                                      server_rect.y + server_rect.height//2 - connect_hint.get_height()//2))
-    else:
-        # 没有找到服务器
-        no_server_text = font.render("未找到局域网服务器", True, GRAY)
-        screen.blit(no_server_text, (server_list_x, server_list_y))
-        hint_text = small_font.render("点击\"刷新服务器列表\"重新扫描", True, GRAY)
-        screen.blit(hint_text, (server_list_x, server_list_y + 30))
+    if font:
+        hint = font.render("菜单正在使用 pygame-menu 重写中...", True, YELLOW)
+        screen.blit(hint, (SCREEN_WIDTH//2 - hint.get_width()//2, SCREEN_HEIGHT//2))
 
 
 def draw_hud(screen, hud_state):
@@ -633,3 +1014,528 @@ def draw_chat(screen, chat_state):
                 hint_text = "↑ 更早消息 (方向键)"
                 hint_surface = small_font.render(hint_text, True, YELLOW)
                 screen.blit(hint_surface, (SCREEN_WIDTH - hint_surface.get_width() - 20, chat_y_min - 20))
+
+
+# ========== 游戏内界面重构 - HUD 管理器 ==========
+
+class HUDManager:
+    """
+    游戏内 HUD 管理器
+    使用直接绘制方式，避免 pygame-menu 背景问题
+    """
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        
+        # HUD 位置设置
+        self.hud_x = 10
+        self.hud_y = 10
+        self.line_height = 22
+        self.padding = 5
+        
+        # 缓存的HUD数据
+        self.health_text = ''
+        self.health_color = GREEN
+        self.weapon_text = ''
+        self.weapon_color = YELLOW
+        self.ammo_text = ''
+        self.ammo_color = WHITE
+        self.status_text = ''
+        self.status_color = ORANGE
+        self.aim_text = ''
+        self.aim_color = AIM_COLOR
+        
+    def update(self):
+        """更新 HUD 内容"""
+        if not self.game.player:
+            return
+        
+        player = self.game.player
+        
+        # 更新生命值
+        health_color = GREEN if player.health > 50 else (YELLOW if player.health > 25 else RED)
+        self.health_text = f'生命: {player.health}/{player.max_health}'
+        self.health_color = health_color
+        
+        # 更新武器信息
+        weapon_name = '近战' if player.weapon_type == 'melee' else '枪械'
+        weapon_color = YELLOW if player.weapon_type == 'melee' else GREEN
+        self.weapon_text = f'武器: {weapon_name}'
+        self.weapon_color = weapon_color
+        
+        # 根据武器类型更新不同信息
+        if player.weapon_type == "gun":
+            # 枪械：显示弹药和装填状态
+            self.ammo_text = f'弹药: {player.ammo}/{MAGAZINE_SIZE}'
+            self.ammo_color = WHITE
+            
+            if player.is_reloading:
+                import time
+                reload_time = max(0, RELOAD_TIME - (time.time() - player.reload_start))
+                self.status_text = f'换弹中: {reload_time:.1f}s'
+                self.status_color = YELLOW
+                self.aim_text = ''
+            else:
+                self.status_text = ''
+                if player.is_aiming:
+                    self.aim_text = '瞄准中'
+                    self.aim_color = AIM_COLOR
+                else:
+                    self.aim_text = ''
+        else:
+            # 近战：显示攻击状态
+            if player.melee_weapon.can_attack():
+                self.ammo_text = '近战武器: 就绪'
+                self.ammo_color = GREEN
+                self.status_text = ''
+            else:
+                import time
+                remaining_cooldown = MELEE_COOLDOWN - (time.time() - player.melee_weapon.last_attack_time)
+                self.ammo_text = f'近战武器: {remaining_cooldown:.1f}s'
+                self.ammo_color = RED
+                self.status_text = ''
+            self.aim_text = ''
+    
+    def draw(self):
+        """绘制 HUD"""
+        global font
+        
+        # 绘制生命值
+        health_surface = font.render(self.health_text, True, self.health_color)
+        self.screen.blit(health_surface, (self.hud_x, self.hud_y))
+        
+        # 绘制武器信息
+        weapon_surface = font.render(self.weapon_text, True, self.weapon_color)
+        self.screen.blit(weapon_surface, (self.hud_x, self.hud_y + self.line_height))
+        
+        # 绘制弹药信息
+        ammo_surface = font.render(self.ammo_text, True, self.ammo_color)
+        self.screen.blit(ammo_surface, (self.hud_x, self.hud_y + self.line_height * 2))
+        
+        # 绘制状态信息（如果有）
+        if self.status_text:
+            status_surface = font.render(self.status_text, True, self.status_color)
+            self.screen.blit(status_surface, (self.hud_x, self.hud_y + self.line_height * 3))
+        
+        # 绘制瞄准信息（如果有）
+        if self.aim_text:
+            aim_surface = font.render(self.aim_text, True, self.aim_color)
+            # 根据是否有状态信息调整位置
+            offset = self.line_height * 4 if self.status_text else self.line_height * 3
+            self.screen.blit(aim_surface, (self.hud_x, self.hud_y + offset))
+
+
+class InfoPanelManager:
+    """
+    信息面板管理器
+    显示玩家数量、调试信息等
+    使用直接绘制方式避免 pygame-menu 背景问题
+    """
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        
+        # 信息面板位置设置（右上角）
+        self.panel_x = SCREEN_WIDTH - 180
+        self.panel_y = 10
+        self.line_height = 18
+        
+        # 缓存的数据
+        self.player_count_text = ''
+        self.debug_text = ''
+        self.debug_color = LIGHT_GRAY
+        
+    def update(self):
+        """更新信息面板内容"""
+        # 更新玩家数量
+        player_count = len(self.game.other_players) + 1
+        self.player_count_text = f'玩家数: {player_count}'
+        
+        # 更新调试信息
+        if self.game.debug_mode:
+            player = self.game.player
+            self.debug_text = f'ID:{player.id} FPS:{int(self.game.clock.get_fps())}'
+            self.debug_color = YELLOW
+        else:
+            self.debug_text = ''
+    
+    def draw(self):
+        """绘制信息面板"""
+        global small_font
+        
+        # 绘制玩家数量
+        player_count_surface = small_font.render(self.player_count_text, True, LIGHT_GRAY)
+        self.screen.blit(player_count_surface, (self.panel_x, self.panel_y))
+        
+        # 绘制调试信息（如果有）
+        if self.debug_text:
+            debug_surface = small_font.render(self.debug_text, True, self.debug_color)
+            self.screen.blit(debug_surface, (self.panel_x, self.panel_y + self.line_height))
+
+
+class ChatHistoryManager:
+    """
+    聊天历史显示管理器
+    支持滚动查看历史消息
+    """
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        self.messages = []
+        self.max_messages = 50  # 增加缓存的消息数量
+        self.display_messages = 8  # 最多显示的消息数量
+        
+        # 显示区域 - 调整位置避免与HUD重叠
+        self.history_x = 20
+        self.history_y = SCREEN_HEIGHT - 250  # 向上移动，避免与底部UI重叠
+        self.history_width = 300
+        self.history_height = 120
+        
+        # 滚动相关
+        self.scroll_offset = 0  # 滚动偏移量（行数）
+        self.line_height = 0  # 行高，在draw时计算
+        
+    def update(self):
+        """更新聊天历史内容"""
+        if not self.game.network_manager:
+            return
+        
+        new_messages = self.game.network_manager.get_recent_chat_messages()
+        
+        # 只在有新消息时更新
+        if len(new_messages) != len(self.messages):
+            self.messages = new_messages[-self.max_messages:]
+            # 有新消息时，自动滚动到底部
+            self.scroll_offset = 0
+    
+    def scroll_up(self):
+        """向上滚动（查看更早的消息）"""
+        self.scroll_offset += 1
+    
+    def scroll_down(self):
+        """向下滚动（查看最新的消息）"""
+        self.scroll_offset = max(0, self.scroll_offset - 1)
+            
+    def draw(self):
+        """绘制聊天历史"""
+        if not self.messages:
+            return
+            
+        global small_font
+        
+        # 绘制背景
+        bg_rect = pygame.Rect(self.history_x, self.history_y, self.history_width, self.history_height)
+        pygame.draw.rect(self.screen, (15, 15, 20, 150), bg_rect)
+        pygame.draw.rect(self.screen, (60, 60, 80), bg_rect, 1)
+        
+        # 绘制标题
+        title_surface = small_font.render("── 聊天消息 ──", True, GRAY)
+        self.screen.blit(title_surface, (self.history_x + 10, self.history_y + 5))
+        
+        # 计算行高
+        line_height = small_font.get_height() + 5
+        self.line_height = line_height
+        
+        # 计算所有消息的行数（用于计算最大滚动偏移）
+        all_lines = []
+        max_text_width = self.history_width - 20  # 减去左右边距
+        
+        for msg in self.messages:
+            # 创建消息文本
+            if msg.player_id == 0:
+                message_text = msg.message
+                msg_color = WHITE
+            else:
+                message_text = f"{msg.player_name}: {msg.message}"
+                msg_color = msg.color
+            
+            # 处理多行文本（支持\n换行）
+            lines = message_text.split('\n')
+            
+            for line in lines:
+                # 如果一行文本太长，需要自动换行
+                if small_font.size(line)[0] > max_text_width:
+                    # 逐字计算
+                    current_line = ""
+                    for char in line:
+                        test_line = current_line + char
+                        if small_font.size(test_line)[0] <= max_text_width:
+                            current_line = test_line
+                        else:
+                            if current_line:
+                                all_lines.append((current_line, msg_color))
+                            current_line = char
+                    if current_line:
+                        all_lines.append((current_line, msg_color))
+                else:
+                    all_lines.append((line, msg_color))
+            
+            # 消息之间添加额外间距
+            all_lines.append(("", None))  # 空行作为分隔符
+        
+        # 计算可显示的行数（减去标题行和边距）
+        available_height = self.history_height - 25  # 减去标题高度
+        max_visible_lines = int(available_height / line_height)
+        
+        # 限制滚动偏移量
+        max_scroll = max(0, len(all_lines) - max_visible_lines)
+        self.scroll_offset = min(self.scroll_offset, max_scroll)
+        
+        # 计算要显示的行范围（从底部向上）
+        start_line = max(0, len(all_lines) - max_visible_lines - self.scroll_offset)
+        end_line = min(len(all_lines), start_line + max_visible_lines)
+        
+        # 绘制消息
+        y_offset = 25
+        for i in range(start_line, end_line):
+            line_text, line_color = all_lines[i]
+            
+            # 跳过空行（消息分隔符）
+            if not line_text:
+                y_offset += 3
+                continue
+            
+            # 渲染文本
+            line_surface = small_font.render(line_text, True, line_color)
+            self.screen.blit(line_surface, (self.history_x + 10, self.history_y + y_offset))
+            y_offset += line_height
+        
+        # 绘制滚动提示
+        if self.scroll_offset > 0:
+            hint_text = "↑ 更多消息"
+            hint_surface = small_font.render(hint_text, True, YELLOW)
+            hint_x = self.history_x + self.history_width - hint_surface.get_width() - 10
+            self.screen.blit(hint_surface, (hint_x, self.history_y + 5))
+        
+        if self.scroll_offset < max_scroll:
+            hint_text = "↓ 更多消息"
+            hint_surface = small_font.render(hint_text, True, YELLOW)
+            hint_x = self.history_x + self.history_width - hint_surface.get_width() - 10
+            self.screen.blit(hint_surface, (hint_x, self.history_y + 5))
+
+
+class ControlHintsManager:
+    """
+    控制提示管理器
+    显示操作提示
+    使用直接绘制方式避免 pygame-menu 背景问题
+    """
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        
+        # 控制提示位置设置（右下角，避免与小地图重叠）
+        self.hints_x = SCREEN_WIDTH - 220
+        self.hints_y = SCREEN_HEIGHT - 90
+        self.line_height = 18
+        
+        # 缓存的数据
+        self.interact_text = ''
+        self.weapon_text = ''
+        self.switch_text = '按3切换武器'
+        self.chat_text = '按Y键聊天'
+        
+    def update(self):
+        """更新控制提示"""
+        if not self.game.player:
+            return
+        
+        player = self.game.player
+        
+        # 根据玩家状态显示不同提示
+        if player.is_dead or player.is_respawning:
+            self.interact_text = ''
+            self.weapon_text = ''
+            self.switch_text = ''
+        else:
+            # 交互提示
+            self.interact_text = '按E键开/关门'
+            
+            # 武器提示
+            if player.weapon_type == "gun":
+                self.weapon_text = '左键射击 右键瞄准'
+            else:
+                self.weapon_text = '左键近战攻击'
+            
+            self.switch_text = '按3切换武器'
+    
+    def draw(self):
+        """绘制控制提示"""
+        global small_font
+        
+        current_y = self.hints_y
+        
+        # 绘制交互提示（如果有）
+        if self.interact_text:
+            interact_surface = small_font.render(self.interact_text, True, LIGHT_GRAY)
+            self.screen.blit(interact_surface, (self.hints_x, current_y))
+            current_y += self.line_height
+        
+        # 绘制武器提示（如果有）
+        if self.weapon_text:
+            weapon_surface = small_font.render(self.weapon_text, True, LIGHT_GRAY)
+            self.screen.blit(weapon_surface, (self.hints_x, current_y))
+            current_y += self.line_height
+        
+        # 绘制切换武器提示（如果有）
+        if self.switch_text:
+            switch_surface = small_font.render(self.switch_text, True, LIGHT_GRAY)
+            self.screen.blit(switch_surface, (self.hints_x, current_y))
+            current_y += self.line_height
+        
+        # 绘制聊天提示
+        chat_surface = small_font.render(self.chat_text, True, LIGHT_GRAY)
+        self.screen.blit(chat_surface, (self.hints_x, current_y))
+
+
+class MinimapManager:
+    """
+    小地图管理器
+    显示玩家、队友和地图结构
+    使用直接绘制方式避免 pygame-menu 背景问题
+    """
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        self.minimap_width = 200
+        self.minimap_height = 150
+        self.minimap_scale = 0.08
+        self.minimap_surface = pygame.Surface((self.minimap_width, self.minimap_height))
+        
+        # 小地图位置设置（右下角，与控制提示分开，避免与ChatHistoryManager重叠）
+        # ChatHistoryManager在左侧，高度120，y=SCREEN_HEIGHT-250
+        # 小地图放在右侧，y=SCREEN_HEIGHT-280，确保不重叠
+        self.minimap_x = SCREEN_WIDTH - self.minimap_width - 30
+        self.minimap_y = SCREEN_HEIGHT - self.minimap_height - 140
+    
+    def update(self):
+        """更新小地图内容"""
+        if not self.game.player or not self.game.game_map:
+            return
+        
+        # 清空小地图
+        self.minimap_surface.fill(BLACK)
+        
+        # 计算小地图中心
+        minimap_center_x = self.minimap_width / 2
+        minimap_center_y = self.minimap_height / 2
+        
+        # 绘制墙壁
+        for wall in self.game.game_map.walls:
+            rel_x = (wall.x - self.game.player.pos.x) * self.minimap_scale + minimap_center_x
+            rel_y = (wall.y - self.game.player.pos.y) * self.minimap_scale + minimap_center_y
+            rel_width = wall.width * self.minimap_scale
+            rel_height = wall.height * self.minimap_scale
+            
+            if (rel_x + rel_width > 0 and rel_x < self.minimap_width and 
+                rel_y + rel_height > 0 and rel_y < self.minimap_height):
+                pygame.draw.rect(self.minimap_surface, DARK_GRAY, (rel_x, rel_y, rel_width, rel_height))
+        
+        # 绘制门
+        for door in self.game.game_map.doors:
+            if not door.is_open:
+                rel_x = (door.rect.x - self.game.player.pos.x) * self.minimap_scale + minimap_center_x
+                rel_y = (door.rect.y - self.game.player.pos.y) * self.minimap_scale + minimap_center_y
+                rel_width = door.rect.width * self.minimap_scale
+                rel_height = door.rect.height * self.minimap_scale
+                
+                if (rel_x + rel_width > 0 and rel_x < self.minimap_width and 
+                    rel_y + rel_height > 0 and rel_y < self.minimap_height):
+                    pygame.draw.rect(self.minimap_surface, DOOR_COLOR, (rel_x, rel_y, rel_width, rel_height))
+        
+        # 绘制本地玩家（始终在中心）
+        player_color = DEAD_COLOR if self.game.player.is_dead else self.game.player.color
+        if self.game.player.weapon_type == "melee":
+            player_color = MELEE_COLOR
+        pygame.draw.circle(self.minimap_surface, player_color, (int(minimap_center_x), int(minimap_center_y)), 4)
+        
+        # 绘制队友
+        teammates = self._get_teammates()
+        for teammate_id in teammates:
+            if teammate_id == self.game.player.id:
+                continue
+            
+            teammate = self._find_player(teammate_id)
+            if teammate and hasattr(teammate, 'pos'):
+                rel_x = (teammate.pos.x - self.game.player.pos.x) * self.minimap_scale + minimap_center_x
+                rel_y = (teammate.pos.y - self.game.player.pos.y) * self.minimap_scale + minimap_center_y
+                
+                if 0 <= rel_x <= self.minimap_width and 0 <= rel_y <= self.minimap_height:
+                    teammate_color = GREEN
+                    pygame.draw.circle(self.minimap_surface, teammate_color, (int(rel_x), int(rel_y)), 3)
+        
+        # 绘制其他玩家（敌人）
+        for pid, player in self.game.other_players.items():
+            if pid in teammates or pid == self.game.player.id:
+                continue
+            
+            if hasattr(player, 'pos'):
+                rel_x = (player.pos.x - self.game.player.pos.x) * self.minimap_scale + minimap_center_x
+                rel_y = (player.pos.y - self.game.player.pos.y) * self.minimap_scale + minimap_center_y
+                
+                if 0 <= rel_x <= self.minimap_width and 0 <= rel_y <= self.minimap_height:
+                    enemy_color = RED
+                    pygame.draw.circle(self.minimap_surface, enemy_color, (int(rel_x), int(rel_y)), 3)
+        
+        # 绘制小地图边框
+        pygame.draw.rect(self.minimap_surface, WHITE, (0, 0, self.minimap_width, self.minimap_height), 2)
+    
+    def _get_teammates(self):
+        """获取队友列表"""
+        teammates = []
+        if hasattr(self.game, 'team_manager'):
+            try:
+                teammates = list(self.game.team_manager.get_teammates(self.game.player.id))
+            except Exception:
+                pass
+        
+        if not teammates and hasattr(self.game, 'network_manager'):
+            try:
+                local_team_id = getattr(self.game.player, 'team_id', None)
+                if local_team_id is not None:
+                    for pid, pdata in self.game.network_manager.players.items():
+                        if pid != self.game.player.id and pdata.get('team_id', None) == local_team_id:
+                            teammates.append(pid)
+            except Exception:
+                pass
+        
+        return teammates
+    
+    def _find_player(self, player_id):
+        """查找玩家对象"""
+        if player_id in self.game.other_players:
+            return self.game.other_players[player_id]
+        elif player_id in self.game.ai_players:
+            return self.game.ai_players[player_id]
+        return None
+    
+    def draw(self):
+        """绘制小地图"""
+        self.update()
+        
+        global small_font
+        
+        # 创建带阴影的小地图
+        shadow_offset = 3
+        shadow_surface = pygame.Surface((self.minimap_width, self.minimap_height))
+        shadow_surface.fill((0, 0, 0, 100))
+        
+        # 绘制阴影
+        self.screen.blit(shadow_surface, 
+                        (self.minimap_x + shadow_offset, 
+                         self.minimap_y + shadow_offset))
+        
+        # 绘制小地图
+        self.screen.blit(self.minimap_surface, 
+                        (self.minimap_x, 
+                         self.minimap_y))
+        
+        # 绘制小地图边框
+        pygame.draw.rect(self.screen, WHITE, 
+                        (self.minimap_x, self.minimap_y, 
+                         self.minimap_width, self.minimap_height), 2)
+        
+        # 绘制标题
+        title_surface = small_font.render('── 小地图 ──', True, GRAY)
+        title_x = self.minimap_x + (self.minimap_width - title_surface.get_width()) // 2
+        self.screen.blit(title_surface, (title_x, self.minimap_y - 18))

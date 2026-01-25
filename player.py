@@ -232,7 +232,7 @@ class Player:
         
         return spread
 
-    def update(self, dt, game_map, bullets, network_manager=None, all_players=None):
+    def update(self, dt, game_map, bullets, network_manager=None, all_players=None, chat_active=False):
         current_time = time.time()
         
         # 重置复活状态
@@ -251,57 +251,88 @@ class Player:
             if self.is_dead:
                 return
             
-            # 鼠标控制旋转
-            mouse_x, mouse_y = pygame.mouse.get_pos()
-            rel_x = mouse_x - SCREEN_WIDTH / 2
-            rel_y = mouse_y - SCREEN_HEIGHT / 2
-            self.angle = (180 / math.pi) * -math.atan2(rel_y, rel_x)
-            
-            # 更新瞄准偏移
-            self.update_aim_offset((mouse_x, mouse_y), (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2))
-            
-            # 键盘控制移动
-            keys = pygame.key.get_pressed()
-            move_dir = pygame.Vector2(0, 0)
-            if keys[K_w]: move_dir.y -= 1
-            if keys[K_s]: move_dir.y += 1
-            if keys[K_a]: move_dir.x -= 1
-            if keys[K_d]: move_dir.x += 1
-            
-            # 检测静步状态
-            self.is_walking = keys[K_LSHIFT] or keys[K_RSHIFT]
-            
-            # 检测移动声音 - 根据速度调整声音大小
-            is_moving = move_dir.length() > 0
-            
-            # 静步时完全不发出声音
-            if self.is_walking:
-                self.is_making_sound = False
-                self.sound_volume = 0.0
-            # 移动时根据速度调整声音大小
-            elif is_moving and current_time - self.last_move_sound_time > self.move_sound_interval:
-                # 计算速度比例 (0.0-1.0)
-                speed_ratio = min(self.velocity.length() / PLAYER_SPEED, 1.0)
+            # 只有在非聊天状态下才处理移动和攻击输入
+            if not chat_active:
+                # 鼠标控制旋转
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                rel_x = mouse_x - SCREEN_WIDTH / 2
+                rel_y = mouse_y - SCREEN_HEIGHT / 2
+                self.angle = (180 / math.pi) * -math.atan2(rel_y, rel_x)
                 
-                # 设置最小速度阈值，低于此速度不发声
-                min_speed_threshold = 0.2  # 低于20%速度不发声
+                # 更新瞄准偏移
+                self.update_aim_offset((mouse_x, mouse_y), (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2))
                 
-                if speed_ratio > min_speed_threshold:
-                    self.is_making_sound = True
-                    # 声音大小随速度线性增加 (0.0-1.0)
-                    self.sound_volume = (speed_ratio - min_speed_threshold) / (1.0 - min_speed_threshold)
-                    self.last_move_sound_time = current_time
-                else:
-                    # 速度太低，不发出声音
+                # 键盘控制移动
+                keys = pygame.key.get_pressed()
+                move_dir = pygame.Vector2(0, 0)
+                if keys[K_w]: move_dir.y -= 1
+                if keys[K_s]: move_dir.y += 1
+                if keys[K_a]: move_dir.x -= 1
+                if keys[K_d]: move_dir.x += 1
+                
+                # 检测静步状态
+                self.is_walking = keys[K_LSHIFT] or keys[K_RSHIFT]
+                
+                # 检测移动声音 - 根据速度调整声音大小
+                is_moving = move_dir.length() > 0
+                
+                # 静步时完全不发出声音
+                if self.is_walking:
                     self.is_making_sound = False
                     self.sound_volume = 0.0
-            elif not is_moving:
-                self.is_making_sound = False
-                self.sound_volume = 0.0
-            
-            if move_dir.length() > 0:
-                # 计算移动速度（瞄准时减速）
-                current_speed = PLAYER_SPEED
+                # 移动时根据速度调整声音大小
+                elif is_moving and current_time - self.last_move_sound_time > self.move_sound_interval:
+                    # 计算速度比例 (0.0-1.0)
+                    speed_ratio = min(self.velocity.length() / PLAYER_SPEED, 1.0)
+                    
+                    # 设置最小速度阈值，低于此速度不发声
+                    min_speed_threshold = 0.2  # 低于20%速度不发声
+                    
+                    if speed_ratio > min_speed_threshold:
+                        self.is_making_sound = True
+                        # 声音大小随速度线性增加 (0.0-1.0)
+                        self.sound_volume = (speed_ratio - min_speed_threshold) / (1.0 - min_speed_threshold)
+                        self.last_move_sound_time = current_time
+                    else:
+                        # 速度太低，不发出声音
+                        self.is_making_sound = False
+                        self.sound_volume = 0.0
+                elif not is_moving:
+                    self.is_making_sound = False
+                    self.sound_volume = 0.0
+                
+                if move_dir.length() > 0:
+                    # 计算移动速度（瞄准时减速）
+                    current_speed = PLAYER_SPEED
+                    
+                    # 检查是否有速度提升效果
+                    current_time = time.time()
+                    has_speed_boost = current_time < self.speed_boost_end_time
+                    
+                    # 应用各种速度修饰符
+                    if self.is_aiming:
+                        current_speed *= AIMING_SPEED_MULTIPLIER
+                    if self.is_walking:
+                        current_speed *= self.walk_speed_multiplier  # 静步速度
+                    if has_speed_boost:
+                        current_speed *= self.speed_boost_multiplier  # 速度提升效果
+                        
+                        # 如果速度提升即将结束，发送提示
+                        remaining_time = self.speed_boost_end_time - current_time
+                        if remaining_time < 1.0 and hasattr(self, 'last_speed_warning_time') and current_time - self.last_speed_warning_time > 1.0:
+                            self.last_speed_warning_time = current_time
+                            # 尝试发送系统消息
+                            network_manager_obj = network_manager
+                            if network_manager_obj and hasattr(network_manager_obj, '_send_system_message'):
+                                network_manager_obj._send_system_message(f"速度提升效果即将结束: {remaining_time:.1f}秒")
+                    
+                    move_dir = move_dir.normalize() * current_speed
+                    self.velocity += move_dir * dt * 5
+                else:
+                    self.velocity *= 0.9
+                    
+                # 限制最大速度
+                max_speed = PLAYER_SPEED
                 
                 # 检查是否有速度提升效果
                 current_time = time.time()
@@ -309,84 +340,70 @@ class Player:
                 
                 # 应用各种速度修饰符
                 if self.is_aiming:
-                    current_speed *= AIMING_SPEED_MULTIPLIER
+                    max_speed *= AIMING_SPEED_MULTIPLIER
                 if self.is_walking:
-                    current_speed *= self.walk_speed_multiplier  # 静步速度
+                    max_speed *= self.walk_speed_multiplier  # 静步速度上限
                 if has_speed_boost:
-                    current_speed *= self.speed_boost_multiplier  # 速度提升效果
+                    max_speed *= self.speed_boost_multiplier  # 速度提升效果
                     
-                    # 如果速度提升即将结束，发送提示
-                    remaining_time = self.speed_boost_end_time - current_time
-                    if remaining_time < 1.0 and hasattr(self, 'last_speed_warning_time') and current_time - self.last_speed_warning_time > 1.0:
-                        self.last_speed_warning_time = current_time
-                        # 尝试发送系统消息
-                        network_manager_obj = network_manager
-                        if network_manager_obj and hasattr(network_manager_obj, '_send_system_message'):
-                            network_manager_obj._send_system_message(f"速度提升效果即将结束: {remaining_time:.1f}秒")
+                if self.velocity.length() > max_speed:
+                    self.velocity = self.velocity.normalize() * max_speed
+
+
+                # 左键攻击控制（根据武器类型）
+                if self.shooting and not self.is_dead:
+                    if self.weapon_type == "gun":
+                        # 枪械射击
+                        if not self.is_reloading and self.ammo > 0:
+                            if current_time - self.last_shot > BULLET_COOLDOWN:
+                                # 计算子弹散布角度
+                                spread_angle = self.calculate_bullet_spread()
+                                
+                                # 应用散布到子弹方向
+                                if spread_angle > 0:
+                                    final_angle = self.angle + random.uniform(-spread_angle, spread_angle)
+                                else:
+                                    final_angle = self.angle
+                                bullet_dir = pygame.Vector2(math.cos(math.radians(final_angle)),
+                                                          -math.sin(math.radians(final_angle)))
+                                bullet_pos = self.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
+                                
+                                # 请求发射子弹
+                                network_manager.request_fire_bullet(
+                                    [bullet_pos.x, bullet_pos.y],
+                                    [bullet_dir.x, bullet_dir.y],
+                                    self.id
+                                )
+                                
+                                self.ammo -= 1
+                                self.last_shot = current_time
+                                self.last_shot_time = current_time
+                                self.shot_count += 1
+                                self.is_making_sound = True  # 射击时发出声音
+                                self.sound_volume = 1.0  # 射击时声音音量最大
+                    elif self.weapon_type == "melee":
+                        # 近战攻击
+                        if self.melee_weapon.can_attack():
+                            self.start_melee_attack()
+                            self.is_making_sound = True  # 近战攻击时发出声音
+                            self.sound_volume = 0.4  # 近战攻击声音音量（略小于射击）
                 
-                move_dir = move_dir.normalize() * current_speed
-                self.velocity += move_dir * dt * 5
+                # 换弹控制
+                if (keys[K_r] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE and self.weapon_type == "gun":
+                    self.is_reloading = True
+                    self.reload_start = current_time
+                    
+                if self.is_reloading and (current_time - self.reload_start) >= RELOAD_TIME:
+                    self.ammo = MAGAZINE_SIZE
+                    self.is_reloading = False
             else:
+                # 聊天状态下，停止移动，但保持摩擦力
                 self.velocity *= 0.9
-                
-            # 限制最大速度
-            max_speed = PLAYER_SPEED
-            
-            # 检查是否有速度提升效果
-            current_time = time.time()
-            has_speed_boost = current_time < self.speed_boost_end_time
-            
-            # 应用各种速度修饰符
-            if self.is_aiming:
-                max_speed *= AIMING_SPEED_MULTIPLIER
-            if self.is_walking:
-                max_speed *= self.walk_speed_multiplier  # 静步速度上限
-            if has_speed_boost:
-                max_speed *= self.speed_boost_multiplier  # 速度提升效果
-                
-            if self.velocity.length() > max_speed:
-                self.velocity = self.velocity.normalize() * max_speed
+                self.shooting = False
+                self.is_making_sound = False
+                self.sound_volume = 0.0
 
-
-            # 左键攻击控制（根据武器类型）
-            if self.shooting and not self.is_dead:
-                if self.weapon_type == "gun":
-                    # 枪械射击
-                    if not self.is_reloading and self.ammo > 0:
-                        if current_time - self.last_shot > BULLET_COOLDOWN:
-                            # 计算子弹散布角度
-                            spread_angle = self.calculate_bullet_spread()
-                            
-                            # 应用散布到子弹方向
-                            if spread_angle > 0:
-                                final_angle = self.angle + random.uniform(-spread_angle, spread_angle)
-                            else:
-                                final_angle = self.angle
-                            bullet_dir = pygame.Vector2(math.cos(math.radians(final_angle)),
-                                                      -math.sin(math.radians(final_angle)))
-                            bullet_pos = self.pos + bullet_dir * (PLAYER_RADIUS + BULLET_RADIUS)
-                            
-                            # 请求发射子弹
-                            network_manager.request_fire_bullet(
-                                [bullet_pos.x, bullet_pos.y],
-                                [bullet_dir.x, bullet_dir.y],
-                                self.id
-                            )
-                            
-                            self.ammo -= 1
-                            self.last_shot = current_time
-                            self.last_shot_time = current_time
-                            self.shot_count += 1
-                            self.is_making_sound = True  # 射击时发出声音
-                            self.sound_volume = 1.0  # 射击时声音音量最大
-                elif self.weapon_type == "melee":
-                    # 近战攻击
-                    if self.melee_weapon.can_attack():
-                        self.start_melee_attack()
-                        self.is_making_sound = True  # 近战攻击时发出声音
-                        self.sound_volume = 0.4  # 近战攻击声音音量（略小于射击）
-            
-            # 近战攻击检测
+            # 即使在聊天时，物理检测（如近战）也允许完成
             if self.melee_weapon.is_attacking:
                 # 检查近战攻击是否击中目标
                 targets = {}
@@ -432,15 +449,6 @@ class Player:
                         hit_targets,
                         is_heavy=self.melee_weapon.is_heavy_attack  # 传递是否为重击
                     )
-            
-            # 换弹控制
-            if (keys[K_r] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE and self.weapon_type == "gun":
-                self.is_reloading = True
-                self.reload_start = current_time
-                
-            if self.is_reloading and (current_time - self.reload_start) >= RELOAD_TIME:
-                self.ammo = MAGAZINE_SIZE
-                self.is_reloading = False
         
         # 检查是否处于被击中减速状态（所有玩家）
         current_time = time.time()

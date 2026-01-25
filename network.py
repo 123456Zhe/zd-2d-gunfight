@@ -64,6 +64,10 @@ class NetworkManager:
         self.server_name = server_name or '默认服务器'
         self.player_name = player_name or generate_default_player_name()
         
+        # 生成唯一服务器ID，用于去重
+        import uuid
+        self.server_uuid = str(uuid.uuid4())
+        
         # 服务端特有属性 - 改进的ID管理
         self.clients = {}  # 客户端地址到玩家ID的映射
         self.client_last_seen = {}  # 客户端最后活跃时间
@@ -169,6 +173,7 @@ class NetworkManager:
         print(f"[调试] 获取服务器信息，服务器名称: {server_name}")
         
         return {
+            'id': self.server_uuid,
             'name': server_name,
             'players': len(self.players),
             'max_players': 10,
