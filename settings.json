@@ -1,0 +1,92 @@
+{
+    "game": {
+        "screen_width": 800,
+        "screen_height": 600,
+        "fps": 60,
+        "player_speed": 300,
+        "aiming_speed_multiplier": 0.5,
+        "bullet_speed": 800,
+        "bullet_cooldown": 0.15,
+        "reload_time": 2.0,
+        "magazine_size": 30,
+        "player_radius": 20,
+        "bullet_radius": 5,
+        "bullet_damage": 20,
+        "respawn_time": 3.0
+    },
+    "map": {
+        "room_size": 600,
+        "wall_thickness": 20,
+        "door_size": 80,
+        "door_animation_speed": 2.0
+    },
+    "hit_effects": {
+        "slowdown_duration": 0.5,
+        "slowdown_factor": 0.5
+    },
+    "melee": {
+        "damage": 40,
+        "range": 60,
+        "cooldown": 0.8,
+        "animation_time": 0.3,
+        "angle": 90,
+        "heavy_damage": 60,
+        "heavy_range": 45,
+        "heavy_cooldown": 1.2,
+        "heavy_animation_time": 0.45,
+        "heavy_angle": 60
+    },
+    "aiming": {
+        "camera_range": 400,
+        "sensitivity": 1
+    },
+    "network": {
+        "server_port": 5555,
+        "buffer_size": 4096,
+        "heartbeat_interval": 1.0,
+        "client_timeout": 5.0,
+        "connection_timeout": 10.0,
+        "scan_timeout": 1.0
+    },
+    "vision": {
+        "field_of_view": 120,
+        "vision_range": 300
+    },
+    "chat": {
+        "max_messages": 10,
+        "display_time": 10.0,
+        "max_length": 50
+    },
+    "ai": {
+        "use_enhanced_ai": true
+    },
+    "commands": {
+        "prefix": ".",
+        "enabled": true
+    },
+    "colors": {
+        "white": [255, 255, 255],
+        "red": [255, 0, 0],
+        "green": [0, 255, 0],
+        "blue": [0, 0, 255],
+        "black": [0, 0, 0],
+        "gray": [100, 100, 100],
+        "dark_gray": [50, 50, 50],
+        "light_gray": [140, 140, 140],
+        "vision_ground": [80, 80, 80],
+        "yellow": [255, 255, 0],
+        "door": [139, 69, 19],
+        "dark_door": [69, 34, 9],
+        "dead": [128, 128, 128],
+        "vision": [255, 255, 0, 30],
+        "fog": [20, 20, 20, 180],
+        "light_gray_transparent": [200, 200, 200, 80],
+        "light_blue": [173, 216, 230],
+        "dark_blue": [0, 100, 200],
+        "orange": [255, 165, 0],
+        "purple": [128, 0, 128],
+        "melee": [255, 100, 100],
+        "melee_range": [255, 0, 0, 80],
+        "aim": [0, 255, 255]
+    }
+}
