@@ -14,3 +14,4 @@ dist_nuitka
 dist/*
 build/*
 ZD-2D-Gunfight.spec
+nul
