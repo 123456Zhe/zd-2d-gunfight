@@ -1167,9 +1167,30 @@ class Game:
             # 初始化游戏地图（使用九宫格地图）
             self.game_map = Map()
             self.bullets = []  # 本地子弹对象
+            self.grenades = []  # 飞行手雷列表
             self.camera_offset = pygame.Vector2(0, 0)
-
+            
+            # 初始化道具系统
+            from items import ItemManager, ItemType
+            self.item_manager = ItemManager()
+            self.item_manager.generate_spawn_points(self.game_map.rooms, self.game_map.walls)
+            
+            weights = {
+                ItemType.HEALTH_PACK: 0.30,
+                ItemType.AMMO_BOX: 0.20,
+                ItemType.ARMOR: 0.15,
+                ItemType.SPEED_BOOST: 0.10,
+                ItemType.DAMAGE_BOOST: 0.10,
+                ItemType.GRENADE: 0.15,
+            }
+            self.item_manager.set_spawn_weights(weights)
+            
+            spawn_count = 12
+            from config import ITEMS_SPAWN_COUNT
+            self.item_manager.spawn_all_types()
+            
             print(f"游戏初始化成功，玩家ID: {self.network_manager.player_id}")
+            print(f"道具系统已初始化，生成 {len(self.item_manager.items)} 个道具")
             return True
 
         except Exception as e:
@@ -1233,6 +1254,27 @@ class Game:
                     self.debug_mode = not self.debug_mode
                 elif event.key == K_F4:  # 切换视角显示
                     self.show_vision = not self.show_vision
+                elif event.key == K_g:  # 按G投掷手雷
+                    if self.player and not self.player.is_dead and hasattr(self.player, 'grenades'):
+                        if self.player.grenades > 0:
+                            mouse_pos = pygame.mouse.get_pos()
+                            world_pos = pygame.Vector2(
+                                mouse_pos[0] + self.camera_offset.x,
+                                mouse_pos[1] + self.camera_offset.y
+                            )
+                            direction = world_pos - self.player.pos
+                            if direction.length() > 0:
+                                from items import Grenade
+                                from items import ThrownGrenade
+                                grenade = ThrownGrenade(
+                                    self.player.pos,
+                                    direction,
+                                    Grenade.THROW_SPEED,
+                                    self.player.id
+                                )
+                                self.grenades.append(grenade)
+                                self.player.grenades -= 1
+                                print(f"[手雷] 投掷手雷，3秒后爆炸")
             elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
                     if self.player.weapon_type == "melee":  # 近战武器时触发轻击
@@ -1244,6 +1286,52 @@ class Game:
                         self.player.start_melee_attack(is_heavy=True)
                     else:  # 其他武器时瞄准
                         self.player.is_aiming = True
+            elif event.type == MOUSEBUTTONUP:
+                if event.button == 1:  # 左键释放
+                    if self.player.weapon_type != "melee":  # 非近战武器时停止射击
+                        self.player.shooting = False
+                elif event.button == 3:  # 右键释放
+                    if self.player.weapon_type != "melee":  # 非近战武器时停止瞄准
+                        self.player.is_aiming = False
+                elif event.button == 2:  # 中键释放 - 投掷手雷
+                    if self.player and not self.player.is_dead and hasattr(self.player, 'grenades'):
+                        if self.player.grenades > 0:
+                            mouse_pos = pygame.mouse.get_pos()
+                            world_pos = pygame.Vector2(
+                                mouse_pos[0] + self.camera_offset.x,
+                                mouse_pos[1] + self.camera_offset.y
+                            )
+                            direction = world_pos - self.player.pos
+                            if direction.length() > 0:
+                                from items import Grenade
+                                from items import ThrownGrenade
+                                grenade = ThrownGrenade(
+                                    self.player.pos,
+                                    direction,
+                                    Grenade.THROW_SPEED,
+                                    self.player.id
+                                )
+                                self.grenades.append(grenade)
+                                self.player.grenades -= 1
+                                if targets:
+                                    for target in targets:
+                                        target_id = target.get('target_id')
+                                        damage = target.get('damage')
+                                        if target_id in all_players:
+                                            target_player = all_players[target_id]
+                                            if not target_player.is_dead:
+                                                if self.is_server:
+                                                    target_player.take_damage(damage)
+                                                else:
+                                                    self.network_manager.send_data({
+                                                        'type': 'damage',
+                                                        'data': {
+                                                            'attacker_id': self.player.id,
+                                                            'target_id': target_id,
+                                                            'damage': damage,
+                                                            'source': 'grenade'
+                                                        }
+                                                    })
             elif event.type == MOUSEBUTTONUP:
                 if event.button == 1:  # 左键释放
                     if self.player.weapon_type != "melee":  # 非近战武器时停止射击
@@ -1300,6 +1388,25 @@ class Game:
             all_players,
             chat_active=self.chat_active,
         )
+        
+        # 更新道具效果
+        if self.player:
+            self.player.update_effects(dt)
+        
+        # 更新道具系统
+        if hasattr(self, 'item_manager') and self.item_manager:
+            self.item_manager.update(dt)
+            
+            # 检查道具拾取（仅本地玩家存活时）
+            if self.player and not self.player.is_dead:
+                pickup_result = self.item_manager.check_pickup(self.player)
+                if pickup_result:
+                    self.player.apply_item_effect(pickup_result)
+                    print(f"[道具] 玩家{self.player.id}拾取道具: {pickup_result.get('message', '')}")
+                    
+                    # 服务端同步道具状态
+                    if self.network_manager.is_server:
+                        self.network_manager.send_item_update(self.item_manager.get_state())
 
         # 控制网络同步频率
         if current_time - self.last_sync_time > self.sync_interval:
@@ -1373,6 +1480,31 @@ class Game:
                 # 通知服务器移除子弹
                 if self.network_manager.is_server:
                     self.network_manager.remove_bullet(bullet.id)
+        
+        # 更新飞行手雷
+        walls = self.game_map.walls
+        for grenade in list(self.grenades):
+            if grenade.update(dt, walls):
+                targets = grenade.get_targets(all_players)
+                if grenade.explosion_pos:
+                    self.last_grenade_explosion = {
+                        'pos': grenade.explosion_pos,
+                        'time': time.time()
+                    }
+                for target in targets:
+                    target_id = target.get('target_id')
+                    damage = target.get('damage')
+                    if target_id in self.ai_players:
+                        ai_player = self.ai_players[target_id]
+                        if not ai_player.is_dead:
+                            ai_player.take_damage(damage)
+                            print(f"[手雷] AI玩家{target_id}受到{damage}伤害")
+                    elif target_id in self.other_players:
+                        target_player = self.other_players[target_id]
+                        if not target_player.is_dead:
+                            if self.is_server:
+                                target_player.take_damage(damage)
+                self.grenades.remove(grenade)
 
         # 更新门
         self.game_map.update_doors(dt, self.network_manager)
@@ -1797,6 +1929,9 @@ class Game:
 
                 new_bullet = Bullet(bullet_data, bullet_speed)
                 self.bullets.append(new_bullet)
+        
+        if not hasattr(self, 'last_grenade_explosion'):
+            self.last_grenade_explosion = None
 
     def render(self):
         # 清空屏幕为黑色（默认背景）
@@ -1812,6 +1947,21 @@ class Game:
         # 绘制墙壁和门（始终显示）
         self.render_walls_and_doors()
 
+        # 绘制道具
+        if hasattr(self, 'item_manager') and self.item_manager:
+            player_pos = getattr(self.player, 'pos', None)
+            player_angle = getattr(self.player, 'angle', 0)
+            is_aiming = getattr(self.player, 'is_aiming', False)
+            self.item_manager.draw(
+                self.screen,
+                self.camera_offset,
+                player_pos,
+                player_angle,
+                self.game_map.walls,
+                self.game_map.doors,
+                is_aiming
+            )
+
         # 绘制游戏对象
         for bullet in self.bullets:
             if self.show_vision and not self.player.is_dead:
@@ -1826,6 +1976,26 @@ class Game:
                 )
             else:
                 bullet.draw(self.screen, self.camera_offset)
+        
+        # 绘制飞行手雷
+        for grenade in self.grenades:
+            grenade.draw(self.screen, self.camera_offset)
+        
+        if self.last_grenade_explosion:
+            elapsed = time.time() - self.last_grenade_explosion['time']
+            if elapsed < 1.0:
+                screen_pos = (
+                    self.last_grenade_explosion['pos'].x - self.camera_offset.x,
+                    self.last_grenade_explosion['pos'].y - self.camera_offset.y
+                )
+                alpha = int(255 * (1.0 - elapsed))
+                radius = int(500 * (elapsed / 1.0))
+                grenade_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+                pygame.draw.circle(grenade_surface, (255, 100, 0, alpha), (radius, radius), radius)
+                pygame.draw.circle(grenade_surface, (255, 200, 50, alpha), (radius, radius), int(radius * 0.7))
+                self.screen.blit(grenade_surface, (screen_pos[0] - radius, screen_pos[1] - radius))
+            else:
+                self.last_grenade_explosion = None
 
         for player in self.other_players.values():
             if self.show_vision and not self.player.is_dead:

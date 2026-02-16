@@ -55,6 +55,7 @@ class NetworkManager:
         self.socket.settimeout(1.0)  # 设置超时
         self.players = {}
         self.doors = {}  # 存储门状态
+        self.items = {}  # 存储道具状态
         self.chat_messages = []  # 存储聊天消息
         self.lock = threading.Lock()
         self.running = True
@@ -362,6 +363,10 @@ class NetworkManager:
                         self._init_players(msg_data)
                     elif msg_type == 'door_update':
                         self._update_door(msg_data)
+                    elif msg_type == 'item_update':
+                        self._update_items(msg_data)
+                    elif msg_type == 'item_pickup':
+                        self._handle_item_pickup(msg_data)
                     elif msg_type == 'request_bullet':
                         self._handle_bullet_request(msg_data)
                     elif msg_type == 'bullets_update':
@@ -583,6 +588,58 @@ class NetworkManager:
                         }, addr)
                     except:
                         pass
+    
+    def _update_items(self, items_data):
+        """更新道具状态"""
+        if isinstance(items_data, dict):
+            self.items = items_data
+    
+    def _handle_item_pickup(self, pickup_data):
+        """处理道具拾取"""
+        if isinstance(pickup_data, dict):
+            player_id = pickup_data.get('player_id')
+            item_id = pickup_data.get('item_id')
+            effect = pickup_data.get('effect', {})
+            
+            if self.is_server and self.game_instance:
+                game = self.game_instance
+                if hasattr(game, 'item_manager') and player_id:
+                    item_manager = game.item_manager
+                    if player_id in game.players:
+                        player = game.players[player_id]
+                        effect_result = item_manager.check_pickup(player)
+                        if effect_result:
+                            player.apply_item_effect(effect_result)
+                            
+                            for addr in list(self.clients.keys()):
+                                try:
+                                    self.send_to_client({
+                                        'type': 'item_pickup',
+                                        'data': {
+                                            'player_id': player_id,
+                                            'item_id': item_id,
+                                            'effect': effect_result
+                                        }
+                                    }, addr)
+                                except:
+                                    pass
+    
+    def send_item_update(self, items_state):
+        """发送道具状态更新"""
+        self.send_data({
+            'type': 'item_update',
+            'data': items_state
+        })
+    
+    def request_item_pickup(self, player_id: int, item_id: int):
+        """请求拾取道具（客户端用）"""
+        self.send_data({
+            'type': 'item_pickup',
+            'data': {
+                'player_id': player_id,
+                'item_id': item_id
+            }
+        })
 
     def _handle_bullet_request(self, bullet_data):
         """处理子弹发射请求 - 只有服务端处理"""
@@ -618,7 +675,17 @@ class NetworkManager:
                 if game_instance and hasattr(game_instance, 'game_rules'):
                     damage_multiplier = game_instance.game_rules['damage_multiplier']
                 
-                damage = base_damage * damage_multiplier
+                # 应用攻击者的伤害提升道具效果
+                attacker_damage_boost = 1.0
+                if game_instance:
+                    if hasattr(game_instance, 'players') and attacker_id in game_instance.players:
+                        attacker = game_instance.players[attacker_id]
+                        attacker_damage_boost = getattr(attacker, 'damage_boost_multiplier', 1.0)
+                    elif hasattr(game_instance, 'ai_players') and attacker_id in game_instance.ai_players:
+                        attacker = game_instance.ai_players[attacker_id]
+                        attacker_damage_boost = getattr(attacker, 'damage_boost_multiplier', 1.0)
+                
+                damage = base_damage * damage_multiplier * attacker_damage_boost
                 
                 # 防止重复处理相同的伤害事件
                 damage_key = f"{attacker_id}_{target_id}_{damage_type}_{int(time.time() * 10)}"

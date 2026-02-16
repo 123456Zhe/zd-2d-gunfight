@@ -60,6 +60,54 @@
     "ai": {
         "use_enhanced_ai": true
     },
+    "items": {
+        "enabled": true,
+        "spawn_count": 12,
+        "respawn_enabled": true,
+        "pickup_range": 35,
+        "types": {
+            "health_pack": {
+                "enabled": true,
+                "weight": 0.35,
+                "heal_amount": 50,
+                "respawn_time": 30
+            },
+            "ammo_box": {
+                "enabled": true,
+                "weight": 0.25,
+                "ammo_amount": 30,
+                "respawn_time": 25
+            },
+            "armor": {
+                "enabled": true,
+                "weight": 0.15,
+                "armor_amount": 50,
+                "damage_reduction": 0.5,
+                "respawn_time": 35
+            },
+            "speed_boost": {
+                "enabled": true,
+                "weight": 0.10,
+                "duration": 10,
+                "speed_multiplier": 1.5,
+                "respawn_time": 20
+            },
+            "damage_boost": {
+                "enabled": true,
+                "weight": 0.10,
+                "duration": 15,
+                "damage_multiplier": 1.5,
+                "respawn_time": 25
+            },
+            "grenade": {
+                "enabled": true,
+                "weight": 0.15,
+                "damage": 200,
+                "explosion_radius": 500,
+                "respawn_time": 30
+            }
+        }
+    },
     "commands": {
         "prefix": ".",
         "enabled": true

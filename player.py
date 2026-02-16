@@ -68,6 +68,21 @@ class Player:
         self.speed_boost_multiplier = 1.0  # 速度提升倍率
         self.last_speed_warning_time = 0  # 上次速度提升警告时间
         
+        # 护甲系统
+        self.armor = 0  # 护甲值
+        self.armor_damage_reduction = 0.5  # 护甲伤害减免比例
+        
+        # 伤害提升效果
+        self.damage_boost_end_time = 0  # 伤害提升结束时间
+        self.damage_boost_multiplier = 1.0  # 伤害提升倍率
+        
+        # 手雷
+        self.grenades = 0  # 拥有的手雷数量
+        
+        # 道具效果提示
+        self.effect_message = ""  # 当前显示的效果消息
+        self.effect_message_time = 0  # 消息显示结束时间
+        
         # 玩家状态（保持向后兼容）
         self.position = self.pos  # 别名，保持兼容性
         self.last_damage_time = 0
@@ -88,6 +103,99 @@ class Player:
         spawn_y = max(room_row * ROOM_SIZE + 50, min(spawn_y, (room_row + 1) * ROOM_SIZE - 50))
         
         return pygame.Vector2(spawn_x, spawn_y)
+    
+    def can_pickup_item(self):
+        """检查是否可以拾取道具"""
+        if self.is_dead or self.is_respawning:
+            return False
+        return True
+    
+    def apply_item_effect(self, effect: dict):
+        """应用道具效果"""
+        if not effect:
+            return
+        
+        effect_type = effect.get('type')
+        message = effect.get('message', '')
+        
+        if effect_type == 'health':
+            old_health = self.health
+            self.health = min(self.health + effect.get('amount', 0), 100)
+            healed = self.health - old_health
+            self.effect_message = f"+{healed} 生命值"
+        elif effect_type == 'ammo':
+            old_ammo = self.ammo
+            self.ammo = min(self.ammo + effect.get('amount', 0), 999)
+            added = self.ammo - old_ammo
+            self.effect_message = f"+{added} 弹药"
+        elif effect_type == 'armor':
+            old_armor = self.armor
+            self.armor = min(self.armor + effect.get('amount', 0), 100)
+            added = self.armor - old_armor
+            self.effect_message = f"+{added} 护甲"
+        elif effect_type == 'speed_boost':
+            duration = effect.get('duration', 10)
+            self.speed_boost_end_time = time.time() + duration
+            self.speed_boost_multiplier = 1.5
+            self.effect_message = f"速度提升 {duration}秒"
+        elif effect_type == 'damage_boost':
+            duration = effect.get('duration', 15)
+            self.damage_boost_end_time = time.time() + duration
+            self.damage_boost_multiplier = 1.5
+            self.effect_message = f"伤害提升 {duration}秒"
+        elif effect_type == 'grenade':
+            count = effect.get('count', 1)
+            self.grenades = getattr(self, 'grenades', 0) + count
+            self.effect_message = f"获得{count}颗手雷"
+        
+        if message and not self.effect_message:
+            self.effect_message = message
+        
+        self.effect_message_time = time.time() + 3.0
+    
+    def update_effects(self, dt: float):
+        """更新道具效果状态"""
+        current_time = time.time()
+        
+        if current_time < self.speed_boost_end_time:
+            self.speed_boost_multiplier = 1.5
+        else:
+            self.speed_boost_end_time = 0
+            self.speed_boost_multiplier = 1.0
+        
+        if current_time < self.damage_boost_end_time:
+            self.damage_boost_multiplier = 1.5
+        else:
+            self.damage_boost_end_time = 0
+            self.damage_boost_multiplier = 1.0
+    
+    def get_damage_multiplier(self) -> float:
+        """获取伤害倍率"""
+        return getattr(self, 'damage_boost_multiplier', 1.0)
+    
+    def apply_damage(self, damage: int) -> int:
+        """应用伤害，返回实际受到的伤害"""
+        if self.armor > 0:
+            reduction = min(self.armor * self.armor_damage_reduction, damage * 0.7)
+            armor_damage = min(self.armor, reduction)
+            self.armor = max(0, self.armor - armor_damage)
+            actual_damage = max(0, int(damage - reduction))
+        else:
+            actual_damage = damage
+        
+        self.health = max(0, self.health - actual_damage)
+        return actual_damage
+    
+    def reset_item_effects(self):
+        """重置所有道具效果"""
+        self.armor = 0
+        self.speed_boost_end_time = 0
+        self.speed_boost_multiplier = 1.0
+        self.damage_boost_end_time = 0
+        self.damage_boost_multiplier = 1.0
+        self.grenades = 0
+        self.effect_message = ""
+        self.effect_message_time = 0
 
     def can_switch_weapon(self):
         """检查是否可以切换武器"""
@@ -160,6 +268,9 @@ class Player:
         
         # 重置近战武器
         self.melee_weapon = MeleeWeapon(self.id)
+        
+        # 重置道具效果
+        self.reset_item_effects()
         
         print(f"玩家{self.id}在位置({new_pos.x:.0f}, {new_pos.y:.0f})复活")
         
@@ -596,7 +707,11 @@ class Player:
             return False
             
         self.last_damage_time = current_time
-        self.health -= damage
+        
+        actual_damage = self.apply_damage(damage)
+        
+        if actual_damage > 0:
+            print(f"[护甲系统] 玩家{self.id}受到{actual_damage}伤害，剩余生命{self.health}，护甲{self.armor}")
         
         # 触发被击中减速效果
         self.hit_slowdown_end_time = current_time + HIT_SLOWDOWN_DURATION
@@ -604,7 +719,6 @@ class Player:
         if self.health <= 0:
             self.health = 0
             self.is_dead = True
-            # 复活时间由服务端统一设置，这里不再设置
             return True
         
         return False

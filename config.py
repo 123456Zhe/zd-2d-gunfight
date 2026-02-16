@@ -193,6 +193,46 @@ USE_ENHANCED_AI = get("ai.use_enhanced_ai", True)
 COMMANDS_PREFIX = get("commands.prefix", ".")
 COMMANDS_ENABLED = get("commands.enabled", True)
 
+# 道具配置
+ITEMS_ENABLED = get("items.enabled", True)
+ITEMS_SPAWN_COUNT = get("items.spawn_count", 12)
+ITEMS_RESPAWN_ENABLED = get("items.respawn_enabled", True)
+ITEMS_PICKUP_RANGE = get("items.pickup_range", 35)
+
+# 医疗包
+ITEM_HEALTH_PACK_WEIGHT = get("items.types.health_pack.weight", 0.35)
+ITEM_HEALTH_PACK_HEAL = get("items.types.health_pack.heal_amount", 50)
+ITEM_HEALTH_PACK_RESPAWN = get("items.types.health_pack.respawn_time", 30)
+
+# 弹药箱
+ITEM_AMMO_BOX_WEIGHT = get("items.types.ammo_box.weight", 0.25)
+ITEM_AMMO_BOX_AMMO = get("items.types.ammo_box.ammo_amount", 30)
+ITEM_AMMO_BOX_RESPAWN = get("items.types.ammo_box.respawn_time", 25)
+
+# 护甲
+ITEM_ARMOR_WEIGHT = get("items.types.armor.weight", 0.15)
+ITEM_ARMOR_AMOUNT = get("items.types.armor.armor_amount", 50)
+ITEM_ARMOR_REDUCTION = get("items.types.armor.damage_reduction", 0.5)
+ITEM_ARMOR_RESPAWN = get("items.types.armor.respawn_time", 35)
+
+# 速度提升
+ITEM_SPEED_BOOST_WEIGHT = get("items.types.speed_boost.weight", 0.10)
+ITEM_SPEED_BOOST_DURATION = get("items.types.speed_boost.duration", 10)
+ITEM_SPEED_BOOST_MULTIPLIER = get("items.types.speed_boost.speed_multiplier", 1.5)
+ITEM_SPEED_BOOST_RESPAWN = get("items.types.speed_boost.respawn_time", 20)
+
+# 伤害提升
+ITEM_DAMAGE_BOOST_WEIGHT = get("items.types.damage_boost.weight", 0.10)
+ITEM_DAMAGE_BOOST_DURATION = get("items.types.damage_boost.duration", 15)
+ITEM_DAMAGE_BOOST_MULTIPLIER = get("items.types.damage_boost.damage_multiplier", 1.5)
+ITEM_DAMAGE_BOOST_RESPAWN = get("items.types.damage_boost.respawn_time", 25)
+
+# 手雷
+ITEM_GRENADE_WEIGHT = get("items.types.grenade.weight", 0.05)
+ITEM_GRENADE_DAMAGE = get("items.types.grenade.damage", 60)
+ITEM_GRENADE_RADIUS = get("items.types.grenade.explosion_radius", 100)
+ITEM_GRENADE_RESPAWN = get("items.types.grenade.respawn_time", 40)
+
 
 # 颜色定义
 def _color(key: str, default: List[int]):
