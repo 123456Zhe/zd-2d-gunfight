@@ -104,6 +104,7 @@ class NetworkManager:
                     'angle': 0,
                     'health': 100,
                     'ammo': MAGAZINE_SIZE,
+                    'armor': 0,  # 护甲
                     'is_reloading': False,
                     'shooting': False,
                     'is_dead': False,
@@ -115,7 +116,10 @@ class NetworkManager:
                     'weapon_type': 'gun',  # 新增：武器类型
                     'is_aiming': False,  # 新增：瞄准状态
                     'name': self.player_name,  # 修复：使用玩家名称而不是服务器名称
-                    'team_id': None  # 新增：团队ID
+                    'team_id': None,  # 新增：团队ID
+                    'speed_boost_end_time': 0,  # 速度提升结束时间
+                    'damage_boost_end_time': 0,  # 伤害提升结束时间
+                    'grenades': 0  # 手雷数量
                 }
                 self.connected = True
                 
@@ -429,6 +433,7 @@ class NetworkManager:
                 'angle': 0,
                 'health': 100,
                 'ammo': MAGAZINE_SIZE,
+                'armor': 0,  # 护甲
                 'is_reloading': False,
                 'shooting': False,
                 'is_dead': False,
@@ -440,7 +445,10 @@ class NetworkManager:
                 'weapon_type': 'gun',  # 新增：武器类型
                 'is_aiming': False,  # 新增：瞄准状态
                 'name': player_name,  # 新增：玩家名称
-                'team_id': None  # 新增：团队ID
+                'team_id': None,  # 新增：团队ID
+                'speed_boost_end_time': 0,  # 速度提升结束时间
+                'damage_boost_end_time': 0,  # 伤害提升结束时间
+                'grenades': 0  # 手雷数量
             }
             
             print(f"[服务端] 玩家{new_player_id}已连接，地址：{addr}，玩家名: {player_name}，当前玩家数: {len(self.players)}")
@@ -466,6 +474,15 @@ class NetworkManager:
                     'type': 'door_update',
                     'data': {'door_id': door_id, 'state': door_state}
                 }, addr)
+            
+            # 发送道具状态
+            if hasattr(self, 'game_instance') and self.game_instance:
+                game = self.game_instance
+                if hasattr(game, 'item_manager') and game.item_manager:
+                    self.send_to_client({
+                        'type': 'item_update',
+                        'data': game.item_manager.get_state()
+                    }, addr)
             
             # 发送聊天历史
             if self.chat_messages:
@@ -537,6 +554,10 @@ class NetworkManager:
                         current_death_time = self.players[pid].get('death_time', 0)
                         current_respawn_time = self.players[pid].get('respawn_time', 0)
                         current_is_respawning = self.players[pid].get('is_respawning', False)
+                        current_armor = self.players[pid].get('armor', 0)
+                        current_speed_boost = self.players[pid].get('speed_boost_end_time', 0)
+                        current_damage_boost = self.players[pid].get('damage_boost_end_time', 0)
+                        current_grenades = self.players[pid].get('grenades', 0)
                         
                         # 更新客户端发来的数据
                         self.players[pid].update(pdata)
@@ -547,7 +568,10 @@ class NetworkManager:
                         self.players[pid]['death_time'] = current_death_time
                         self.players[pid]['respawn_time'] = current_respawn_time
                         self.players[pid]['is_respawning'] = current_is_respawning
-                        # 名称允许客户端更新，不恢复旧值
+                        self.players[pid]['armor'] = current_armor
+                        self.players[pid]['speed_boost_end_time'] = current_speed_boost
+                        self.players[pid]['damage_boost_end_time'] = current_damage_boost
+                        self.players[pid]['grenades'] = current_grenades
                     else:
                         self.players[pid] = pdata
                         self.players[pid]['name'] = pdata.get('name', f'玩家{pid}')
@@ -593,6 +617,12 @@ class NetworkManager:
         """更新道具状态"""
         if isinstance(items_data, dict):
             self.items = items_data
+            
+            # 客户端：同步到游戏实例的item_manager
+            if not self.is_server and hasattr(self, 'game_instance') and self.game_instance:
+                game = self.game_instance
+                if hasattr(game, 'item_manager') and game.item_manager:
+                    game.item_manager.set_state(items_data)
     
     def _handle_item_pickup(self, pickup_data):
         """处理道具拾取"""
@@ -603,26 +633,69 @@ class NetworkManager:
             
             if self.is_server and self.game_instance:
                 game = self.game_instance
-                if hasattr(game, 'item_manager') and player_id:
+                if hasattr(game, 'item_manager') and player_id and item_id:
                     item_manager = game.item_manager
-                    if player_id in game.players:
-                        player = game.players[player_id]
-                        effect_result = item_manager.check_pickup(player)
-                        if effect_result:
-                            player.apply_item_effect(effect_result)
+                    
+                    # 检查道具是否还存在且活跃
+                    if item_id in item_manager.items:
+                        item = item_manager.items[item_id]
+                        if not item.is_active:
+                            print(f"[服务端] 道具{item_id}已被拾取，忽略重复请求")
+                            return
+                        
+                        # 标记道具为已拾取
+                        item.is_active = False
+                        item.respawn_time_remaining = item.RESPAWN_TIME
+                        print(f"[服务端] 道具{item_id}被玩家{player_id}拾取")
+                        
+                        # 找到玩家并应用效果
+                        player = None
+                        if hasattr(game, 'player') and game.player and game.player.id == player_id:
+                            player = game.player
+                        elif hasattr(game, 'other_players') and player_id in game.other_players:
+                            player = game.other_players[player_id]
+                        elif hasattr(game, 'ai_players') and player_id in game.ai_players:
+                            player = game.ai_players[player_id]
+                        
+                        if player and effect:
+                            player.apply_item_effect(effect)
                             
-                            for addr in list(self.clients.keys()):
-                                try:
-                                    self.send_to_client({
-                                        'type': 'item_pickup',
-                                        'data': {
-                                            'player_id': player_id,
-                                            'item_id': item_id,
-                                            'effect': effect_result
-                                        }
-                                    }, addr)
-                                except:
-                                    pass
+                            # 同步到self.players字典
+                            if player_id in self.players:
+                                self.players[player_id]['health'] = player.health
+                                self.players[player_id]['armor'] = player.armor
+                                self.players[player_id]['speed_boost_end_time'] = player.speed_boost_end_time
+                                self.players[player_id]['damage_boost_end_time'] = player.damage_boost_end_time
+                                self.players[player_id]['grenades'] = getattr(player, 'grenades', 0)
+                                print(f"[服务端] 同步玩家{player_id}状态: health={player.health}, armor={player.armor}")
+                        
+                        # 广播道具拾取消息给所有客户端
+                        self.send_data({
+                            'type': 'item_pickup',
+                            'data': {
+                                'player_id': player_id,
+                                'item_id': item_id,
+                                'effect': effect
+                            }
+                        })
+                        
+                        # 广播道具状态更新
+                        self.send_item_update(item_manager.get_state())
+            
+            # 客户端：应用道具效果
+            if not self.is_server and self.game_instance:
+                game = self.game_instance
+                player = None
+                if hasattr(game, 'player') and game.player and game.player.id == player_id:
+                    player = game.player
+                elif hasattr(game, 'other_players') and player_id in game.other_players:
+                    player = game.other_players[player_id]
+                elif hasattr(game, 'ai_players') and player_id in game.ai_players:
+                    player = game.ai_players[player_id]
+                
+                if player and effect:
+                    player.apply_item_effect(effect)
+                    print(f"[客户端] 玩家{player_id}应用道具效果: {effect.get('message', '')}")
     
     def send_item_update(self, items_state):
         """发送道具状态更新"""
@@ -678,11 +751,15 @@ class NetworkManager:
                 # 应用攻击者的伤害提升道具效果
                 attacker_damage_boost = 1.0
                 if game_instance:
-                    if hasattr(game_instance, 'players') and attacker_id in game_instance.players:
-                        attacker = game_instance.players[attacker_id]
-                        attacker_damage_boost = getattr(attacker, 'damage_boost_multiplier', 1.0)
+                    attacker = None
+                    if hasattr(game_instance, 'player') and game_instance.player and game_instance.player.id == attacker_id:
+                        attacker = game_instance.player
+                    elif hasattr(game_instance, 'other_players') and attacker_id in game_instance.other_players:
+                        attacker = game_instance.other_players[attacker_id]
                     elif hasattr(game_instance, 'ai_players') and attacker_id in game_instance.ai_players:
                         attacker = game_instance.ai_players[attacker_id]
+                    
+                    if attacker:
                         attacker_damage_boost = getattr(attacker, 'damage_boost_multiplier', 1.0)
                 
                 damage = base_damage * damage_multiplier * attacker_damage_boost
@@ -702,11 +779,18 @@ class NetworkManager:
                     if hasattr(self, 'game_instance') and self.game_instance:
                         self.game_instance.trigger_hit_effect()
                     
-                    # 应用减速效果
-                    game_instance = getattr(self, 'game_instance', None)
-                    if game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
-                        player = game_instance.players[target_id]
-                        player.take_damage(0)  # 传入0伤害，只触发减速效果
+                    # 客户端：应用伤害和减速效果
+                    if not self.is_server:
+                        game_instance = getattr(self, 'game_instance', None)
+                        if game_instance:
+                            target_player = None
+                            if hasattr(game_instance, 'player') and game_instance.player and game_instance.player.id == target_id:
+                                target_player = game_instance.player
+                            elif hasattr(game_instance, 'other_players') and target_id in game_instance.other_players:
+                                target_player = game_instance.other_players[target_id]
+                            if target_player:
+                                target_player.take_damage(damage)
+                                print(f"[客户端] 本地玩家{target_id}受到{damage}伤害，剩余生命: {target_player.health}")
                 
                 # 服务端处理
                 if self.is_server:
@@ -726,14 +810,27 @@ class NetworkManager:
                             target_team_id = self.players.get(target_id, {}).get('team_id', None)
                             if attacker_team_id is None or target_team_id is None:
                                 # 从游戏实例对象补全
-                                if hasattr(game_instance, 'players') and attacker_id in getattr(game_instance, 'players', {}):
-                                    attacker_team_id = attacker_team_id or getattr(game_instance.players[attacker_id], 'team_id', None)
-                                if hasattr(game_instance, 'ai_players') and attacker_id in getattr(game_instance, 'ai_players', {}):
-                                    attacker_team_id = attacker_team_id or getattr(game_instance.ai_players[attacker_id], 'team_id', None)
-                                if hasattr(game_instance, 'players') and target_id in getattr(game_instance, 'players', {}):
-                                    target_team_id = target_team_id or getattr(game_instance.players[target_id], 'team_id', None)
-                                if hasattr(game_instance, 'ai_players') and target_id in getattr(game_instance, 'ai_players', {}):
-                                    target_team_id = target_team_id or getattr(game_instance.ai_players[target_id], 'team_id', None)
+                                attacker_obj = None
+                                target_obj = None
+                                if hasattr(game_instance, 'player') and game_instance.player:
+                                    if game_instance.player.id == attacker_id:
+                                        attacker_obj = game_instance.player
+                                    if game_instance.player.id == target_id:
+                                        target_obj = game_instance.player
+                                if hasattr(game_instance, 'other_players'):
+                                    if attacker_id in game_instance.other_players:
+                                        attacker_obj = attacker_obj or game_instance.other_players[attacker_id]
+                                    if target_id in game_instance.other_players:
+                                        target_obj = target_obj or game_instance.other_players[target_id]
+                                if hasattr(game_instance, 'ai_players'):
+                                    if attacker_id in game_instance.ai_players:
+                                        attacker_obj = attacker_obj or game_instance.ai_players[attacker_id]
+                                    if target_id in game_instance.ai_players:
+                                        target_obj = target_obj or game_instance.ai_players[target_id]
+                                if attacker_obj:
+                                    attacker_team_id = attacker_team_id or getattr(attacker_obj, 'team_id', None)
+                                if target_obj:
+                                    target_team_id = target_team_id or getattr(target_obj, 'team_id', None)
                             if attacker_team_id is not None and target_team_id is not None and attacker_team_id == target_team_id:
                                 print(f"[团队] 玩家{attacker_id}尝试攻击同队目标{target_id}（基于team_id对比），伤害被阻止")
                                 return
@@ -748,6 +845,7 @@ class NetworkManager:
                             
                             # 同步AI玩家状态到网络
                             self.players[target_id]['health'] = ai_player.health
+                            self.players[target_id]['armor'] = ai_player.armor
                             self.players[target_id]['is_dead'] = ai_player.is_dead
                             if is_dead:
                                 self.players[target_id]['death_time'] = current_time
@@ -767,40 +865,48 @@ class NetworkManager:
                                 if self.is_server:
                                     self.broadcast_chat_message(death_chat)
                         
-                        elif game_instance and hasattr(game_instance, 'players') and target_id in game_instance.players:
-                            player = game_instance.players[target_id]
-                            # 调用玩家的take_damage方法，传入游戏规则中的复活时间
-                            respawn_time = RESPAWN_TIME
-                            if game_instance and hasattr(game_instance, 'game_rules'):
-                                respawn_time = game_instance.game_rules['respawn_time']
-                            is_dead = player.take_damage(damage, respawn_time)
+                        elif game_instance:
+                            # 查找目标玩家实例
+                            target_player = None
+                            if hasattr(game_instance, 'player') and game_instance.player and game_instance.player.id == target_id:
+                                target_player = game_instance.player
+                            elif hasattr(game_instance, 'other_players') and target_id in game_instance.other_players:
+                                target_player = game_instance.other_players[target_id]
                             
-                            # 同步玩家状态到网络
-                            self.players[target_id]['health'] = player.health
-                            self.players[target_id]['is_dead'] = player.is_dead
-                            if is_dead:
-                                self.players[target_id]['death_time'] = current_time
-                                
-                                # 使用游戏规则中的复活时间
+                            if target_player:
+                                # 调用玩家的take_damage方法，传入游戏规则中的复活时间
                                 respawn_time = RESPAWN_TIME
-                                if game_instance and hasattr(game_instance, 'game_rules'):
+                                if hasattr(game_instance, 'game_rules'):
                                     respawn_time = game_instance.game_rules['respawn_time']
+                                is_dead = target_player.take_damage(damage, respawn_time)
                                 
-                                self.players[target_id]['respawn_time'] = current_time + respawn_time
-                            
-                            print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{player.health + damage}->{player.health}")
-                            
-                            if is_dead:
-                                print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
+                                # 同步玩家状态到网络
+                                self.players[target_id]['health'] = target_player.health
+                                self.players[target_id]['armor'] = target_player.armor
+                                self.players[target_id]['is_dead'] = target_player.is_dead
+                                if is_dead:
+                                    self.players[target_id]['death_time'] = current_time
+                                    
+                                    # 使用游戏规则中的复活时间
+                                    respawn_time = RESPAWN_TIME
+                                    if hasattr(game_instance, 'game_rules'):
+                                        respawn_time = game_instance.game_rules['respawn_time']
+                                    
+                                    self.players[target_id]['respawn_time'] = current_time + respawn_time
                                 
-                                # 发送死亡信息到聊天框
-                                attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
-                                target_name = self.players.get(target_id, {}).get('name', f"玩家{target_id}")
-                                death_message = f"{attacker_name} 击杀了 {target_name}！"
-                                death_chat = ChatMessage(0, "[系统]", death_message, current_time)
-                                self.chat_messages.append(death_chat)
-                                if self.is_server:
-                                    self.broadcast_chat_message(death_chat)
+                                print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{target_player.health + damage}->{target_player.health}")
+                                
+                                if is_dead:
+                                    print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
+                                    
+                                    # 发送死亡信息到聊天框
+                                    attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
+                                    target_name = self.players.get(target_id, {}).get('name', f"玩家{target_id}")
+                                    death_message = f"{attacker_name} 击杀了 {target_name}！"
+                                    death_chat = ChatMessage(0, "[系统]", death_message, current_time)
+                                    self.chat_messages.append(death_chat)
+                                    if self.is_server:
+                                        self.broadcast_chat_message(death_chat)
                         else:
                             # 如果没有玩家实例，使用原来的逻辑
                             old_health = self.players[target_id]['health']
@@ -1349,12 +1455,20 @@ class NetworkManager:
             
             # 应用速度提升
             game_instance = getattr(self, 'game_instance', None)
-            if game_instance and hasattr(game_instance, 'players') and player_id in game_instance.players:
-                player = game_instance.players[player_id]
-                player.speed_boost_end_time = time.time() + duration
-                player.speed_boost_multiplier = speed_multiplier
-                self._send_system_message(f"已临时提高移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
-                print(f"[服务端] 管理员{player_id}临时提高了移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
+            if game_instance:
+                target_player = None
+                if hasattr(game_instance, 'player') and game_instance.player and game_instance.player.id == player_id:
+                    target_player = game_instance.player
+                elif hasattr(game_instance, 'other_players') and player_id in game_instance.other_players:
+                    target_player = game_instance.other_players[player_id]
+                elif hasattr(game_instance, 'ai_players') and player_id in game_instance.ai_players:
+                    target_player = game_instance.ai_players[player_id]
+                
+                if target_player:
+                    target_player.speed_boost_end_time = time.time() + duration
+                    target_player.speed_boost_multiplier = speed_multiplier
+                    self._send_system_message(f"已临时提高移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
+                    print(f"[服务端] 管理员{player_id}临时提高了移动速度至{speed_multiplier:.1f}倍，持续{duration:.1f}秒")
             
         elif cmd == '.addai' and is_admin:
             # 添加AI玩家
@@ -2043,6 +2157,15 @@ class NetworkManager:
                     'type': 'bullets_update',
                     'data': self.active_bullets
                 })
+                
+                # 广播道具状态
+                if hasattr(self, 'game_instance') and self.game_instance:
+                    game = self.game_instance
+                    if hasattr(game, 'item_manager') and game.item_manager:
+                        self.send_data({
+                            'type': 'item_update',
+                            'data': game.item_manager.get_state()
+                        })
                 
                 self.last_broadcast = current_time
 

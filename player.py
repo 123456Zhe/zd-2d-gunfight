@@ -86,7 +86,7 @@ class Player:
         # 玩家状态（保持向后兼容）
         self.position = self.pos  # 别名，保持兼容性
         self.last_damage_time = 0
-        self.damage_cooldown = 0.5  # 伤害冷却时间
+        self.damage_cooldown = 0.05  # 伤害冷却时间（降低以检测更多伤害）
 
     def get_random_spawn_pos(self):
         """获取随机出生位置"""
@@ -174,12 +174,30 @@ class Player:
         return getattr(self, 'damage_boost_multiplier', 1.0)
     
     def apply_damage(self, damage: int) -> int:
-        """应用伤害，返回实际受到的伤害"""
+        """应用伤害，返回实际受到的伤害
+        
+        护甲减伤逻辑：
+        - 护甲吸收一定比例的伤害（armor_damage_reduction）
+        - 护甲被消耗的量等于吸收的伤害量
+        - 剩余伤害由生命值承担
+        """
         if self.armor > 0:
-            reduction = min(self.armor * self.armor_damage_reduction, damage * 0.7)
-            armor_damage = min(self.armor, reduction)
-            self.armor = max(0, self.armor - armor_damage)
-            actual_damage = max(0, int(damage - reduction))
+            # 护甲吸收的伤害比例（默认50%）
+            armor_absorb_ratio = self.armor_damage_reduction
+            
+            # 计算护甲应该吸收的伤害
+            armor_absorb = int(damage * armor_absorb_ratio)
+            
+            # 护甲实际吸收的伤害（不能超过护甲值）
+            actual_armor_absorb = min(self.armor, armor_absorb)
+            
+            # 消耗护甲
+            self.armor = max(0, self.armor - actual_armor_absorb)
+            
+            # 实际受到的伤害 = 总伤害 - 护甲吸收的伤害
+            actual_damage = damage - actual_armor_absorb
+            
+            print(f"[护甲] 伤害{damage}，护甲吸收{actual_armor_absorb}，实际伤害{actual_damage}，剩余护甲{self.armor}")
         else:
             actual_damage = damage
         
@@ -647,6 +665,7 @@ class Player:
                 'angle': self.angle,
                 'health': self.health,
                 'ammo': self.ammo,
+                'armor': self.armor,
                 'is_reloading': self.is_reloading,
                 'shooting': self.shooting,
                 'is_dead': self.is_dead,
@@ -658,8 +677,11 @@ class Player:
                 'melee_direction': self.melee_weapon.attack_direction,
                 'weapon_type': self.weapon_type,
                 'is_aiming': self.is_aiming,
-                'is_making_sound': self.is_making_sound,  # 声音状态
-                'sound_volume': self.sound_volume  # 新增声音音量
+                'is_making_sound': self.is_making_sound,
+                'sound_volume': self.sound_volume,
+                'speed_boost_end_time': self.speed_boost_end_time,
+                'damage_boost_end_time': self.damage_boost_end_time,
+                'grenades': getattr(self, 'grenades', 0)
             }
             
             # 更新网络管理器中的玩家数据
@@ -671,6 +693,7 @@ class Player:
                     self.is_dead = server_data.get('is_dead', self.is_dead)
                     self.death_time = server_data.get('death_time', self.death_time)
                     self.respawn_time = server_data.get('respawn_time', self.respawn_time)
+                    self.armor = server_data.get('armor', self.armor)
                     
                     # 更新服务端数据（位置等输入数据）
                     network_manager.players[self.id].update(player_data)
@@ -679,6 +702,7 @@ class Player:
                     network_manager.players[self.id]['is_dead'] = self.is_dead
                     network_manager.players[self.id]['death_time'] = self.death_time
                     network_manager.players[self.id]['respawn_time'] = self.respawn_time
+                    network_manager.players[self.id]['armor'] = self.armor
                 else:
                     network_manager.players[self.id] = player_data
             else:

@@ -65,7 +65,9 @@ class Item:
         self.last_pickup_time = time.time()
         self.is_active = False
         self.respawn_time_remaining = self.RESPAWN_TIME
-        return self.get_effect(player)
+        effect = self.get_effect(player)
+        effect['item_id'] = self.id
+        return effect
     
     def get_effect(self, player: 'Player') -> Dict:
         """获取道具效果（子类实现）"""
@@ -156,13 +158,10 @@ class HealthPack(Item):
     MAX_HEALTH = 100
     
     def get_effect(self, player: 'Player') -> Dict:
-        old_health = player.health
-        player.health = min(player.health + self.HEAL_AMOUNT, self.MAX_HEALTH)
-        healed = player.health - old_health
         return {
             'type': 'health',
-            'amount': healed,
-            'message': f"+{healed} 生命值"
+            'amount': self.HEAL_AMOUNT,
+            'message': f"+{self.HEAL_AMOUNT} 生命值"
         }
 
 
@@ -178,13 +177,10 @@ class AmmoBox(Item):
     AMMO_AMOUNT = 30
     
     def get_effect(self, player: 'Player') -> Dict:
-        old_ammo = player.ammo
-        player.ammo = min(player.ammo + self.AMMO_AMOUNT, 999)
-        added = player.ammo - old_ammo
         return {
             'type': 'ammo',
-            'amount': added,
-            'message': f"+{added} 弹药"
+            'amount': self.AMMO_AMOUNT,
+            'message': f"+{self.AMMO_AMOUNT} 弹药"
         }
 
 
@@ -205,13 +201,10 @@ class Armor(Item):
         self.armor_value = self.ARMOR_AMOUNT
     
     def get_effect(self, player: 'Player') -> Dict:
-        old_armor = getattr(player, 'armor', 0)
-        player.armor = min(old_armor + self.ARMOR_AMOUNT, 100)
-        added = player.armor - old_armor
         return {
             'type': 'armor',
-            'amount': added,
-            'message': f"+{added} 护甲"
+            'amount': self.ARMOR_AMOUNT,
+            'message': f"+{self.ARMOR_AMOUNT} 护甲"
         }
 
 
@@ -228,8 +221,6 @@ class SpeedBoost(Item):
     SPEED_MULTIPLIER = 1.5
     
     def get_effect(self, player: 'Player') -> Dict:
-        player.speed_boost_end_time = time.time() + self.DURATION
-        player.speed_boost_multiplier = self.SPEED_MULTIPLIER
         return {
             'type': 'speed_boost',
             'duration': self.DURATION,
@@ -250,8 +241,6 @@ class DamageBoost(Item):
     DAMAGE_MULTIPLIER = 1.5
     
     def get_effect(self, player: 'Player') -> Dict:
-        player.damage_boost_end_time = time.time() + self.DURATION
-        player.damage_boost_multiplier = self.DAMAGE_MULTIPLIER
         return {
             'type': 'damage_boost',
             'duration': self.DURATION,
@@ -276,15 +265,11 @@ class Grenade(Item):
     BOUNCE_DAMPING = 0.6
     
     def get_effect(self, player: 'Player') -> Dict:
-        print(f"[DEBUG] Grenade.get_effect 被调用, 当前手雷: {getattr(player, 'grenades', 'N/A')}")
-        player.grenades = getattr(player, 'grenades', 0) + 1
-        result = {
+        return {
             'type': 'grenade',
-            'count': player.grenades,
+            'count': 1,
             'message': "获得1颗手雷"
         }
-        print(f"[DEBUG] Grenade.get_effect 返回: {result}")
-        return result
 
 
 class ThrownGrenade:
@@ -669,6 +654,9 @@ class ItemManager:
             if item_id in existing_ids:
                 item = self.items.get(item_id)
                 if item:
+                    # 如果本地道具已经不活跃（刚被拾取），不要用旧状态覆盖
+                    if not item.is_active and item_data.get('is_active', True):
+                        continue
                     item.is_active = item_data.get('is_active', True)
                     item.respawn_time_remaining = item_data.get('respawn_time_remaining', 0)
                     item.pos = pygame.Vector2(item_data.get('pos', [0, 0]))

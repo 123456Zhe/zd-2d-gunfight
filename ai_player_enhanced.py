@@ -25,10 +25,26 @@ class EnhancedAIPlayer:
         self.pos = pygame.Vector2(x, y)
         self.angle = random.uniform(0, 360)
         self.health = 100
+        self.max_health = 100
         self.is_dead = False
         self.death_time = 0
         self.respawn_time = 0
         self.team_id = None  # 团队ID
+
+        # 护甲系统
+        self.armor = 0
+        self.armor_damage_reduction = 0.5
+
+        # 速度提升效果
+        self.speed_boost_end_time = 0
+        self.speed_boost_multiplier = 1.0
+
+        # 伤害提升效果
+        self.damage_boost_end_time = 0
+        self.damage_boost_multiplier = 1.0
+
+        # 手雷
+        self.grenades = 0
 
         # 武器状态
         self.ammo = MAGAZINE_SIZE
@@ -596,8 +612,8 @@ class EnhancedAIPlayer:
         return action
 
     def take_damage(self, damage):
-        """受到伤害"""
-        self.health -= damage
+        """受到伤害，支持护甲减伤"""
+        actual_damage = self.apply_damage(damage)
         if self.health <= 0:
             self.health = 0
             self.is_dead = True
@@ -605,6 +621,19 @@ class EnhancedAIPlayer:
             self.respawn_time = time.time() + RESPAWN_TIME
             return True
         return False
+
+    def apply_damage(self, damage: int) -> int:
+        """应用伤害，护甲吸收部分伤害"""
+        if self.armor > 0:
+            armor_absorb_ratio = self.armor_damage_reduction
+            armor_absorb = int(damage * armor_absorb_ratio)
+            actual_armor_absorb = min(self.armor, armor_absorb)
+            self.armor = max(0, self.armor - actual_armor_absorb)
+            actual_damage = damage - actual_armor_absorb
+        else:
+            actual_damage = damage
+        self.health = max(0, self.health - actual_damage)
+        return actual_damage
 
     def respawn(self, x, y):
         """复活"""

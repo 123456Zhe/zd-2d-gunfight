@@ -1184,36 +1184,34 @@ class HUDManager:
         self.aim_text = ""
         self.aim_color = AIM_COLOR
 
+        self.buff_texts = []
+        self.grenade_text = ""
+        self.grenade_color = WHITE
+
     def update(self):
         """更新 HUD 内容"""
         if not self.game.player:
             return
 
         player = self.game.player
+        import time
+        current_time = time.time()
 
-        # 更新生命值
-        health_color = (
+        self.health_text = f"生命: {player.health}/{player.max_health}"
+        self.health_color = (
             GREEN if player.health > 50 else (YELLOW if player.health > 25 else RED)
         )
-        self.health_text = f"生命: {player.health}/{player.max_health}"
-        self.health_color = health_color
 
-        # 更新武器信息
         weapon_name = "近战" if player.weapon_type == "melee" else "枪械"
-        weapon_color = YELLOW if player.weapon_type == "melee" else GREEN
         self.weapon_text = f"武器: {weapon_name}"
-        self.weapon_color = weapon_color
+        self.weapon_color = YELLOW if player.weapon_type == "melee" else GREEN
 
-        # 根据武器类型更新不同信息
         if player.weapon_type == "gun":
-            # 枪械：显示弹药和装填状态
             self.ammo_text = f"弹药: {player.ammo}/{MAGAZINE_SIZE}"
             self.ammo_color = WHITE
 
             if player.is_reloading:
-                import time
-
-                reload_time = max(0, RELOAD_TIME - (time.time() - player.reload_start))
+                reload_time = max(0, RELOAD_TIME - (current_time - player.reload_start))
                 self.status_text = f"换弹中: {reload_time:.1f}s"
                 self.status_color = YELLOW
                 self.aim_text = ""
@@ -1225,51 +1223,79 @@ class HUDManager:
                 else:
                     self.aim_text = ""
         else:
-            # 近战：显示攻击状态
             if player.melee_weapon.can_attack():
                 self.ammo_text = "近战武器: 就绪"
                 self.ammo_color = GREEN
                 self.status_text = ""
             else:
-                import time
-
                 remaining_cooldown = MELEE_COOLDOWN - (
-                    time.time() - player.melee_weapon.last_attack_time
+                    current_time - player.melee_weapon.last_attack_time
                 )
                 self.ammo_text = f"近战武器: {remaining_cooldown:.1f}s"
                 self.ammo_color = RED
                 self.status_text = ""
             self.aim_text = ""
 
+        self.buff_texts = []
+
+        if player.armor > 0:
+            self.buff_texts.append((f"护甲: {player.armor}", (100, 150, 255)))
+
+        if hasattr(player, 'speed_boost_end_time') and player.speed_boost_end_time > current_time:
+            remaining = player.speed_boost_end_time - current_time
+            self.buff_texts.append((f"加速: {remaining:.1f}s", (100, 255, 100)))
+
+        if hasattr(player, 'damage_boost_end_time') and player.damage_boost_end_time > current_time:
+            remaining = player.damage_boost_end_time - current_time
+            self.buff_texts.append((f"伤害提升: {remaining:.1f}s", (255, 100, 100)))
+
+        grenade_count = getattr(player, 'grenades', 0)
+        if grenade_count > 0:
+            self.grenade_text = f"手雷: {grenade_count}"
+            self.grenade_color = (255, 200, 100)
+        else:
+            self.grenade_text = ""
+
     def draw(self):
         """绘制 HUD"""
-        global font
+        global font, small_font
 
-        # 绘制生命值
         health_surface = font.render(self.health_text, True, self.health_color)
         self.screen.blit(health_surface, (self.hud_x, self.hud_y))
 
-        # 绘制武器信息
         weapon_surface = font.render(self.weapon_text, True, self.weapon_color)
         self.screen.blit(weapon_surface, (self.hud_x, self.hud_y + self.line_height))
 
-        # 绘制弹药信息
         ammo_surface = font.render(self.ammo_text, True, self.ammo_color)
         self.screen.blit(ammo_surface, (self.hud_x, self.hud_y + self.line_height * 2))
 
-        # 绘制状态信息（如果有）
+        current_line = 3
+
         if self.status_text:
             status_surface = font.render(self.status_text, True, self.status_color)
             self.screen.blit(
-                status_surface, (self.hud_x, self.hud_y + self.line_height * 3)
+                status_surface, (self.hud_x, self.hud_y + self.line_height * current_line)
             )
+            current_line += 1
 
-        # 绘制瞄准信息（如果有）
         if self.aim_text:
             aim_surface = font.render(self.aim_text, True, self.aim_color)
-            # 根据是否有状态信息调整位置
-            offset = self.line_height * 4 if self.status_text else self.line_height * 3
-            self.screen.blit(aim_surface, (self.hud_x, self.hud_y + offset))
+            self.screen.blit(aim_surface, (self.hud_x, self.hud_y + self.line_height * current_line))
+            current_line += 1
+
+        if self.buff_texts:
+            buff_y = self.hud_y + self.line_height * current_line + 5
+            for buff_text, buff_color in self.buff_texts:
+                buff_surface = small_font.render(buff_text, True, buff_color)
+                self.screen.blit(buff_surface, (self.hud_x, buff_y))
+                buff_y += 16
+
+        if self.grenade_text:
+            grenade_y = self.hud_y + self.line_height * current_line
+            if self.buff_texts:
+                grenade_y += len(self.buff_texts) * 16 + 5
+            grenade_surface = font.render(self.grenade_text, True, self.grenade_color)
+            self.screen.blit(grenade_surface, (self.hud_x, grenade_y))
 
 
 class InfoPanelManager:
@@ -1335,18 +1361,18 @@ class ChatHistoryManager:
         self.screen = screen
         self.game = game
         self.messages = []
-        self.max_messages = 50  # 增加缓存的消息数量
-        self.display_messages = 8  # 最多显示的消息数量
+        self.max_messages = 50
+        self.display_messages = 12
 
-        # 显示区域 - 调整位置避免与HUD重叠
         self.history_x = 20
-        self.history_y = SCREEN_HEIGHT - 250  # 向上移动，避免与底部UI重叠
-        self.history_width = 300
-        self.history_height = 120
+        self.history_y = SCREEN_HEIGHT - 320
+        self.history_width = 400
+        self.history_height = 200
 
-        # 滚动相关
-        self.scroll_offset = 0  # 滚动偏移量（行数）
-        self.line_height = 0  # 行高，在draw时计算
+        self.scroll_offset = 0
+        self.line_height = 0
+
+        self.chat_font = None
 
     def update(self):
         """更新聊天历史内容"""
@@ -1369,34 +1395,39 @@ class ChatHistoryManager:
         """向下滚动（查看最新的消息）"""
         self.scroll_offset = max(0, self.scroll_offset - 1)
 
+    def _get_chat_font(self):
+        if self.chat_font is None:
+            global fonts
+            if fonts and "font_name" in fonts:
+                self.chat_font = pygame.font.SysFont(fonts["font_name"], 13)
+            else:
+                self.chat_font = pygame.font.Font(None, 13)
+        return self.chat_font
+
     def draw(self):
-        """绘制聊天历史"""
         if not self.messages:
             return
 
-        global small_font
+        chat_font = self._get_chat_font()
 
-        # 绘制背景
         bg_rect = pygame.Rect(
             self.history_x, self.history_y, self.history_width, self.history_height
         )
-        pygame.draw.rect(self.screen, (15, 15, 20, 150), bg_rect)
-        pygame.draw.rect(self.screen, (60, 60, 80), bg_rect, 1)
+        bg_surface = pygame.Surface((self.history_width, self.history_height), pygame.SRCALPHA)
+        bg_surface.fill((15, 15, 20, 120))
+        self.screen.blit(bg_surface, (self.history_x, self.history_y))
+        pygame.draw.rect(self.screen, (60, 60, 80, 150), bg_rect, 1)
 
-        # 绘制标题
-        title_surface = small_font.render("── 聊天消息 ──", True, GRAY)
+        title_surface = chat_font.render("── 聊天消息 ──", True, GRAY)
         self.screen.blit(title_surface, (self.history_x + 10, self.history_y + 5))
 
-        # 计算行高
-        line_height = small_font.get_height() + 5
+        line_height = chat_font.get_height() + 2
         self.line_height = line_height
 
-        # 计算所有消息的行数（用于计算最大滚动偏移）
         all_lines = []
-        max_text_width = self.history_width - 20  # 减去左右边距
+        max_text_width = self.history_width - 20
 
         for msg in self.messages:
-            # 创建消息文本
             if msg.player_id == 0:
                 message_text = msg.message
                 msg_color = WHITE
@@ -1404,17 +1435,14 @@ class ChatHistoryManager:
                 message_text = f"{msg.player_name}: {msg.message}"
                 msg_color = msg.color
 
-            # 处理多行文本（支持\n换行）
             lines = message_text.split("\n")
 
             for line in lines:
-                # 如果一行文本太长，需要自动换行
-                if small_font.size(line)[0] > max_text_width:
-                    # 逐字计算
+                if chat_font.size(line)[0] > max_text_width:
                     current_line = ""
                     for char in line:
                         test_line = current_line + char
-                        if small_font.size(test_line)[0] <= max_text_width:
+                        if chat_font.size(test_line)[0] <= max_text_width:
                             current_line = test_line
                         else:
                             if current_line:
@@ -1425,48 +1453,40 @@ class ChatHistoryManager:
                 else:
                     all_lines.append((line, msg_color))
 
-            # 消息之间添加额外间距
-            all_lines.append(("", None))  # 空行作为分隔符
+            all_lines.append(("", None))
 
-        # 计算可显示的行数（减去标题行和边距）
-        available_height = self.history_height - 25  # 减去标题高度
+        available_height = self.history_height - 22
         max_visible_lines = int(available_height / line_height)
 
-        # 限制滚动偏移量
         max_scroll = max(0, len(all_lines) - max_visible_lines)
         self.scroll_offset = min(self.scroll_offset, max_scroll)
 
-        # 计算要显示的行范围（从底部向上）
         start_line = max(0, len(all_lines) - max_visible_lines - self.scroll_offset)
         end_line = min(len(all_lines), start_line + max_visible_lines)
 
-        # 绘制消息
-        y_offset = 25
+        y_offset = 20
         for i in range(start_line, end_line):
             line_text, line_color = all_lines[i]
 
-            # 跳过空行（消息分隔符）
             if not line_text:
-                y_offset += 3
+                y_offset += 2
                 continue
 
-            # 渲染文本
-            line_surface = small_font.render(line_text, True, line_color)
+            line_surface = chat_font.render(line_text, True, line_color)
             self.screen.blit(
                 line_surface, (self.history_x + 10, self.history_y + y_offset)
             )
             y_offset += line_height
 
-        # 绘制滚动提示
         if self.scroll_offset > 0:
-            hint_text = "↑ 更多消息"
-            hint_surface = small_font.render(hint_text, True, YELLOW)
+            hint_text = "↑"
+            hint_surface = chat_font.render(hint_text, True, YELLOW)
             hint_x = self.history_x + self.history_width - hint_surface.get_width() - 10
             self.screen.blit(hint_surface, (hint_x, self.history_y + 5))
 
         if self.scroll_offset < max_scroll:
-            hint_text = "↓ 更多消息"
-            hint_surface = small_font.render(hint_text, True, YELLOW)
+            hint_text = "↓"
+            hint_surface = chat_font.render(hint_text, True, YELLOW)
             hint_x = self.history_x + self.history_width - hint_surface.get_width() - 10
             self.screen.blit(hint_surface, (hint_x, self.history_y + 5))
 
@@ -1638,55 +1658,6 @@ class MinimapManager:
             (int(minimap_center_x), int(minimap_center_y)),
             4,
         )
-
-        # 绘制队友
-        teammates = self._get_teammates()
-        for teammate_id in teammates:
-            if teammate_id == self.game.player.id:
-                continue
-
-            teammate = self._find_player(teammate_id)
-            if teammate and hasattr(teammate, "pos"):
-                rel_x = (
-                    teammate.pos.x - self.game.player.pos.x
-                ) * self.minimap_scale + minimap_center_x
-                rel_y = (
-                    teammate.pos.y - self.game.player.pos.y
-                ) * self.minimap_scale + minimap_center_y
-
-                if (
-                    0 <= rel_x <= self.minimap_width
-                    and 0 <= rel_y <= self.minimap_height
-                ):
-                    teammate_color = GREEN
-                    pygame.draw.circle(
-                        self.minimap_surface,
-                        teammate_color,
-                        (int(rel_x), int(rel_y)),
-                        3,
-                    )
-
-        # 绘制其他玩家（敌人）
-        for pid, player in self.game.other_players.items():
-            if pid in teammates or pid == self.game.player.id:
-                continue
-
-            if hasattr(player, "pos"):
-                rel_x = (
-                    player.pos.x - self.game.player.pos.x
-                ) * self.minimap_scale + minimap_center_x
-                rel_y = (
-                    player.pos.y - self.game.player.pos.y
-                ) * self.minimap_scale + minimap_center_y
-
-                if (
-                    0 <= rel_x <= self.minimap_width
-                    and 0 <= rel_y <= self.minimap_height
-                ):
-                    enemy_color = RED
-                    pygame.draw.circle(
-                        self.minimap_surface, enemy_color, (int(rel_x), int(rel_y)), 3
-                    )
 
         # 绘制小地图边框
         pygame.draw.rect(

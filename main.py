@@ -1401,12 +1401,35 @@ class Game:
             if self.player and not self.player.is_dead:
                 pickup_result = self.item_manager.check_pickup(self.player)
                 if pickup_result:
-                    self.player.apply_item_effect(pickup_result)
                     print(f"[道具] 玩家{self.player.id}拾取道具: {pickup_result.get('message', '')}")
                     
-                    # 服务端同步道具状态
+                    # 服务端：直接应用效果并广播
                     if self.network_manager.is_server:
+                        self.player.apply_item_effect(pickup_result)
+                        
+                        # 同步到network_manager.players字典
+                        if self.player.id in self.network_manager.players:
+                            self.network_manager.players[self.player.id]['health'] = self.player.health
+                            self.network_manager.players[self.player.id]['armor'] = self.player.armor
+                            self.network_manager.players[self.player.id]['speed_boost_end_time'] = self.player.speed_boost_end_time
+                            self.network_manager.players[self.player.id]['damage_boost_end_time'] = self.player.damage_boost_end_time
+                            self.network_manager.players[self.player.id]['grenades'] = getattr(self.player, 'grenades', 0)
+                        
                         self.network_manager.send_item_update(self.item_manager.get_state())
+                    else:
+                        # 客户端：通知服务端，等待服务端确认后再应用效果
+                        # 临时标记道具为不活跃，防止重复拾取
+                        item_id = pickup_result.get('item_id')
+                        if item_id and item_id in self.item_manager.items:
+                            self.item_manager.items[item_id].is_active = False
+                        self.network_manager.send_data({
+                            'type': 'item_pickup',
+                            'data': {
+                                'player_id': self.player.id,
+                                'item_id': item_id,
+                                'effect': pickup_result
+                            }
+                        })
 
         # 控制网络同步频率
         if current_time - self.last_sync_time > self.sync_interval:
@@ -1428,8 +1451,17 @@ class Game:
 
                 # 更新或添加在线玩家
                 for pid, pdata in self.network_manager.players.items():
-                    # 跳过本地玩家
+                    # 本地玩家：只同步权威数据（健康值、死亡状态等）
                     if pid == self.player.id:
+                        self.player.health = pdata.get("health", self.player.health)
+                        self.player.is_dead = pdata.get("is_dead", False)
+                        self.player.death_time = pdata.get("death_time", 0)
+                        self.player.respawn_time = pdata.get("respawn_time", 0)
+                        self.player.is_respawning = pdata.get("is_respawning", False)
+                        self.player.armor = pdata.get("armor", self.player.armor)
+                        self.player.speed_boost_end_time = pdata.get("speed_boost_end_time", 0)
+                        self.player.damage_boost_end_time = pdata.get("damage_boost_end_time", 0)
+                        self.player.grenades = pdata.get("grenades", 0)
                         continue
 
                     # 创建或更新其他玩家
@@ -1448,6 +1480,7 @@ class Game:
                     other_player.angle = pdata["angle"]
                     other_player.health = pdata["health"]
                     other_player.ammo = pdata["ammo"]
+                    other_player.armor = pdata.get("armor", 0)
                     other_player.is_reloading = pdata["is_reloading"]
                     other_player.shooting = pdata["shooting"]
                     other_player.is_dead = pdata.get("is_dead", False)
@@ -1455,6 +1488,9 @@ class Game:
                     other_player.respawn_time = pdata.get("respawn_time", 0)
                     other_player.is_respawning = pdata.get("is_respawning", False)
                     other_player.name = pdata.get("name", f"玩家{pid}")
+                    other_player.speed_boost_end_time = pdata.get("speed_boost_end_time", 0)
+                    other_player.damage_boost_end_time = pdata.get("damage_boost_end_time", 0)
+                    other_player.grenades = pdata.get("grenades", 0)
 
                     # 同步团队ID
                     if "team_id" in pdata:
@@ -1494,16 +1530,31 @@ class Game:
                 for target in targets:
                     target_id = target.get('target_id')
                     damage = target.get('damage')
-                    if target_id in self.ai_players:
-                        ai_player = self.ai_players[target_id]
-                        if not ai_player.is_dead:
-                            ai_player.take_damage(damage)
-                            print(f"[手雷] AI玩家{target_id}受到{damage}伤害")
-                    elif target_id in self.other_players:
-                        target_player = self.other_players[target_id]
-                        if not target_player.is_dead:
-                            if self.is_server:
+                    attacker_id = target.get('attacker_id')
+                    
+                    if self.network_manager and self.network_manager.is_server:
+                        damage_data = {
+                            'target_id': target_id,
+                            'damage': damage,
+                            'attacker_id': attacker_id,
+                            'type': 'grenade'
+                        }
+                        self.network_manager._handle_damage(damage_data)
+                    else:
+                        if target_id == self.player.id:
+                            if not self.player.is_dead:
+                                self.player.take_damage(damage)
+                                print(f"[手雷] 本地玩家{target_id}受到{damage}伤害")
+                        elif target_id in self.ai_players:
+                            ai_player = self.ai_players[target_id]
+                            if not ai_player.is_dead:
+                                ai_player.take_damage(damage)
+                                print(f"[手雷] AI玩家{target_id}受到{damage}伤害")
+                        elif target_id in self.other_players:
+                            target_player = self.other_players[target_id]
+                            if not target_player.is_dead:
                                 target_player.take_damage(damage)
+                                print(f"[手雷] 网络玩家{target_id}受到{damage}伤害")
                 self.grenades.remove(grenade)
 
         # 更新门
@@ -2830,155 +2881,6 @@ class Game:
             (int(minimap_center_x), int(minimap_center_y)),
             4,
         )
-
-        # 绘制所有队员的位置
-        teammates = []
-        team_obj = None
-        # 优先通过团队管理器获取
-        if hasattr(self, "team_manager"):
-            try:
-                teammates = list(self.team_manager.get_teammates(self.player.id))
-                team_obj = self.team_manager.get_player_team(self.player.id)
-            except Exception:
-                teammates = []
-                team_obj = None
-        # 回退：从网络玩家表按相同 team_id 聚合
-        if (
-            not teammates
-            and hasattr(self, "network_manager")
-            and hasattr(self.network_manager, "players")
-        ):
-            try:
-                local_team_id = getattr(self.player, "team_id", None)
-                if local_team_id is None:
-                    local_team_id = self.network_manager.players.get(
-                        self.player.id, {}
-                    ).get("team_id", None)
-                if local_team_id is not None:
-                    for pid, pdata in self.network_manager.players.items():
-                        if pid == self.player.id:
-                            continue
-                        if pdata.get("team_id", None) == local_team_id:
-                            teammates.append(pid)
-            except Exception:
-                pass
-        # 开始绘制队友
-        for teammate_id in teammates:
-            # 检查队友是否在游戏世界中（包括本地玩家，可能是队长）
-            teammate = None
-            if teammate_id == self.player.id:
-                # 队友是本地玩家（可能是队长），但本地玩家已经绘制了，跳过
-                continue
-            else:
-                # 在 other_players / ai_players 中查找（兼容不同 ID 类型）
-                # 直接尝试
-                if teammate_id in self.other_players:
-                    teammate = self.other_players[teammate_id]
-                elif teammate_id in self.ai_players:
-                    teammate = self.ai_players[teammate_id]
-                else:
-                    # 尝试在转换类型后查找
-                    cand_ids = []
-                    try:
-                        cand_ids.append(int(teammate_id))
-                    except Exception:
-                        pass
-                    cand_ids.append(str(teammate_id))
-                    for cid in cand_ids:
-                        if cid in self.other_players:
-                            teammate = self.other_players[cid]
-                            break
-                        if cid in self.ai_players:
-                            teammate = self.ai_players[cid]
-                            break
-
-                if teammate:
-                    # 计算队友在小地图上的相对位置
-                    rel_x = (
-                        teammate.pos.x - self.player.pos.x
-                    ) * minimap_scale + minimap_center_x
-                    rel_y = (
-                        teammate.pos.y - self.player.pos.y
-                    ) * minimap_scale + minimap_center_y
-
-                    # 只绘制在小地图范围内的队友
-                    if 0 <= rel_x < minimap_width and 0 <= rel_y < minimap_height:
-                        # 获取队友颜色
-                        teammate_color = (
-                            DEAD_COLOR if teammate.is_dead else teammate.color
-                        )
-                        if (
-                            hasattr(teammate, "weapon_type")
-                            and teammate.weapon_type == "melee"
-                        ):
-                            teammate_color = MELEE_COLOR
-
-                        # 绘制队友位置（稍小一点，以区分本地玩家）
-                        pygame.draw.circle(
-                            minimap_surface, teammate_color, (int(rel_x), int(rel_y)), 3
-                        )
-
-                        # 如果是队长，绘制一个小标记
-                        # 使用已获取到的 team_obj；若没有则尝试从 team_manager 获取
-                        team = team_obj
-                        if team is None and hasattr(self, "team_manager"):
-                            try:
-                                team = self.team_manager.get_player_team(self.player.id)
-                            except Exception:
-                                team = None
-                        if team and team.is_leader(teammate_id):
-                            # 在队友位置上方绘制一个小三角形表示队长
-                            triangle_points = [
-                                (int(rel_x), int(rel_y) - 6),
-                                (int(rel_x) - 3, int(rel_y) - 3),
-                                (int(rel_x) + 3, int(rel_y) - 3),
-                            ]
-                            pygame.draw.polygon(
-                                minimap_surface, teammate_color, triangle_points
-                            )
-
-        # 在小地图上显示大概方位（不显示精确位置）
-        for sound_info in self.nearby_sound_players:
-            direction = sound_info["direction"]
-            is_shooting = sound_info["is_shooting"]
-            sound_intensity = sound_info["sound_intensity"]
-
-            # 根据声音类型选择颜色
-            base_color = (
-                (255, 50, 50) if is_shooting else (50, 255, 50)
-            )  # 红色表示开枪，绿色表示移动
-
-            # 根据声音强度调整颜色透明度和指示器大小
-            alpha = int(
-                min(255, max(50, 255 * sound_intensity))
-            )  # 最小透明度为50，最大为255
-            color = (base_color[0], base_color[1], base_color[2], alpha)
-
-            # 计算大概方位（在小地图边缘显示方向指示）
-            edge_distance = min(minimap_width, minimap_height) * (
-                0.2 + 0.2 * sound_intensity
-            )  # 距离中心根据声音强度变化
-            dir_x = direction.x * edge_distance
-            dir_y = direction.y * edge_distance
-
-            # 确保指示器在小地图范围内
-            indicator_x = int(minimap_center_x + dir_x)
-            indicator_y = int(minimap_center_y + dir_y)
-
-            # 绘制方向箭头（简化版）
-            arrow_size = 3
-            pygame.draw.circle(
-                minimap_surface, color, (indicator_x, indicator_y), arrow_size
-            )
-
-            # 绘制指向中心的连线表示方向
-            pygame.draw.line(
-                minimap_surface,
-                color,
-                (indicator_x, indicator_y),
-                (int(minimap_center_x), int(minimap_center_y)),
-                1,
-            )
 
         # 移除了小地图上的视角方向线绘制
 

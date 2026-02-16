@@ -15,3 +15,4 @@ dist/*
 build/*
 ZD-2D-Gunfight.spec
 nul
+nuitka-crash-report.xml 
