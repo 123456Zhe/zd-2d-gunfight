@@ -345,6 +345,9 @@ class GameCommandSystem:
         )
 
         def team_handler(args, game, player_id, is_server) -> str:
+            manager = getattr(game, "team_manager", None)
+            if manager is None:
+                return "团队系统不可用"
             if not args:
                 return f"用法: {prefix}team <add|delete|list|join|leave> [参数]"
             subcmd = args[0].lower()
@@ -352,12 +355,10 @@ class GameCommandSystem:
 
             if subcmd == "add":
                 name = " ".join(subargs) if subargs else f"团队{player_id}"
-                if game.team_system:
-                    team_id = game.team_system.create_team(name, player_id)
-                    if team_id:
-                        return f"已创建团队 '{name}' (ID:{team_id})"
-                    return "创建团队失败"
-                return "团队系统不可用"
+                team = manager.create_team(player_id, name)
+                if team:
+                    return f"已创建团队 '{team.name}' (ID:{team.team_id})"
+                return "创建团队失败（你可能已在某个团队中）"
 
             elif subcmd == "delete":
                 if not is_server:
@@ -366,46 +367,38 @@ class GameCommandSystem:
                     return f"用法: {prefix}team delete <团队ID>"
                 try:
                     team_id = int(subargs[0])
-                    if game.team_system:
-                        if game.team_system.delete_team(team_id, player_id):
-                            return f"已删除团队 {team_id}"
-                        return "删除失败，可能是团队不存在或你不是队长"
-                    return "团队系统不可用"
+                    if manager.delete_team(team_id, player_id):
+                        return f"已删除团队 {team_id}"
+                    return "删除失败，可能是团队不存在或你不是队长"
                 except ValueError:
                     return "无效的团队ID"
 
             elif subcmd == "list":
-                if game.team_system:
-                    teams = game.team_system.get_all_teams_info()
-                    if not teams:
-                        return "当前没有团队"
-                    lines = ["当前团队:"]
-                    for t in teams:
-                        lines.append(
-                            f"  ID:{t['id']} - {t['name']} ({t['member_count']}人)"
-                        )
-                    return "\n".join(lines)
-                return "团队系统不可用"
+                teams = manager.list_teams()
+                if not teams:
+                    return "当前没有团队"
+                lines = ["当前团队:"]
+                for t in teams:
+                    lines.append(
+                        f"  ID:{t['team_id']} - {t['name']} ({t['size']}人)"
+                    )
+                return "\n".join(lines)
 
             elif subcmd == "join":
                 if not subargs:
                     return f"用法: {prefix}team join <团队ID>"
                 try:
                     team_id = int(subargs[0])
-                    if game.team_system:
-                        if game.team_system.join_team(team_id, player_id):
-                            return f"已加入团队 {team_id}"
-                        return "加入团队失败，可能是团队已满或不存在"
-                    return "团队系统不可用"
+                    if manager.join_team(player_id, team_id):
+                        return f"已加入团队 {team_id}"
+                    return "加入团队失败，可能是团队已满、不存在或你已在团队中"
                 except ValueError:
                     return "无效的团队ID"
 
             elif subcmd == "leave":
-                if game.team_system:
-                    if game.team_system.leave_team(player_id):
-                        return "已离开团队"
-                    return "你不在任何团队中"
-                return "团队系统不可用"
+                if manager.leave_team(player_id):
+                    return "已离开团队"
+                return "你不在任何团队中"
 
             return f"未知子命令: {subcmd}"
 
@@ -544,3 +537,21 @@ def process_command(
 
 def show_help(game: Any) -> str:
     return get_command_system().get_help()
+
+
+def get_command_permission(text: str) -> Optional[CommandPermission]:
+    """查询某条命令所需的权限，未知命令返回 None"""
+    cmd_name, _ = CommandParser().parse(text)
+    if not cmd_name:
+        return None
+    cmd = get_command_system().get(cmd_name)
+    return cmd.permission if cmd else None
+
+
+def get_command_name(text: str) -> Optional[str]:
+    """查询某条命令的规范化名称，未知命令返回 None"""
+    cmd_name, _ = CommandParser().parse(text)
+    if not cmd_name:
+        return None
+    cmd = get_command_system().get(cmd_name)
+    return cmd.name if cmd else None

@@ -19,7 +19,37 @@ import random
 import time
 from typing import Dict, List, Optional, Tuple
 from enum import Enum, auto
-from constants import PLAYER_RADIUS
+from constants import (
+    PLAYER_RADIUS,
+    FIELD_OF_VIEW,
+    ITEMS_PICKUP_RANGE,
+    ITEMS_SPAWN_COUNT,
+    ITEM_HEALTH_PACK_HEAL,
+    ITEM_HEALTH_PACK_RESPAWN,
+    ITEM_AMMO_BOX_AMMO,
+    ITEM_AMMO_BOX_RESPAWN,
+    ITEM_ARMOR_AMOUNT,
+    ITEM_ARMOR_REDUCTION,
+    ITEM_ARMOR_RESPAWN,
+    ITEM_SPEED_BOOST_DURATION,
+    ITEM_SPEED_BOOST_MULTIPLIER,
+    ITEM_SPEED_BOOST_RESPAWN,
+    ITEM_DAMAGE_BOOST_DURATION,
+    ITEM_DAMAGE_BOOST_MULTIPLIER,
+    ITEM_DAMAGE_BOOST_RESPAWN,
+    ITEM_GRENADE_DAMAGE,
+    ITEM_GRENADE_RADIUS,
+    ITEM_GRENADE_RESPAWN,
+    ITEM_HEALTH_PACK_WEIGHT,
+    ITEM_AMMO_BOX_WEIGHT,
+    ITEM_ARMOR_WEIGHT,
+    ITEM_SPEED_BOOST_WEIGHT,
+    ITEM_DAMAGE_BOOST_WEIGHT,
+    ITEM_GRENADE_WEIGHT,
+)
+
+
+AIMED_FIELD_OF_VIEW = 30
 
 
 class ItemType(Enum):
@@ -93,9 +123,10 @@ class Item:
             self.pos.y - camera_offset.y
         )
         
-        if player_pos and player_angle and walls and doors:
+        if player_pos is not None and player_angle is not None and walls is not None and doors is not None:
             from utils import is_visible
-            if not is_visible(player_pos, player_angle, self.pos, 120, walls, doors):
+            fov = AIMED_FIELD_OF_VIEW if is_aiming else FIELD_OF_VIEW
+            if not is_visible(player_pos, player_angle, self.pos, fov, walls, doors):
                 return
         
         pygame.draw.circle(surface, self.COLOR, (int(screen_pos.x), int(screen_pos.y)), self.RADIUS)
@@ -150,11 +181,11 @@ class HealthPack(Item):
     
     TYPE = ItemType.HEALTH_PACK
     NAME = "医疗包"
-    DESCRIPTION = "恢复50点生命值"
+    DESCRIPTION = f"恢复{ITEM_HEALTH_PACK_HEAL}点生命值"
     COLOR = (0, 255, 0)
     RADIUS = 15
-    RESPAWN_TIME = 30
-    HEAL_AMOUNT = 50
+    RESPAWN_TIME = ITEM_HEALTH_PACK_RESPAWN
+    HEAL_AMOUNT = ITEM_HEALTH_PACK_HEAL
     MAX_HEALTH = 100
     
     def get_effect(self, player: 'Player') -> Dict:
@@ -170,11 +201,11 @@ class AmmoBox(Item):
     
     TYPE = ItemType.AMMO_BOX
     NAME = "弹药箱"
-    DESCRIPTION = "补充30发弹药"
+    DESCRIPTION = f"补充{ITEM_AMMO_BOX_AMMO}发弹药"
     COLOR = (255, 165, 0)
     RADIUS = 15
-    RESPAWN_TIME = 25
-    AMMO_AMOUNT = 30
+    RESPAWN_TIME = ITEM_AMMO_BOX_RESPAWN
+    AMMO_AMOUNT = ITEM_AMMO_BOX_AMMO
     
     def get_effect(self, player: 'Player') -> Dict:
         return {
@@ -189,12 +220,12 @@ class Armor(Item):
     
     TYPE = ItemType.ARMOR
     NAME = "护甲"
-    DESCRIPTION = "提供50点护甲，吸收伤害"
+    DESCRIPTION = f"提供{ITEM_ARMOR_AMOUNT}点护甲，吸收伤害"
     COLOR = (100, 100, 255)
     RADIUS = 15
-    RESPAWN_TIME = 35
-    ARMOR_AMOUNT = 50
-    DAMAGE_REDUCTION = 0.5
+    RESPAWN_TIME = ITEM_ARMOR_RESPAWN
+    ARMOR_AMOUNT = ITEM_ARMOR_AMOUNT
+    DAMAGE_REDUCTION = ITEM_ARMOR_REDUCTION
     
     def __init__(self, item_id: int, x: float, y: float):
         super().__init__(item_id, x, y)
@@ -213,12 +244,12 @@ class SpeedBoost(Item):
     
     TYPE = ItemType.SPEED_BOOST
     NAME = "速度提升"
-    DESCRIPTION = "提升移动速度50%，持续10秒"
+    DESCRIPTION = f"提升移动速度{int((ITEM_SPEED_BOOST_MULTIPLIER - 1) * 100)}%，持续{ITEM_SPEED_BOOST_DURATION}秒"
     COLOR = (255, 255, 0)
     RADIUS = 15
-    RESPAWN_TIME = 20
-    DURATION = 10.0
-    SPEED_MULTIPLIER = 1.5
+    RESPAWN_TIME = ITEM_SPEED_BOOST_RESPAWN
+    DURATION = float(ITEM_SPEED_BOOST_DURATION)
+    SPEED_MULTIPLIER = ITEM_SPEED_BOOST_MULTIPLIER
     
     def get_effect(self, player: 'Player') -> Dict:
         return {
@@ -233,12 +264,12 @@ class DamageBoost(Item):
     
     TYPE = ItemType.DAMAGE_BOOST
     NAME = "伤害提升"
-    DESCRIPTION = "提升伤害50%，持续15秒"
+    DESCRIPTION = f"提升伤害{int((ITEM_DAMAGE_BOOST_MULTIPLIER - 1) * 100)}%，持续{ITEM_DAMAGE_BOOST_DURATION}秒"
     COLOR = (255, 0, 0)
     RADIUS = 15
-    RESPAWN_TIME = 25
-    DURATION = 15.0
-    DAMAGE_MULTIPLIER = 1.5
+    RESPAWN_TIME = ITEM_DAMAGE_BOOST_RESPAWN
+    DURATION = float(ITEM_DAMAGE_BOOST_DURATION)
+    DAMAGE_MULTIPLIER = ITEM_DAMAGE_BOOST_MULTIPLIER
     
     def get_effect(self, player: 'Player') -> Dict:
         return {
@@ -256,13 +287,14 @@ class Grenade(Item):
     DESCRIPTION = "投掷造成范围伤害"
     COLOR = (128, 128, 128)
     RADIUS = 12
-    RESPAWN_TIME = 30
-    DAMAGE = 200
-    EXPLOSION_RADIUS = 500
+    RESPAWN_TIME = ITEM_GRENADE_RESPAWN
+    DAMAGE = ITEM_GRENADE_DAMAGE
+    EXPLOSION_RADIUS = ITEM_GRENADE_RADIUS
     THROW_SPEED = 400
     FUSE_TIME = 3.0
     GRAVITY = 600
     BOUNCE_DAMPING = 0.6
+    BOUNCE_COUNT = 3
     
     def get_effect(self, player: 'Player') -> Dict:
         return {
@@ -328,11 +360,41 @@ class ThrownGrenade:
         """引爆手雷"""
         self.exploded = True
         self.explosion_pos = pygame.Vector2(self.pos)
-    
-    def get_targets(self, players: Dict) -> List[Dict]:
-        """获取爆炸范围内的目标"""
+
+    @classmethod
+    def from_state(cls, state: Dict) -> 'ThrownGrenade':
+        """从网络状态重建手雷（不递增本地ID）"""
+        obj = cls.__new__(cls)
+        obj.damage = Grenade.DAMAGE
+        obj.explosion_radius = Grenade.EXPLOSION_RADIUS
+        obj.fuse_time = Grenade.FUSE_TIME
+        obj.gravity = Grenade.GRAVITY
+        obj.bounce_damping = Grenade.BOUNCE_DAMPING
+        obj.apply_state(state)
+        return obj
+
+    def apply_state(self, state: Dict):
+        """应用服务端权威状态"""
+        cur_pos = getattr(self, 'pos', pygame.Vector2(0, 0))
+        cur_vel = getattr(self, 'velocity', pygame.Vector2(0, 0))
+        self.id = state.get('id', getattr(self, 'id', -1))
+        self.pos = pygame.Vector2(state.get('pos', [cur_pos.x, cur_pos.y]))
+        self.velocity = pygame.Vector2(state.get('velocity', [cur_vel.x, cur_vel.y]))
+        self.owner_id = state.get('owner_id', getattr(self, 'owner_id', None))
+        self.spawn_time = state.get('spawn_time', getattr(self, 'spawn_time', time.time()))
+        self.exploded = state.get('exploded', getattr(self, 'exploded', False))
+        explosion_pos = state.get('explosion_pos')
+        if explosion_pos:
+            self.explosion_pos = pygame.Vector2(explosion_pos)
+        elif not hasattr(self, 'explosion_pos'):
+            self.explosion_pos = None
+
+    def get_targets(self, players: Dict, walls=None, doors=None) -> List[Dict]:
+        """获取爆炸范围内的目标（墙壁会阻挡爆炸伤害）"""
         if not self.explosion_pos:
             return []
+        
+        from utils import has_line_of_sight
         
         targets = []
         for pid, player in players.items():
@@ -341,6 +403,11 @@ class ThrownGrenade:
             
             distance = self.explosion_pos.distance_to(player.pos)
             if distance <= self.explosion_radius:
+                # 爆炸冲击会被墙壁/关闭的门阻挡
+                if walls is not None and not has_line_of_sight(
+                    self.explosion_pos, player.pos, walls, doors or []
+                ):
+                    continue
                 damage_ratio = 1 - (distance / self.explosion_radius)
                 damage = int(self.damage * max(0.1, damage_ratio))
                 targets.append({
@@ -448,6 +515,8 @@ class ItemManager:
     
     def spawn_all_types(self):
         """确保每种道具类型都至少生成一个，每个位置都不同"""
+        if not self.item_spawn_points:
+            return
         available_types = list(ItemType)
         used_positions = set()
         
@@ -466,7 +535,7 @@ class ItemManager:
                 pos = random.choice(self.item_spawn_points)
                 self.spawn_item(item_type=item_type, pos=pos)
         
-        extra_items = 6
+        extra_items = max(0, ITEMS_SPAWN_COUNT - len(available_types))
         for _ in range(extra_items):
             attempts = 0
             while attempts < 30:
@@ -495,7 +564,7 @@ class ItemManager:
     
     def check_pickup(self, player: 'Player') -> Optional[Dict]:
         """检查玩家是否拾取道具"""
-        pickup_radius = PLAYER_RADIUS + 15
+        pickup_radius = ITEMS_PICKUP_RANGE
         
         for item in self.items.values():
             if not item.can_pickup(player.id):
@@ -503,10 +572,7 @@ class ItemManager:
             
             distance = player.pos.distance_to(item.pos)
             if distance <= pickup_radius:
-                print(f"[DEBUG] 拾取道具: {item.NAME}, 距离: {distance:.1f}, 半径: {pickup_radius}")
-                result = item.pickup(player)
-                print(f"[DEBUG] pickup结果: {result}")
-                return result
+                return item.pickup(player)
         
         return None
     
@@ -588,7 +654,8 @@ class ItemManager:
         walls = getattr(game_map, 'walls', [])
         doors = getattr(game_map, 'doors', [])
         
-        obstacles = list(walls) + [d.rect for d in doors]
+        # 只有关闭的门才阻挡视线
+        obstacles = list(walls) + [d.rect for d in doors if not d.is_open]
         
         for obstacle in obstacles:
             if self._line_intersects_rect(from_pos, to_pos, obstacle):
@@ -682,12 +749,12 @@ def create_default_item_manager() -> ItemManager:
     manager = ItemManager()
     
     weights = {
-        ItemType.HEALTH_PACK: 0.35,
-        ItemType.AMMO_BOX: 0.25,
-        ItemType.ARMOR: 0.15,
-        ItemType.SPEED_BOOST: 0.10,
-        ItemType.DAMAGE_BOOST: 0.10,
-        ItemType.GRENADE: 0.15,
+        ItemType.HEALTH_PACK: ITEM_HEALTH_PACK_WEIGHT,
+        ItemType.AMMO_BOX: ITEM_AMMO_BOX_WEIGHT,
+        ItemType.ARMOR: ITEM_ARMOR_WEIGHT,
+        ItemType.SPEED_BOOST: ITEM_SPEED_BOOST_WEIGHT,
+        ItemType.DAMAGE_BOOST: ITEM_DAMAGE_BOOST_WEIGHT,
+        ItemType.GRENADE: ITEM_GRENADE_WEIGHT,
     }
     manager.set_spawn_weights(weights)
     

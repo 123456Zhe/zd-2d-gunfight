@@ -5,6 +5,7 @@ import random
 from pygame.locals import *
 from constants import *
 from weapons import MeleeWeapon
+from utils import friendly_fire_enabled, dprint
 import ui
 
 class Player:
@@ -29,6 +30,17 @@ class Player:
         self.is_respawning = False
         self.last_respawn_check = 0
         self.last_door_interaction = 0
+        
+        # 网络位置插值（仅用于其他玩家在网络快照之间的平滑显示）
+        self.net_prev_pos = None
+        self.net_curr_pos = None
+        self.net_prev_time = 0.0
+        self.net_curr_time = 0.0
+        self.net_prev_angle = None
+        self.net_curr_angle = None
+        
+        # 出生保护（无敌时间）
+        self.protection_end = 0
         
         # 团队系统
         self.team_id = None  # 所属团队ID
@@ -168,10 +180,6 @@ class Player:
         else:
             self.damage_boost_end_time = 0
             self.damage_boost_multiplier = 1.0
-    
-    def get_damage_multiplier(self) -> float:
-        """获取伤害倍率"""
-        return getattr(self, 'damage_boost_multiplier', 1.0)
     
     def apply_damage(self, damage: int) -> int:
         """应用伤害，返回实际受到的伤害
@@ -537,25 +545,30 @@ class Player:
                 # 检查近战攻击是否击中目标
                 targets = {}
                 if all_players:
-                    # 获取团队管理器（如果存在）
+                    # 获取团队管理器（如果存在）与友军伤害开关
                     team_manager = None
+                    game_rules = None
                     if network_manager:
                         game_instance = getattr(network_manager, 'game_instance', None)
-                        if game_instance and hasattr(game_instance, 'team_manager'):
-                            team_manager = game_instance.team_manager
+                        if game_instance:
+                            game_rules = getattr(game_instance, 'game_rules', None)
+                            if hasattr(game_instance, 'team_manager'):
+                                team_manager = game_instance.team_manager
+                    friendly_fire = friendly_fire_enabled(game_rules)
                     
                     for pid, player in all_players.items():
                         if pid != self.id and not player.is_dead:
-                            # 检查是否是队友，如果是队友则跳过（队友不受伤害）
-                            if team_manager and team_manager.are_teammates(self.id, pid):
-                                continue
-                            # 回退：比较本地对象上的team_id
-                            try:
-                                if getattr(self, 'team_id', None) is not None and getattr(player, 'team_id', None) is not None:
-                                    if self.team_id == player.team_id:
-                                        continue
-                            except Exception:
-                                pass
+                            # 检查是否是队友，如果是队友则跳过（除非开启了友军伤害）
+                            if not friendly_fire:
+                                if team_manager and team_manager.are_teammates(self.id, pid):
+                                    continue
+                                # 回退：比较本地对象上的team_id
+                                try:
+                                    if getattr(self, 'team_id', None) is not None and getattr(player, 'team_id', None) is not None:
+                                        if self.team_id == player.team_id:
+                                            continue
+                                except Exception:
+                                    pass
                             targets[pid] = player.pos
                 
                 # 收集障碍物（墙壁和门）
@@ -644,19 +657,24 @@ class Player:
                 old_health = self.health
                 self.health = server_data['health']
                 if old_health > self.health:
-                    print(f"[同步] 玩家{self.id}生命值从{old_health}同步为{self.health}")
+                    dprint(f"[同步] 玩家{self.id}生命值从{old_health}同步为{self.health}")
             
             # 同步死亡状态
             if self.is_dead != server_data['is_dead']:
                 self.is_dead = server_data['is_dead']
                 if self.is_dead:
-                    print(f"[同步] 玩家{self.id}死亡状态同步")
+                    dprint(f"[同步] 玩家{self.id}死亡状态同步")
                     self.death_time = server_data.get('death_time', current_time)
                     # 复活时间完全依赖服务端，但要确保数据有效
                     server_respawn_time = server_data.get('respawn_time', 0)
                     # 只有当服务端提供了有效的复活时间才使用，否则保持当前值
                     if server_respawn_time > 0:
                         self.respawn_time = server_respawn_time
+
+            # 同步手雷数量（服务端权威，保证投掷后计数一致）
+            server_grenades = server_data.get('grenades', self.grenades)
+            if self.grenades != server_grenades:
+                self.grenades = server_grenades
 
         # 发送玩家更新（只有本地玩家）
         if is_local_player:
@@ -686,25 +704,16 @@ class Player:
             
             # 更新网络管理器中的玩家数据
             if network_manager.is_server:
-                # 服务端：从网络数据同步权威状态
-                if self.id in network_manager.players:
-                    server_data = network_manager.players[self.id]
-                    self.health = server_data.get('health', self.health)
-                    self.is_dead = server_data.get('is_dead', self.is_dead)
-                    self.death_time = server_data.get('death_time', self.death_time)
-                    self.respawn_time = server_data.get('respawn_time', self.respawn_time)
-                    self.armor = server_data.get('armor', self.armor)
-                    
-                    # 更新服务端数据（位置等输入数据）
+                # 服务端：本地玩家对象即权威，直接写回，避免用旧的网络值覆盖自身状态
+                if self.id not in network_manager.players:
+                    network_manager.players[self.id] = dict(player_data)
+                else:
                     network_manager.players[self.id].update(player_data)
-                    # 保持权威数据
                     network_manager.players[self.id]['health'] = self.health
                     network_manager.players[self.id]['is_dead'] = self.is_dead
                     network_manager.players[self.id]['death_time'] = self.death_time
                     network_manager.players[self.id]['respawn_time'] = self.respawn_time
                     network_manager.players[self.id]['armor'] = self.armor
-                else:
-                    network_manager.players[self.id] = player_data
             else:
                 # 客户端发送数据
                 network_manager.send_data({
@@ -719,6 +728,10 @@ class Player:
             return self.melee_weapon.start_attack(self.angle, is_heavy)
         return False
 
+    def is_protected(self):
+        """是否处于出生保护（无敌）状态"""
+        return self.protection_end > 0 and time.time() < self.protection_end
+
     def take_damage(self, damage, custom_respawn_time=None):
         """玩家受到伤害
         
@@ -726,6 +739,8 @@ class Player:
             damage: 伤害值
             custom_respawn_time: 自定义复活时间，如果为None则使用默认值
         """
+        if self.is_protected():
+            return False
         current_time = time.time()
         if current_time - self.last_damage_time < self.damage_cooldown:
             return False
@@ -735,7 +750,7 @@ class Player:
         actual_damage = self.apply_damage(damage)
         
         if actual_damage > 0:
-            print(f"[护甲系统] 玩家{self.id}受到{actual_damage}伤害，剩余生命{self.health}，护甲{self.armor}")
+            dprint(f"[护甲系统] 玩家{self.id}受到{actual_damage}伤害，剩余生命{self.health}，护甲{self.armor}")
         
         # 触发被击中减速效果
         self.hit_slowdown_end_time = current_time + HIT_SLOWDOWN_DURATION
@@ -838,6 +853,14 @@ class Player:
         name_surface = ui.small_font.render(self.name, True, WHITE)
         surface.blit(name_surface, (screen_points[0][0] - name_surface.get_width() // 2,
                                    screen_points[0][1] - 35))
+
+        # 出生保护指示：闪烁的青色护盾环
+        if self.is_protected() and int(time.time() * 8) % 2 == 0:
+            pygame.draw.circle(
+                surface, (0, 220, 255),
+                (int(player_screen_pos.x), int(player_screen_pos.y)),
+                PLAYER_RADIUS + 6, 2
+            )
 
     def draw_aim_indicator(self, surface, player_screen_pos):
         """绘制瞄准指示器"""

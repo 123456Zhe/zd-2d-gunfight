@@ -5,7 +5,18 @@
 
 import pygame
 import math
+import os
 from constants import *
+
+
+# 调试日志开关：默认关闭，设置环境变量 ZD_DEBUG=1 可开启热路径日志
+DEBUG_LOG = os.environ.get("ZD_DEBUG", "0") == "1"
+
+
+def dprint(*args, **kwargs):
+    """热路径调试输出，默认关闭，避免刷屏与拖慢帧率"""
+    if DEBUG_LOG:
+        print(*args, **kwargs)
 
 
 # ============================================================================
@@ -46,6 +57,13 @@ def is_in_field_of_view(player_pos, player_angle, target_pos, fov_degrees):
     
     # 检查是否在视野范围内
     return angle_diff <= fov_degrees / 2
+
+
+def friendly_fire_enabled(game_rules) -> bool:
+    """友军伤害是否开启（未配置时默认关闭）"""
+    if not game_rules:
+        return False
+    return bool(game_rules.get('friendly_fire', False))
 
 
 def has_line_of_sight(start_pos, end_pos, walls, doors):

@@ -144,6 +144,7 @@ PLAYER_RADIUS = get("game.player_radius", 20)
 BULLET_RADIUS = get("game.bullet_radius", 5)
 BULLET_DAMAGE = get("game.bullet_damage", 20)
 RESPAWN_TIME = get("game.respawn_time", 3.0)
+RESPAWN_PROTECTION = get("game.respawn_protection", 2.0)
 
 # 地图配置
 ROOM_SIZE = get("map.room_size", 600)
@@ -190,6 +191,7 @@ MAX_CHAT_LENGTH = get("chat.max_length", 50)
 
 # AI配置
 USE_ENHANCED_AI = get("ai.use_enhanced_ai", True)
+AI_COST_UPDATE_INTERVAL = get("ai.cost_update_interval", 0.25)
 COMMANDS_PREFIX = get("commands.prefix", ".")
 COMMANDS_ENABLED = get("commands.enabled", True)
 
@@ -228,9 +230,9 @@ ITEM_DAMAGE_BOOST_MULTIPLIER = get("items.types.damage_boost.damage_multiplier",
 ITEM_DAMAGE_BOOST_RESPAWN = get("items.types.damage_boost.respawn_time", 25)
 
 # 手雷
-ITEM_GRENADE_WEIGHT = get("items.types.grenade.weight", 0.05)
-ITEM_GRENADE_DAMAGE = get("items.types.grenade.damage", 60)
-ITEM_GRENADE_RADIUS = get("items.types.grenade.explosion_radius", 100)
+ITEM_GRENADE_WEIGHT = get("items.types.grenade.weight", 0.15)
+ITEM_GRENADE_DAMAGE = get("items.types.grenade.damage", 80)
+ITEM_GRENADE_RADIUS = get("items.types.grenade.explosion_radius", 140)
 ITEM_GRENADE_RESPAWN = get("items.types.grenade.respawn_time", 40)
 
 

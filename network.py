@@ -3,14 +3,20 @@ import threading
 import json
 import time
 import random
+import math
 from pygame.locals import *
 from constants import (
     SERVER_PORT, BUFFER_SIZE, HEARTBEAT_INTERVAL, CLIENT_TIMEOUT,
     CHAT_DISPLAY_TIME, MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES,
     WHITE, RED, BLUE, GREEN, YELLOW, ORANGE, PURPLE,
     ROOM_SIZE, MAGAZINE_SIZE, CONNECTION_TIMEOUT, RESPAWN_TIME,
-    MELEE_DAMAGE, HEAVY_MELEE_DAMAGE, PLAYER_RADIUS
+    RESPAWN_PROTECTION,
+    MELEE_DAMAGE, HEAVY_MELEE_DAMAGE, PLAYER_RADIUS, BULLET_DAMAGE,
+    BULLET_SPEED, BULLET_RADIUS, USE_ENHANCED_AI,
+    MELEE_RANGE, MELEE_ANGLE, MELEE_COOLDOWN,
+    HEAVY_MELEE_RANGE, HEAVY_MELEE_ANGLE, HEAVY_MELEE_COOLDOWN
 )
+from utils import friendly_fire_enabled, has_line_of_sight, angle_difference, dprint
 
 # 延迟导入以避免循环依赖
 # AIPlayer 会在需要时导入
@@ -57,7 +63,7 @@ class NetworkManager:
         self.doors = {}  # 存储门状态
         self.items = {}  # 存储道具状态
         self.chat_messages = []  # 存储聊天消息
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.running = True
         self.connected = False
         self.connection_error = None
@@ -86,6 +92,21 @@ class NetworkManager:
         # 简化的子弹管理
         self.active_bullets = []  # 当前活动的子弹
         self.next_bullet_id = 1
+        
+        # 可靠的子弹发射请求（客户端序号 + 重传；服务端按序号去重）
+        self._next_fire_seq = 1
+        self._pending_fire = []
+        self._seen_bullet_seq = {}
+        
+        # 手雷（服务端权威）：活动手雷 + 可靠的投掷请求
+        self.active_grenades = []
+        self._grenade_last_sim = {}
+        self._next_grenade_seq = 1
+        self._pending_grenade = []
+        self._seen_grenade_seq = {}
+        
+        # 近战冷却（服务端权威校验）
+        self._last_melee_time = {}
         
         # 系统消息去重：近期团队加入广播
         self._recent_team_join_announcements = {}
@@ -119,7 +140,8 @@ class NetworkManager:
                     'team_id': None,  # 新增：团队ID
                     'speed_boost_end_time': 0,  # 速度提升结束时间
                     'damage_boost_end_time': 0,  # 伤害提升结束时间
-                    'grenades': 0  # 手雷数量
+                    'grenades': 0,  # 手雷数量
+                    'protection_end': 0  # 出生保护结束时间
                 }
                 self.connected = True
                 
@@ -170,6 +192,15 @@ class NetworkManager:
         if player_id != 1:  # 服务端ID不回收
             self.recycled_ids.add(player_id)
             print(f"[服务端] 回收ID: {player_id}，当前回收池: {sorted(self.recycled_ids)}")
+
+    @staticmethod
+    def _prune_time_dict(time_dict, current_time, max_age):
+        """清理时间戳字典中超过 max_age 的过期条目，避免无限增长"""
+        if len(time_dict) < 256:
+            return
+        expired = [key for key, ts in time_dict.items() if current_time - ts > max_age]
+        for key in expired:
+            del time_dict[key]
     
     def get_server_info(self):
         """获取服务器信息"""
@@ -357,34 +388,41 @@ class NetworkManager:
                 except json.JSONDecodeError:
                     continue
                 
+                # 服务端将身份绑定到来源地址，绝不信任数据包中自称的玩家ID
+                sender_id = self.clients.get(addr) if self.is_server else None
+                
                 with self.lock:
                     msg_type = message['type']
                     msg_data = message.get('data', {})
                     
                     if msg_type == 'player_update':
-                        self._update_players(msg_data)
+                        self._update_players(msg_data, sender_id)
                     elif msg_type == 'init_players':
                         self._init_players(msg_data)
                     elif msg_type == 'door_update':
-                        self._update_door(msg_data)
+                        self._update_door(msg_data, sender_id)
                     elif msg_type == 'item_update':
                         self._update_items(msg_data)
                     elif msg_type == 'item_pickup':
-                        self._handle_item_pickup(msg_data)
+                        self._handle_item_pickup(msg_data, sender_id)
                     elif msg_type == 'request_bullet':
-                        self._handle_bullet_request(msg_data)
+                        self._handle_bullet_request(msg_data, sender_id)
                     elif msg_type == 'bullets_update':
                         self._update_bullets(msg_data)
+                    elif msg_type == 'request_grenade':
+                        self._handle_grenade_request(msg_data, sender_id)
+                    elif msg_type == 'grenade_update':
+                        self._update_grenades(msg_data)
                     elif msg_type == 'hit_damage':
-                        self._handle_damage(msg_data)
+                        self._handle_damage(msg_data, sender_id)
                     elif msg_type == 'melee_attack':
-                        self._handle_melee_attack(msg_data)
+                        self._handle_melee_attack(msg_data, sender_id)
                     elif msg_type == 'respawn':
-                        self._handle_respawn(msg_data)
+                        self._handle_respawn(msg_data, sender_id)
                     elif msg_type == 'chat_message':
                         # 服务端和客户端都使用_handle_chat_message
                         # 服务端会处理队内聊天并转发，客户端直接接收
-                        self._handle_chat_message(msg_data)
+                        self._handle_chat_message(msg_data, sender_id)
                     elif msg_type == 'chat_history':
                         self._handle_chat_history(msg_data)
                     elif msg_type == 'heartbeat':
@@ -427,7 +465,7 @@ class NetworkManager:
                 player_name = data
             
             # 初始化新玩家
-            spawn_pos = self.get_random_spawn_pos()
+            spawn_pos = self.get_safe_spawn_pos()
             self.players[new_player_id] = {
                 'pos': spawn_pos,
                 'angle': 0,
@@ -448,7 +486,8 @@ class NetworkManager:
                 'team_id': None,  # 新增：团队ID
                 'speed_boost_end_time': 0,  # 速度提升结束时间
                 'damage_boost_end_time': 0,  # 伤害提升结束时间
-                'grenades': 0  # 手雷数量
+                'grenades': 0,  # 手雷数量
+                'protection_end': time.time() + RESPAWN_PROTECTION  # 出生保护
             }
             
             print(f"[服务端] 玩家{new_player_id}已连接，地址：{addr}，玩家名: {player_name}，当前玩家数: {len(self.players)}")
@@ -537,7 +576,7 @@ class NetworkManager:
             self.connected = False
             self.running = False
 
-    def _update_players(self, player_data):
+    def _update_players(self, player_data, sender_id=None):
         """更新玩家数据"""
         if not isinstance(player_data, dict):
             return
@@ -546,8 +585,20 @@ class NetworkManager:
             try:
                 pid = int(pid_str)
                 if self.is_server:
+                    # 服务端：只接受来源地址对应玩家自己的更新，防止冒用他人ID
+                    if sender_id is not None and pid != sender_id:
+                        continue
                     # 服务端：接受客户端的位置和输入数据，但保持权威生命值和死亡状态
                     if pid in self.players:
+                        if not isinstance(pdata, dict):
+                            continue
+                        # 位置必须限制在地图范围内
+                        if 'pos' in pdata and isinstance(pdata['pos'], (list, tuple)) and len(pdata['pos']) == 2:
+                            max_x = ROOM_SIZE * 3
+                            pdata['pos'] = [
+                                max(0, min(float(pdata['pos'][0]), max_x)),
+                                max(0, min(float(pdata['pos'][1]), max_x)),
+                            ]
                         # 保存当前权威数据
                         current_health = self.players[pid]['health']
                         current_is_dead = self.players[pid]['is_dead']
@@ -573,8 +624,8 @@ class NetworkManager:
                         self.players[pid]['damage_boost_end_time'] = current_damage_boost
                         self.players[pid]['grenades'] = current_grenades
                     else:
-                        self.players[pid] = pdata
-                        self.players[pid]['name'] = pdata.get('name', f'玩家{pid}')
+                        # 服务端不通过客户端上报创建新玩家，避免伪造条目
+                        continue
                 else:
                     # 客户端：完全接受服务端数据
                     self.players[pid] = pdata
@@ -593,11 +644,32 @@ class NetworkManager:
                 except ValueError:
                     continue
 
-    def _update_door(self, door_data):
+    def _update_door(self, door_data, sender_id=None):
         """更新门状态"""
         if isinstance(door_data, dict) and 'door_id' in door_data and 'state' in door_data:
             door_id = door_data['door_id']
             new_state = door_data['state']
+            
+            # 服务端：校验发起者确实在门附近，防止隔墙/远程刷门
+            if self.is_server and sender_id is not None:
+                import pygame
+                game_instance = getattr(self, 'game_instance', None)
+                game_map = getattr(game_instance, 'game_map', None)
+                doors = getattr(game_map, 'doors', None)
+                try:
+                    index = int(door_id)
+                except (ValueError, TypeError):
+                    return
+                if not doors or index < 0 or index >= len(doors):
+                    return
+                pos = self._player_pos(sender_id)
+                if pos is None:
+                    return
+                door = doors[index]
+                center = pygame.Vector2(door.original_rect.centerx, door.original_rect.centery)
+                max_dist = PLAYER_RADIUS * 3 + max(door.original_rect.width, door.original_rect.height) / 2 + 20
+                if (center - pos).length() > max_dist:
+                    return
             
             # 更新本地门状态
             self.doors[door_id] = new_state
@@ -624,10 +696,13 @@ class NetworkManager:
                 if hasattr(game, 'item_manager') and game.item_manager:
                     game.item_manager.set_state(items_data)
     
-    def _handle_item_pickup(self, pickup_data):
+    def _handle_item_pickup(self, pickup_data, sender_id=None):
         """处理道具拾取"""
         if isinstance(pickup_data, dict):
             player_id = pickup_data.get('player_id')
+            # 服务端以来源地址绑定的身份为准，不信任包内自称的玩家ID
+            if self.is_server and sender_id is not None:
+                player_id = sender_id
             item_id = pickup_data.get('item_id')
             effect = pickup_data.get('effect', {})
             
@@ -714,16 +789,32 @@ class NetworkManager:
             }
         })
 
-    def _handle_bullet_request(self, bullet_data):
+    def _handle_bullet_request(self, bullet_data, sender_id=None):
         """处理子弹发射请求 - 只有服务端处理"""
         if self.is_server and isinstance(bullet_data, dict):
-            # 创建新子弹
+            # 服务端以来源地址绑定的身份为准，防止冒用他人身份发射子弹
+            owner = bullet_data.get('owner')
+            if sender_id is not None:
+                owner = sender_id
+            # 序号去重：重传的同一发子弹只生成一次
+            seq = bullet_data.get('seq')
+            if seq is not None:
+                seen = self._seen_bullet_seq.setdefault(owner, set())
+                if seq in seen:
+                    return
+                seen.add(seq)
+                if len(seen) > 256:
+                    for old in sorted(seen)[:-64]:
+                        seen.discard(old)
+            now = time.time()
+            # 创建新子弹（位置/方向由客户端提供，移动与命中由服务端模拟）
             new_bullet = {
                 'id': self.next_bullet_id,
                 'pos': bullet_data.get('pos'),
                 'dir': bullet_data.get('dir'),  # 简化为dir
-                'owner': bullet_data.get('owner'),
-                'time': time.time()
+                'owner': owner,
+                'time': now,
+                'last_update': now,
             }
             self.next_bullet_id += 1
             self.active_bullets.append(new_bullet)
@@ -733,7 +824,380 @@ class NetworkManager:
         if not self.is_server and isinstance(bullets_data, list):
             self.active_bullets = bullets_data
 
-    def _handle_damage(self, damage_data):
+    def _bullet_hit_world(self, pos, walls, doors):
+        """子弹是否撞到墙壁/关闭的门/越界"""
+        import pygame
+        r = BULLET_RADIUS
+        bullet_rect = pygame.Rect(pos.x - r, pos.y - r, r * 2, r * 2)
+        for wall in walls:
+            if bullet_rect.colliderect(wall):
+                return True
+        for door in doors:
+            if not door.is_open and door.check_collision(bullet_rect):
+                return True
+        map_size = ROOM_SIZE * 3
+        if pos.x < 0 or pos.y < 0 or pos.x > map_size or pos.y > map_size:
+            return True
+        return False
+
+    def _bullet_hit_player(self, bullet, pos):
+        """返回子弹命中的玩家ID（服务端权威判定），未命中返回None"""
+        import pygame
+        owner = bullet['owner']
+        r = BULLET_RADIUS
+        bullet_rect = pygame.Rect(pos.x - r, pos.y - r, r * 2, r * 2)
+        game_instance = getattr(self, 'game_instance', None)
+        best = None
+        best_dist = float('inf')
+        for pid, pdata in self.players.items():
+            if pid == owner or pdata.get('is_dead'):
+                continue
+            ppos = pdata.get('pos')
+            if not ppos or len(ppos) != 2:
+                continue
+            player_rect = pygame.Rect(
+                ppos[0] - PLAYER_RADIUS, ppos[1] - PLAYER_RADIUS,
+                PLAYER_RADIUS * 2, PLAYER_RADIUS * 2
+            )
+            if bullet_rect.colliderect(player_rect):
+                if self._damage_blocked_by_team(owner, pid, game_instance):
+                    continue
+                dist = (pos.x - ppos[0]) ** 2 + (pos.y - ppos[1]) ** 2
+                if dist < best_dist:
+                    best_dist = dist
+                    best = pid
+        return best
+
+    def _simulate_bullets(self, current_time):
+        """服务端子弹模拟：推进位置、检测碰撞并结算伤害（权威）"""
+        if not self.is_server:
+            return
+        import pygame
+        game_instance = getattr(self, 'game_instance', None)
+        game_map = getattr(game_instance, 'game_map', None)
+        walls = list(getattr(game_map, 'walls', []) or [])
+        doors = list(getattr(game_map, 'doors', []) or [])
+        speed = BULLET_SPEED
+        if game_instance and hasattr(game_instance, 'game_rules'):
+            speed = game_instance.game_rules.get('bullet_speed', BULLET_SPEED)
+
+        with self.lock:
+            remaining = []
+            for b in self.active_bullets:
+                if current_time - b.get('time', current_time) > 3.0:
+                    continue  # 过期丢弃
+                last = b.get('last_update', current_time)
+                dt = current_time - last
+                b['last_update'] = current_time
+                if dt <= 0:
+                    remaining.append(b)
+                    continue
+                try:
+                    pos = pygame.Vector2(b['pos'])
+                    direction = pygame.Vector2(b['dir'])
+                    if direction.length_squared() == 0:
+                        continue
+                    direction = direction.normalize()
+                except (TypeError, ValueError):
+                    continue
+                # 细分步进，避免高速子弹穿过玩家
+                total = speed * dt
+                steps = max(1, int(total // 8) + 1)
+                step_dt = dt / steps
+                hit = False
+                for _ in range(steps):
+                    pos = pos + direction * speed * step_dt
+                    if self._bullet_hit_world(pos, walls, doors):
+                        hit = True
+                        break
+                    target_id = self._bullet_hit_player(b, pos)
+                    if target_id is not None:
+                        self._handle_damage({
+                            'target_id': target_id,
+                            'damage': BULLET_DAMAGE,
+                            'attacker_id': b['owner'],
+                            'type': 'bullet',
+                        })
+                        hit = True
+                        break
+                b['pos'] = [pos.x, pos.y]
+                if not hit:
+                    remaining.append(b)
+            self.active_bullets = remaining
+
+    def _get_player_object(self, player_id):
+        """在游戏实例中查找玩家对象（本地玩家/远程玩家/AI）"""
+        game_instance = getattr(self, 'game_instance', None)
+        if not game_instance:
+            return None
+        if hasattr(game_instance, 'player') and game_instance.player and game_instance.player.id == player_id:
+            return game_instance.player
+        if hasattr(game_instance, 'other_players') and player_id in game_instance.other_players:
+            return game_instance.other_players[player_id]
+        if hasattr(game_instance, 'ai_players') and player_id in game_instance.ai_players:
+            return game_instance.ai_players[player_id]
+        return None
+
+    def _player_pos(self, player_id):
+        """获取服务端权威的玩家位置（Vector2），不存在返回None"""
+        pdata = self.players.get(player_id)
+        if not pdata:
+            return None
+        pos = pdata.get('pos')
+        if not pos or len(pos) != 2:
+            return None
+        import pygame
+        return pygame.Vector2(pos[0], pos[1])
+
+    def _handle_grenade_request(self, grenade_data, sender_id=None):
+        """处理手雷投掷请求 - 只有服务端处理"""
+        if not self.is_server or not isinstance(grenade_data, dict):
+            return
+        owner = grenade_data.get('owner')
+        if sender_id is not None:
+            owner = sender_id
+        if owner not in self.players or self.players[owner].get('is_dead', False):
+            return
+        # 序号去重
+        seq = grenade_data.get('seq')
+        if seq is not None:
+            seen = self._seen_grenade_seq.setdefault(owner, set())
+            if seq in seen:
+                return
+            seen.add(seq)
+            if len(seen) > 256:
+                for old in sorted(seen)[:-64]:
+                    seen.discard(old)
+        # 服务端权威的手雷数量校验
+        if self.players[owner].get('grenades', 0) <= 0:
+            return
+
+        from items import Grenade, ThrownGrenade
+        import pygame
+        try:
+            pos = pygame.Vector2(grenade_data.get('pos', [0, 0]))
+            direction = pygame.Vector2(grenade_data.get('dir', [1, 0]))
+        except Exception:
+            return
+        if direction.length_squared() == 0:
+            return
+
+        grenade = ThrownGrenade(pos, direction, Grenade.THROW_SPEED, owner)
+        now = time.time()
+        self._grenade_last_sim[grenade.id] = now
+        self.active_grenades.append(grenade)
+
+        # 扣减权威手雷数量
+        self.players[owner]['grenades'] = self.players[owner].get('grenades', 0) - 1
+        obj = self._get_player_object(owner)
+        if obj is not None and hasattr(obj, 'grenades'):
+            obj.grenades = max(0, obj.grenades - 1)
+
+    def _update_grenades(self, grenades_data):
+        """客户端：用服务端的权威状态校正本地手雷列表（保留对象以支持平滑外推）"""
+        if self.is_server or not isinstance(grenades_data, list):
+            return
+        game_instance = getattr(self, 'game_instance', None)
+        if not game_instance:
+            return
+        from items import ThrownGrenade
+        import pygame
+        current = {g.id: g for g in getattr(game_instance, 'grenades', [])}
+        states = {}
+        for state in grenades_data:
+            if isinstance(state, dict):
+                states[state.get('id', -1)] = state
+        new_grenades = []
+        for gid, state in states.items():
+            grenade = current.get(gid)
+            if grenade is None:
+                try:
+                    grenade = ThrownGrenade.from_state(state)
+                except Exception:
+                    continue
+            else:
+                grenade.apply_state(state)
+            new_grenades.append(grenade)
+        # 消失的手雷视为已爆炸，触发爆炸特效
+        for gid, grenade in current.items():
+            if gid not in states:
+                game_instance.last_grenade_explosion = {
+                    'pos': pygame.Vector2(grenade.pos),
+                    'time': time.time(),
+                }
+        game_instance.grenades = new_grenades
+
+    def _simulate_grenades(self, current_time):
+        """服务端手雷模拟：推进、爆炸并结算范围伤害（权威）"""
+        if not self.is_server:
+            return
+        import pygame
+        from utils import has_line_of_sight
+        game_instance = getattr(self, 'game_instance', None)
+        game_map = getattr(game_instance, 'game_map', None)
+        walls = list(getattr(game_map, 'walls', []) or [])
+        doors = list(getattr(game_map, 'doors', []) or [])
+
+        with self.lock:
+            remaining = []
+            for grenade in self.active_grenades:
+                last = self._grenade_last_sim.get(grenade.id, grenade.spawn_time)
+                dt = current_time - last
+                self._grenade_last_sim[grenade.id] = current_time
+                if dt <= 0:
+                    remaining.append(grenade)
+                    continue
+                exploded = grenade.update(dt, walls)
+                if exploded:
+                    if game_instance and grenade.explosion_pos:
+                        game_instance.last_grenade_explosion = {
+                            'pos': pygame.Vector2(grenade.explosion_pos),
+                            'time': current_time,
+                        }
+                    self._resolve_grenade_explosion(grenade, walls, doors, has_line_of_sight)
+                else:
+                    remaining.append(grenade)
+            self.active_grenades = remaining
+            # 清理已移除手雷的时间记录
+            live_ids = {g.id for g in self.active_grenades}
+            for gid in list(self._grenade_last_sim.keys()):
+                if gid not in live_ids:
+                    del self._grenade_last_sim[gid]
+            if game_instance:
+                game_instance.grenades = list(self.active_grenades)
+
+    def _resolve_grenade_explosion(self, grenade, walls, doors, has_line_of_sight):
+        """结算一次手雷爆炸的范围伤害"""
+        if not grenade.explosion_pos:
+            return
+        import pygame
+        game_instance = getattr(self, 'game_instance', None)
+        for pid, pdata in list(self.players.items()):
+            if pid == grenade.owner_id or pdata.get('is_dead', False):
+                continue
+            ppos = pdata.get('pos')
+            if not ppos or len(ppos) != 2:
+                continue
+            target_pos = pygame.Vector2(ppos[0], ppos[1])
+            distance = grenade.explosion_pos.distance_to(target_pos)
+            if distance > grenade.explosion_radius:
+                continue
+            if not has_line_of_sight(grenade.explosion_pos, target_pos, walls, doors):
+                continue
+            if self._damage_blocked_by_team(grenade.owner_id, pid, game_instance):
+                continue
+            damage_ratio = 1 - (distance / grenade.explosion_radius)
+            damage = int(grenade.damage * max(0.1, damage_ratio))
+            self._handle_damage({
+                'target_id': pid,
+                'damage': damage,
+                'attacker_id': grenade.owner_id,
+                'type': 'grenade',
+            })
+
+    def request_throw_grenade(self, pos, direction):
+        """请求投掷手雷"""
+        if self.is_server:
+            self._handle_grenade_request(
+                {'pos': pos, 'dir': direction, 'owner': self.player_id},
+                sender_id=self.player_id,
+            )
+        else:
+            seq = self._next_grenade_seq
+            self._next_grenade_seq += 1
+            data = {'pos': pos, 'dir': direction, 'owner': self.player_id, 'seq': seq}
+            self.send_data({'type': 'request_grenade', 'data': data})
+            self._pending_grenade.append({
+                'data': data,
+                'retries': 0,
+                'next_time': time.time() + 0.12,
+            })
+
+    def _retransmit_pending_grenade(self):
+        """客户端：重传未确认的投掷请求"""
+        if not self._pending_grenade:
+            return
+        now = time.time()
+        remaining = []
+        for item in self._pending_grenade:
+            if now < item['next_time']:
+                remaining.append(item)
+            elif item['retries'] < 2:
+                self.send_data({'type': 'request_grenade', 'data': item['data']})
+                item['retries'] += 1
+                item['next_time'] = now + 0.12
+                remaining.append(item)
+        self._pending_grenade = remaining
+
+    def _damage_blocked_by_team(self, attacker_id, target_id, game_instance):
+        """判断伤害是否因队友关系被阻止（受 game_rules.friendly_fire 控制）"""
+        if friendly_fire_enabled(getattr(game_instance, 'game_rules', None)):
+            return False
+
+        team_manager = getattr(game_instance, 'team_manager', None) if game_instance else None
+        if team_manager is not None:
+            if team_manager.are_teammates(attacker_id, target_id):
+                return True
+
+        # 回退：直接比较网络玩家数据或对象上的 team_id
+        try:
+            attacker_team_id = self.players.get(attacker_id, {}).get('team_id', None)
+            target_team_id = self.players.get(target_id, {}).get('team_id', None)
+            if attacker_team_id is None or target_team_id is None:
+                attacker_obj = None
+                target_obj = None
+                if hasattr(game_instance, 'player') and game_instance.player:
+                    if game_instance.player.id == attacker_id:
+                        attacker_obj = game_instance.player
+                    if game_instance.player.id == target_id:
+                        target_obj = game_instance.player
+                if hasattr(game_instance, 'other_players'):
+                    if attacker_id in game_instance.other_players:
+                        attacker_obj = attacker_obj or game_instance.other_players[attacker_id]
+                    if target_id in game_instance.other_players:
+                        target_obj = target_obj or game_instance.other_players[target_id]
+                if hasattr(game_instance, 'ai_players'):
+                    if attacker_id in game_instance.ai_players:
+                        attacker_obj = attacker_obj or game_instance.ai_players[attacker_id]
+                    if target_id in game_instance.ai_players:
+                        target_obj = target_obj or game_instance.ai_players[target_id]
+                if attacker_obj:
+                    attacker_team_id = attacker_team_id or getattr(attacker_obj, 'team_id', None)
+                if target_obj:
+                    target_team_id = target_team_id or getattr(target_obj, 'team_id', None)
+            if attacker_team_id is not None and target_team_id is not None and attacker_team_id == target_team_id:
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _apply_network_only_damage(self, target_id, damage, current_time, damage_type,
+                                   attacker_id, game_instance):
+        """目标在服务端没有本地玩家对象时，直接结算到权威玩家数据上"""
+        old_health = self.players[target_id]['health']
+        self.players[target_id]['health'] = max(0, old_health - damage)
+        dprint(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
+
+        if self.players[target_id]['health'] <= 0:
+            self.players[target_id]['health'] = 0
+            self.players[target_id]['is_dead'] = True
+            self.players[target_id]['death_time'] = current_time
+            respawn_time = RESPAWN_TIME
+            if game_instance and hasattr(game_instance, 'game_rules'):
+                respawn_time = game_instance.game_rules['respawn_time']
+            self.players[target_id]['respawn_time'] = current_time + respawn_time
+            dprint(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
+
+            attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
+            target_name = self.players.get(target_id, {}).get('name', f"玩家{target_id}")
+            death_message = f"{attacker_name} 击杀了 {target_name}！"
+            death_chat = ChatMessage(0, "[系统]", death_message, current_time)
+            self.chat_messages.append(death_chat)
+            if self.is_server:
+                self.broadcast_chat_message(death_chat)
+
+    def _handle_damage(self, damage_data, sender_id=None):
         """处理伤害事件"""
         if isinstance(damage_data, dict) and all(key in damage_data for key in ['target_id', 'damage', 'attacker_id']):
             try:
@@ -741,6 +1205,17 @@ class NetworkManager:
                 base_damage = damage_data['damage']
                 attacker_id = int(damage_data['attacker_id'])
                 damage_type = damage_data.get('type', 'bullet')  # 添加伤害类型
+                
+                # 服务端以来源地址绑定的身份为准，防止冒用他人身份攻击
+                if self.is_server and sender_id is not None:
+                    attacker_id = sender_id
+                
+                # 服务端拒绝来自未注册玩家的伤害，并限制单次伤害上限
+                if self.is_server and attacker_id not in self.players:
+                    return
+                if not isinstance(base_damage, (int, float)) or base_damage < 0:
+                    return
+                base_damage = min(float(base_damage), BULLET_DAMAGE * 20)
                 
                 # 应用游戏规则中的伤害倍率
                 game_instance = getattr(self, 'game_instance', None)
@@ -764,10 +1239,17 @@ class NetworkManager:
                 
                 damage = base_damage * damage_multiplier * attacker_damage_boost
                 
-                # 防止重复处理相同的伤害事件
-                damage_key = f"{attacker_id}_{target_id}_{damage_type}_{int(time.time() * 10)}"
+                # 出生保护：保护期内的目标免疫伤害（在去重记录之前判断）
+                if self.is_server:
+                    protection_end = self.players.get(target_id, {}).get('protection_end', 0)
+                    if protection_end and time.time() < protection_end:
+                        return
+                
+                # 防止重复处理相同的伤害事件（同一攻击者/目标/类型在极短窗口内只结算一次）
+                damage_key = f"{attacker_id}_{target_id}_{damage_type}"
                 current_time = time.time()
                 
+                self._prune_time_dict(self.last_damage_time, current_time, 5.0)
                 if damage_key in self.last_damage_time and current_time - self.last_damage_time[damage_key] < 0.1:
                     return
                 
@@ -790,7 +1272,7 @@ class NetworkManager:
                                 target_player = game_instance.other_players[target_id]
                             if target_player:
                                 target_player.take_damage(damage)
-                                print(f"[客户端] 本地玩家{target_id}受到{damage}伤害，剩余生命: {target_player.health}")
+                                dprint(f"[客户端] 本地玩家{target_id}受到{damage}伤害，剩余生命: {target_player.health}")
                 
                 # 服务端处理
                 if self.is_server:
@@ -798,44 +1280,10 @@ class NetworkManager:
                         # 获取玩家实例
                         game_instance = getattr(self, 'game_instance', None)
                         
-                        # 检查是否是队友（团队系统）
-                        if game_instance and hasattr(game_instance, 'team_manager'):
-                            if game_instance.team_manager.are_teammates(attacker_id, target_id):
-                                # 队友不受伤害
-                                print(f"[团队] 玩家{attacker_id}尝试攻击队友{target_id}，伤害被阻止")
-                                return
-                        # 回退：直接比较网络玩家数据的team_id或对象的team_id
-                        try:
-                            attacker_team_id = self.players.get(attacker_id, {}).get('team_id', None)
-                            target_team_id = self.players.get(target_id, {}).get('team_id', None)
-                            if attacker_team_id is None or target_team_id is None:
-                                # 从游戏实例对象补全
-                                attacker_obj = None
-                                target_obj = None
-                                if hasattr(game_instance, 'player') and game_instance.player:
-                                    if game_instance.player.id == attacker_id:
-                                        attacker_obj = game_instance.player
-                                    if game_instance.player.id == target_id:
-                                        target_obj = game_instance.player
-                                if hasattr(game_instance, 'other_players'):
-                                    if attacker_id in game_instance.other_players:
-                                        attacker_obj = attacker_obj or game_instance.other_players[attacker_id]
-                                    if target_id in game_instance.other_players:
-                                        target_obj = target_obj or game_instance.other_players[target_id]
-                                if hasattr(game_instance, 'ai_players'):
-                                    if attacker_id in game_instance.ai_players:
-                                        attacker_obj = attacker_obj or game_instance.ai_players[attacker_id]
-                                    if target_id in game_instance.ai_players:
-                                        target_obj = target_obj or game_instance.ai_players[target_id]
-                                if attacker_obj:
-                                    attacker_team_id = attacker_team_id or getattr(attacker_obj, 'team_id', None)
-                                if target_obj:
-                                    target_team_id = target_team_id or getattr(target_obj, 'team_id', None)
-                            if attacker_team_id is not None and target_team_id is not None and attacker_team_id == target_team_id:
-                                print(f"[团队] 玩家{attacker_id}尝试攻击同队目标{target_id}（基于team_id对比），伤害被阻止")
-                                return
-                        except Exception:
-                            pass
+                        # 友军保护（受 game_rules.friendly_fire 开关控制）
+                        if self._damage_blocked_by_team(attacker_id, target_id, game_instance):
+                            dprint(f"[团队] 玩家{attacker_id}攻击队友{target_id}，伤害被阻止")
+                            return
                         
                         # 检查是否是AI玩家
                         if game_instance and hasattr(game_instance, 'ai_players') and target_id in game_instance.ai_players:
@@ -851,10 +1299,10 @@ class NetworkManager:
                                 self.players[target_id]['death_time'] = current_time
                                 self.players[target_id]['respawn_time'] = ai_player.respawn_time
                             
-                            print(f"[{damage_type}伤害] AI玩家{target_id}被玩家{attacker_id}击中，{old_health}->{ai_player.health}")
+                            dprint(f"[{damage_type}伤害] AI玩家{target_id}被玩家{attacker_id}击中，{old_health}->{ai_player.health}")
                             
                             if is_dead:
-                                print(f"[死亡] AI玩家{target_id}死亡，将在3秒后复活")
+                                dprint(f"[死亡] AI玩家{target_id}死亡，将在3秒后复活")
                                 
                                 # 发送死亡信息到聊天框
                                 attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
@@ -894,10 +1342,10 @@ class NetworkManager:
                                     
                                     self.players[target_id]['respawn_time'] = current_time + respawn_time
                                 
-                                print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{target_player.health + damage}->{target_player.health}")
+                                dprint(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{target_player.health + damage}->{target_player.health}")
                                 
                                 if is_dead:
-                                    print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
+                                    dprint(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
                                     
                                     # 发送死亡信息到聊天框
                                     attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
@@ -907,38 +1355,21 @@ class NetworkManager:
                                     self.chat_messages.append(death_chat)
                                     if self.is_server:
                                         self.broadcast_chat_message(death_chat)
+                            else:
+                                # 目标没有本地对象，直接在权威数据上结算
+                                self._apply_network_only_damage(
+                                    target_id, damage, current_time, damage_type,
+                                    attacker_id, game_instance
+                                )
                         else:
-                            # 如果没有玩家实例，使用原来的逻辑
-                            old_health = self.players[target_id]['health']
-                            self.players[target_id]['health'] = max(0, old_health - damage)
-                            print(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
-                            
-                            if self.players[target_id]['health'] <= 0:
-                                # 服务端计算死亡和复活时间
-                                self.players[target_id]['health'] = 0
-                                self.players[target_id]['is_dead'] = True
-                                self.players[target_id]['death_time'] = current_time
-                                
-                                # 使用游戏规则中的复活时间
-                                respawn_time = RESPAWN_TIME
-                                if game_instance and hasattr(game_instance, 'game_rules'):
-                                    respawn_time = game_instance.game_rules['respawn_time']
-                                
-                                self.players[target_id]['respawn_time'] = current_time + respawn_time
-                                print(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
-                                
-                                # 发送死亡信息到聊天框
-                                attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
-                                target_name = self.players.get(target_id, {}).get('name', f"玩家{target_id}")
-                                death_message = f"{attacker_name} 击杀了 {target_name}！"
-                                death_chat = ChatMessage(0, "[系统]", death_message, current_time)
-                                self.chat_messages.append(death_chat)
-                                if self.is_server:
-                                    self.broadcast_chat_message(death_chat)
+                            self._apply_network_only_damage(
+                                target_id, damage, current_time, damage_type,
+                                attacker_id, game_instance
+                            )
             except ValueError as e:
                 print(f"处理伤害数据错误: {e}")
 
-    def _handle_melee_attack(self, melee_data):
+    def _handle_melee_attack(self, melee_data, sender_id=None):
         """处理近战攻击事件 - 只有服务端处理"""
         if not self.is_server:
             return
@@ -946,35 +1377,89 @@ class NetworkManager:
         if isinstance(melee_data, dict) and all(key in melee_data for key in ['attacker_id', 'direction', 'targets']):
             try:
                 attacker_id = int(melee_data['attacker_id'])
+                # 服务端以来源地址绑定的身份为准，防止冒用他人身份攻击
+                if sender_id is not None:
+                    attacker_id = sender_id
+                if attacker_id not in self.players:
+                    return
+                if self.players[attacker_id].get('is_dead', False):
+                    return
                 direction = melee_data['direction']
                 targets = melee_data['targets']
+                if not isinstance(targets, (list, tuple)):
+                    return
+                targets = list(targets)[:20]  # 限制单次近战目标数量，避免恶意超大列表
                 is_heavy = melee_data.get('is_heavy', False)  # 是否为重击
                 
-                print(f"[近战攻击] 玩家{attacker_id}发起近战攻击，方向{direction}°，目标{targets}" + (" (重击)" if is_heavy else " (轻击)"))
+                # 服务端权威冷却校验（留少量容差）
+                current_time = time.time()
+                cooldown = HEAVY_MELEE_COOLDOWN if is_heavy else MELEE_COOLDOWN
+                if current_time - self._last_melee_time.get(attacker_id, 0) < cooldown * 0.9:
+                    return
+                self._last_melee_time[attacker_id] = current_time
+                
+                # 服务端权威范围/角度/视线校验
+                attacker_pos = self._player_pos(attacker_id)
+                if attacker_pos is None:
+                    return
+                game_instance = getattr(self, 'game_instance', None)
+                game_map = getattr(game_instance, 'game_map', None)
+                walls = list(getattr(game_map, 'walls', []) or [])
+                doors = list(getattr(game_map, 'doors', []) or [])
+                
+                melee_range = HEAVY_MELEE_RANGE if is_heavy else MELEE_RANGE
+                melee_angle = HEAVY_MELEE_ANGLE if is_heavy else MELEE_ANGLE
+                reach = melee_range + PLAYER_RADIUS
+                half_angle = melee_angle / 2 + 15  # 角度容差
                 
                 # 确定伤害值
                 damage = MELEE_DAMAGE * 1.5 if is_heavy else MELEE_DAMAGE
                 
-                # 处理每个被击中的目标
+                dprint(f"[近战攻击] 玩家{attacker_id}发起近战攻击，方向{direction}°，目标{targets}" + (" (重击)" if is_heavy else " (轻击)"))
+                
+                # 只对通过服务端校验的目标结算伤害
                 for target_id in targets:
-                    if target_id != attacker_id and target_id in self.players:
-                        damage_data = {
-                            'target_id': target_id,
-                            'damage': damage,
-                            'attacker_id': attacker_id,
-                            'type': 'melee'
-                        }
-                        self._handle_damage(damage_data)
+                    try:
+                        target_id = int(target_id)
+                    except (ValueError, TypeError):
+                        continue
+                    if target_id == attacker_id or target_id not in self.players:
+                        continue
+                    if self.players[target_id].get('is_dead', False):
+                        continue
+                    target_pos = self._player_pos(target_id)
+                    if target_pos is None:
+                        continue
+                    delta = target_pos - attacker_pos
+                    distance = delta.length()
+                    if distance > reach:
+                        continue
+                    if distance > 0:
+                        target_angle = math.degrees(math.atan2(-delta.y, delta.x))
+                        if angle_difference(direction, target_angle) > half_angle:
+                            continue
+                    if not has_line_of_sight(attacker_pos, target_pos, walls, doors):
+                        continue
+                    damage_data = {
+                        'target_id': target_id,
+                        'damage': damage,
+                        'attacker_id': attacker_id,
+                        'type': 'melee'
+                    }
+                    self._handle_damage(damage_data)
                         
             except (ValueError, TypeError) as e:
                 print(f"处理近战攻击数据错误: {e}")
 
-    def _handle_respawn(self, respawn_data):
+    def _handle_respawn(self, respawn_data, sender_id=None):
         """处理复活事件"""
         if isinstance(respawn_data, dict) and 'player_id' in respawn_data and 'pos' in respawn_data:
             player_id = respawn_data['player_id']
+            # 服务端以来源地址绑定的身份为准，防止他人强制复活/传送
+            if self.is_server and sender_id is not None:
+                player_id = sender_id
             if player_id in self.players:
-                print(f"[复活] 玩家{player_id}复活到位置{respawn_data['pos']}")
+                dprint(f"[复活] 玩家{player_id}复活到位置{respawn_data['pos']}")
                 self.players[player_id].update({
                     'pos': respawn_data['pos'],
                     'health': 100,
@@ -987,7 +1472,8 @@ class NetworkManager:
                     'melee_attacking': False,
                     'melee_direction': 0,
                     'weapon_type': 'gun',  # 重置为枪械
-                    'is_aiming': False  # 重置瞄准状态
+                    'is_aiming': False,  # 重置瞄准状态
+                    'protection_end': time.time() + RESPAWN_PROTECTION  # 出生保护
                 })
                 
                 # 如果是本地玩家，还需要更新游戏实例中的玩家对象
@@ -1006,13 +1492,17 @@ class NetworkManager:
                     game_instance.player.ammo = MAGAZINE_SIZE
                     game_instance.player.is_reloading = False
                     
-                    print(f"[复活] 本地玩家{player_id}已复活，位置更新为{respawn_data['pos']}")
+                    dprint(f"[复活] 本地玩家{player_id}已复活，位置更新为{respawn_data['pos']}")
     
-    def _handle_chat_message(self, chat_data):
+    def _handle_chat_message(self, chat_data, sender_id=None):
         """处理聊天消息"""
         if isinstance(chat_data, dict) and all(key in chat_data for key in ['player_id', 'message']):
             message = chat_data['message']
-            player_id = chat_data['player_id']
+            # 服务端以来源地址绑定的身份为准，防止客户端冒充管理员或其他玩家
+            if self.is_server and sender_id is not None:
+                player_id = sender_id
+            else:
+                player_id = chat_data['player_id']
             timestamp = chat_data.get('timestamp', time.time())
             is_team_chat = chat_data.get('is_team_chat', False)  # 是否是队内聊天
             
@@ -1026,6 +1516,7 @@ class NetworkManager:
             player_name = chat_data.get('player_name', self.players.get(player_id, {}).get('name', f'玩家{player_id}'))
             current_time = time.time()
             dedup_key = (player_id, message, bool(is_team_chat))
+            self._prune_time_dict(self._recent_message_hashes, current_time, 10.0)
             last_time = self._recent_message_hashes.get(dedup_key)
             if last_time and current_time - last_time < 2.0:
                 return
@@ -1380,10 +1871,10 @@ class NetworkManager:
                 self._send_system_message(f"你已经死亡，无法使用此命令")
                 return
                 
-            # 处理自杀
+            # 处理自杀（伤害足够高，确保即使有护甲也会死亡）
             damage_data = {
                 'target_id': player_id,
-                'damage': 100,  # 直接致命伤害
+                'damage': 1000,
                 'attacker_id': player_id,  # 自己击杀自己
                 'type': 'suicide'
             }
@@ -1507,6 +1998,9 @@ class NetworkManager:
             # 创建AI玩家（延迟导入以避免循环依赖）
             # 检查是否使用增强版AI
             try:
+                # 与 main.py 保持一致：由配置决定是否使用增强版AI
+                if not USE_ENHANCED_AI:
+                    raise ImportError("USE_ENHANCED_AI is False")
                 # 尝试导入增强版AI
                 from ai_player_enhanced import EnhancedAIPlayer
                 from ai_personality import AIPersonality, AIPersonalityTraits
@@ -1568,7 +2062,9 @@ class NetworkManager:
                 'weapon_type': ai_player.weapon_type,
                 'is_aiming': ai_player.is_aiming,
                 'name': ai_player_name,
-                'team_id': getattr(ai_player, 'team_id', None)  # 添加团队ID
+                'team_id': getattr(ai_player, 'team_id', None),  # 添加团队ID
+                'grenades': 0,
+                'protection_end': 0
             }
             
             # 添加增强版AI特有的属性
@@ -1705,13 +2201,63 @@ class NetworkManager:
                 self._send_system_message("离开团队失败：你不在任何团队中")
         
         elif cmd == '.team' or cmd == '.teaminfo':
-            # 显示团队信息
             game_instance = getattr(self, 'game_instance', None)
             if not game_instance or not hasattr(game_instance, 'team_manager'):
                 self._send_system_message("团队系统未启用")
                 return
-            
-            team = game_instance.team_manager.get_player_team(player_id)
+            manager = game_instance.team_manager
+
+            # 支持 .team add|join|leave|list 子命令（与客户端命令保持一致）
+            subcmd = args[0].lower() if args else None
+            subargs = args[1:] if len(args) > 1 else []
+
+            if subcmd == 'add':
+                team_name = " ".join(subargs) if subargs else None
+                team = manager.create_team(player_id, team_name)
+                if team:
+                    self._send_system_message(f"已创建团队: {team.name} (ID: {team.team_id})")
+                    self._sync_team_info(player_id, team.team_id)
+                else:
+                    self._send_system_message("创建团队失败：你已经在团队中")
+                return
+
+            elif subcmd == 'join':
+                if not subargs:
+                    self._send_system_message("用法: .team join <团队ID>")
+                    return
+                try:
+                    team_id = int(subargs[0])
+                    if manager.join_team(player_id, team_id):
+                        self._announce_team_join(player_id, team_id)
+                        self._sync_team_info(player_id, team_id)
+                    else:
+                        self._send_system_message("加入团队失败：团队不存在或已满，或你已在团队中")
+                except ValueError:
+                    self._send_system_message(f"无效的团队ID: {subargs[0]}")
+                return
+
+            elif subcmd == 'leave':
+                if manager.leave_team(player_id):
+                    self._send_system_message("已离开团队")
+                    self._sync_team_info(player_id, None)
+                else:
+                    self._send_system_message("离开团队失败：你不在任何团队中")
+                return
+
+            elif subcmd == 'list':
+                teams = manager.list_teams()
+                if teams:
+                    team_list = []
+                    for team_info in teams:
+                        members_list = ", ".join([f"玩家{pid}" for pid in team_info['members']])
+                        team_list.append(f"团队{team_info['team_id']}: {team_info['name']} (成员: {members_list})")
+                    self._send_system_message("所有团队:\n" + "\n".join(team_list))
+                else:
+                    self._send_system_message("当前没有团队")
+                return
+
+            # 无子命令：显示自己的团队信息
+            team = manager.get_player_team(player_id)
             if team:
                 members_list = ", ".join([f"玩家{pid}" for pid in team.members])
                 self._send_system_message(f"团队信息:\n名称: {team.name}\nID: {team.team_id}\n成员: {members_list}\n队长: 玩家{team.leader_id}")
@@ -2079,26 +2625,51 @@ class NetworkManager:
         """请求发射子弹"""
         if self.is_server:
             # 服务端直接创建子弹
+            now = time.time()
             new_bullet = {
                 'id': self.next_bullet_id,
                 'pos': pos,
                 'dir': direction,
                 'owner': owner_id,
-                'time': time.time()
+                'time': now,
+                'last_update': now,
             }
             self.next_bullet_id += 1
             with self.lock:
                 self.active_bullets.append(new_bullet)
         else:
-            # 客户端发送请求给服务端
-            self.send_data({
-                'type': 'request_bullet',
-                'data': {
-                    'pos': pos,
-                    'dir': direction,
-                    'owner': owner_id
-                }
+            # 客户端发送请求给服务端（带序号，支持重传去重）
+            seq = self._next_fire_seq
+            self._next_fire_seq += 1
+            data = {
+                'pos': pos,
+                'dir': direction,
+                'owner': owner_id,
+                'seq': seq,
+            }
+            self.send_data({'type': 'request_bullet', 'data': data})
+            self._pending_fire.append({
+                'data': data,
+                'retries': 0,
+                'next_time': time.time() + 0.1,
             })
+
+    def _retransmit_pending_fire(self):
+        """客户端：重传未确认的发射请求（服务端按序号去重，不会产生重复子弹）"""
+        if not self._pending_fire:
+            return
+        now = time.time()
+        remaining = []
+        for item in self._pending_fire:
+            if now < item['next_time']:
+                remaining.append(item)
+            elif item['retries'] < 2:
+                self.send_data({'type': 'request_bullet', 'data': item['data']})
+                item['retries'] += 1
+                item['next_time'] = now + 0.1
+                remaining.append(item)
+            # 超过重传次数则丢弃（假定已送达或永久丢失）
+        self._pending_fire = remaining
 
     def request_melee_attack(self, attacker_id, direction, hit_targets, is_heavy=False):
         """请求近战攻击"""
@@ -2132,42 +2703,52 @@ class NetworkManager:
         })
 
     def update_and_broadcast(self):
-        """服务端定期广播游戏状态"""
-        if self.is_server:
-            current_time = time.time()
-            if current_time - self.last_broadcast > 0.05:  # 20Hz
-                # 检查玩家复活（服务端统一处理）
-                self.check_player_respawns(current_time)
-                
-                # 广播玩家状态
-                self.send_data({
-                    'type': 'player_update', 
-                    'data': {str(pid): pdata for pid, pdata in self.players.items()}
-                })
-                
-                # 清理过期子弹（3秒后）
-                with self.lock:
-                    self.active_bullets = [
-                        b for b in self.active_bullets 
-                        if current_time - b['time'] < 3.0
-                    ]
-                
-                # 广播子弹状态
-                self.send_data({
-                    'type': 'bullets_update',
-                    'data': self.active_bullets
-                })
-                
-                # 广播道具状态
-                if hasattr(self, 'game_instance') and self.game_instance:
-                    game = self.game_instance
-                    if hasattr(game, 'item_manager') and game.item_manager:
-                        self.send_data({
-                            'type': 'item_update',
-                            'data': game.item_manager.get_state()
-                        })
-                
-                self.last_broadcast = current_time
+        """服务端定期广播游戏状态；客户端重传未确认的发射请求"""
+        if not self.is_server:
+            self._retransmit_pending_fire()
+            self._retransmit_pending_grenade()
+            return
+        current_time = time.time()
+        # 每帧推进权威模拟（保证主机端平滑、碰撞步进更细）；广播仍保持 20Hz
+        self.check_player_respawns(current_time)
+        self._simulate_bullets(current_time)
+        self._simulate_grenades(current_time)
+        if current_time - self.last_broadcast > 0.05:  # 20Hz 广播
+            # 广播玩家状态（在锁内取快照，避免接收线程并发修改导致 RuntimeError）
+            with self.lock:
+                players_snapshot = {str(pid): dict(pdata) for pid, pdata in self.players.items()}
+            self.send_data({
+                'type': 'player_update', 
+                'data': players_snapshot
+            })
+            
+            with self.lock:
+                bullets_snapshot = list(self.active_bullets)
+            
+            # 广播子弹状态
+            self.send_data({
+                'type': 'bullets_update',
+                'data': bullets_snapshot
+            })
+            
+            # 广播手雷状态
+            with self.lock:
+                grenades_snapshot = [g.get_state() for g in self.active_grenades]
+            self.send_data({
+                'type': 'grenade_update',
+                'data': grenades_snapshot
+            })
+            
+            # 广播道具状态
+            if hasattr(self, 'game_instance') and self.game_instance:
+                game = self.game_instance
+                if hasattr(game, 'item_manager') and game.item_manager:
+                    self.send_data({
+                        'type': 'item_update',
+                        'data': game.item_manager.get_state()
+                    })
+            
+            self.last_broadcast = current_time
 
     def check_player_respawns(self, current_time):
         """检查并处理玩家复活（仅服务端）"""
@@ -2175,7 +2756,8 @@ class NetworkManager:
             return
             
         with self.lock:
-            for player_id, player_data in self.players.items():
+            # 遍历快照，避免 send_data 失败移除客户端时修改 self.players 引发 RuntimeError
+            for player_id, player_data in list(self.players.items()):
                 # 检查死亡玩家是否到了复活时间
                 if (player_data.get('is_dead', False) and 
                     not player_data.get('is_respawning', False) and
@@ -2185,8 +2767,8 @@ class NetworkManager:
                     # 开始复活流程
                     player_data['is_respawning'] = True
                     
-                    # 获取随机复活位置
-                    spawn_pos = self.get_random_spawn_pos()
+                    # 获取安全的复活位置（避免复活在墙体/门内）
+                    spawn_pos = self.get_safe_spawn_pos()
                     
                     # 重置玩家状态
                     player_data['pos'] = spawn_pos
@@ -2199,6 +2781,8 @@ class NetworkManager:
                     # 重置武器状态
                     player_data['ammo'] = MAGAZINE_SIZE
                     player_data['is_reloading'] = False
+                    # 复活后的出生保护
+                    player_data['protection_end'] = current_time + RESPAWN_PROTECTION
                     
                     print(f"[服务端] 玩家{player_id}已复活，位置: {spawn_pos}")
                     
@@ -2246,6 +2830,14 @@ class NetworkManager:
         spawn_y = max(room_row * ROOM_SIZE + 50, min(spawn_y, (room_row + 1) * ROOM_SIZE - 50))
         
         return [spawn_x, spawn_y]
+    
+    def get_safe_spawn_pos(self):
+        """获取不与墙体/门碰撞的复活位置，失败时回退到地图中心"""
+        game_instance = getattr(self, 'game_instance', None)
+        if game_instance and hasattr(game_instance, 'game_map'):
+            pos = self._get_safe_spawn_pos_for_ai(game_instance)
+            return [pos[0], pos[1]]
+        return self.get_random_spawn_pos()
     
     def stop(self):
         self.running = False

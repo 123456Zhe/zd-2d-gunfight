@@ -12,7 +12,8 @@
         "player_radius": 20,
         "bullet_radius": 5,
         "bullet_damage": 20,
-        "respawn_time": 3.0
+        "respawn_time": 3.0,
+        "respawn_protection": 2.0
     },
     "map": {
         "room_size": 600,
@@ -58,7 +59,8 @@
         "max_length": 50
     },
     "ai": {
-        "use_enhanced_ai": true
+        "use_enhanced_ai": true,
+        "cost_update_interval": 0.25
     },
     "items": {
         "enabled": true,
@@ -102,9 +104,9 @@
             "grenade": {
                 "enabled": true,
                 "weight": 0.15,
-                "damage": 200,
-                "explosion_radius": 500,
-                "respawn_time": 30
+                "damage": 80,
+                "explosion_radius": 140,
+                "respawn_time": 40
             }
         }
     },

@@ -78,9 +78,21 @@ graph TD
   - 依赖: constants.py, utils.py
   - 职责: 地图生成、房间管理、门交互
 
-- **ai_player.py**: AI系统
-  - 依赖: constants.py, player.py, weapons.py, utils.py
+- **ai_player.py**: AI系统（基础版，状态机）
+  - 依赖: constants.py, pathfinding
   - 职责: AI行为、路径规划、决策
+
+- **ai_player_enhanced.py**: AI系统（增强版，行为树）
+  - 依赖: constants.py, ai_behavior_tree.py, ai_personality.py, pathfinding
+  - 由 settings.json 的 `ai.use_enhanced_ai` 切换
+
+- **items.py**: 道具系统
+  - 依赖: constants.py, utils.py
+  - 职责: 道具生成、拾取、手雷投掷与爆炸
+
+- **game_commands.py**: 游戏内命令系统
+  - 依赖: config.py
+  - 职责: `.` 前缀命令的注册、解析与执行
 
 ### 第4层：游戏控制层
 - **main.py**: 游戏主循环
@@ -225,7 +237,7 @@ graph TD
 - AI状态管理
 
 **主要类**:
-- `AIPlayer`: AI玩家类（继承自Player）
+- `AIPlayer`: AI玩家类（独立类，**不继承** Player；`EnhancedAIPlayer` 同样独立）
 
 **主要方法**:
 - `update(dt, players, game_map)`: 更新AI状态
@@ -326,7 +338,7 @@ graph TD
 3. **按需导入**: 只导入需要的类和函数
 
 ### 模块独立性
-1. **utils.py**: 完全独立，可单独测试
+1. **utils.py**: 只依赖 constants.py，可单独测试
 2. **ui.py**: 不依赖游戏逻辑，只负责渲染
 3. **network.py**: 网络逻辑独立，不依赖游戏实体
 4. **weapons.py**: 武器逻辑独立，可单独测试
@@ -337,7 +349,7 @@ graph TD
 
 ### 重构前
 ```
-main.py (5000+ 行)
+main.py (~2500 行)
 ├── Game类
 ├── Player类
 ├── Map类

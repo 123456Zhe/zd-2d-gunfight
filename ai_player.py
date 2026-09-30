@@ -3,6 +3,7 @@ import math
 import random
 import time
 from constants import *
+from utils import dprint
 from pathfinding.core.diagonal_movement import DiagonalMovement
 from pathfinding.core.grid import Grid
 from pathfinding.finder.a_star import AStarFinder
@@ -14,6 +15,8 @@ class AIPlayer:
         self.pos = pygame.Vector2(x, y)
         self.angle = random.uniform(0, 360)
         self.health = 100
+        self.armor = 0
+        self.armor_damage_reduction = 0.5
         self.is_dead = False
         self.death_time = 0
         self.respawn_time = 0
@@ -374,7 +377,7 @@ class AIPlayer:
         self.in_combat = (min_threat_distance < 200 and self.state in ['attack', 'retreat'])
         
         if should_stealth:
-            print(f"[AI静步] AI{self.id}进入静步模式，威胁距离{min_threat_distance:.1f}")
+            dprint(f"[AI静步] AI{self.id}进入静步模式，威胁距离{min_threat_distance:.1f}")
     
     def update_sound_generation(self, move_vector, is_shooting, is_reloading):
         """更新AI的声音产生 - 修复闪烁问题"""
@@ -384,14 +387,14 @@ class AIPlayer:
         if is_shooting:
             self.is_making_sound = True
             self.sound_volume = 1.0
-            print(f"[AI声音] AI{self.id}射击，产生枪声")
+            dprint(f"[AI声音] AI{self.id}射击，产生枪声")
             return
         
         # 装填声音（次高优先级）
         if is_reloading:
             self.is_making_sound = True
             self.sound_volume = 0.8
-            print(f"[AI声音] AI{self.id}装填，产生装填声")
+            dprint(f"[AI声音] AI{self.id}装填，产生装填声")
             return
         
         # 移动声音（脚步声）- 修复闪烁问题
@@ -407,14 +410,14 @@ class AIPlayer:
                 # 只在间隔时间到达时输出调试信息，避免刷屏
                 if current_time - self.last_move_sound_time > self.move_sound_interval:
                     self.last_move_sound_time = current_time
-                    print(f"[AI声音] AI{self.id}静步移动，产生轻微脚步声")
+                    dprint(f"[AI声音] AI{self.id}静步移动，产生轻微脚步声")
             else:
                 # 正常移动声音
                 self.sound_volume = 1.0
                 # 只在间隔时间到达时输出调试信息，避免刷屏
                 if current_time - self.last_move_sound_time > self.move_sound_interval:
                     self.last_move_sound_time = current_time
-                    print(f"[AI声音] AI{self.id}正常移动，产生脚步声")
+                    dprint(f"[AI声音] AI{self.id}正常移动，产生脚步声")
         else:
             # 不移动时不产生声音
             self.is_making_sound = False
@@ -444,7 +447,7 @@ class AIPlayer:
             # 检查新路径是否经过关闭的门
             doors_on_path = self.check_path_for_doors()
             if doors_on_path:
-                print(f"[AI路径规划] AI{self.id}的路径将经过{len(doors_on_path)}个关闭的门")
+                dprint(f"[AI路径规划] AI{self.id}的路径将经过{len(doors_on_path)}个关闭的门")
     
     def get_next_move_direction(self):
         """获取下一个移动方向"""
@@ -585,7 +588,7 @@ class AIPlayer:
                         detected_sounds.append(sound_info)
                         
                         # 调试输出
-                        print(f"[AI声音检测] AI{self.id}听到玩家{player_id}的{sound['type']}，距离{distance:.1f}，音量{final_volume:.2f}")
+                        dprint(f"[AI声音检测] AI{self.id}听到玩家{player_id}的{sound['type']}，距离{distance:.1f}，音量{final_volume:.2f}")
         
         # 更新声音记忆
         self.last_heard_sounds = [s for s in self.last_heard_sounds 
@@ -621,7 +624,7 @@ class AIPlayer:
                         'time': time.time()
                     }
                     visual_contacts.append(visual_contact)
-                    print(f"[AI视觉检测] AI{self.id}看到玩家{player_id}，距离{distance:.1f}")
+                    dprint(f"[AI视觉检测] AI{self.id}看到玩家{player_id}，距离{distance:.1f}")
         
         return visual_contacts
     
@@ -784,7 +787,7 @@ class AIPlayer:
             self.last_sound_time = current_time  # 更新最后接触时间
             target_updated = True
             
-            print(f"[AI决策] AI{self.id}通过视觉锁定玩家{self.target_player}")
+            dprint(f"[AI决策] AI{self.id}通过视觉锁定玩家{self.target_player}")
             
             # 基于视觉距离决定行为
             if min_visual_distance < 100:
@@ -802,7 +805,7 @@ class AIPlayer:
             self.last_sound_time = current_time
             target_updated = True
             
-            print(f"[AI决策] AI{self.id}通过声音({closest_sound['type']})锁定玩家{self.target_player}")
+            dprint(f"[AI决策] AI{self.id}通过声音({closest_sound['type']})锁定玩家{self.target_player}")
             
             # 根据声音类型和距离决定行为
             if closest_sound['type'] == 'gunshot':
@@ -831,14 +834,14 @@ class AIPlayer:
                 # 15秒内有过接触，去最后已知位置搜索
                 self.target_pos = self.last_known_enemy_pos
                 self.state = 'chase'
-                print(f"[AI决策] AI{self.id}前往最后已知位置搜索")
+                dprint(f"[AI决策] AI{self.id}前往最后已知位置搜索")
             else:
                 # 很久没有接触，继续巡逻
                 self.state = 'patrol'
                 self.target_player = None
                 self.target_pos = None
                 self.last_known_enemy_pos = None
-                print(f"[AI决策] AI{self.id}进入巡逻模式")
+                dprint(f"[AI决策] AI{self.id}进入巡逻模式")
     
     def execute_state(self, dt, players, game_map, bullets):
         """执行当前状态"""
@@ -1077,7 +1080,12 @@ class AIPlayer:
         return rect.clipline(start, end)
     
     def take_damage(self, damage):
-        """受到伤害"""
+        """受到伤害（护甲吸收一部分）"""
+        if self.armor > 0:
+            armor_absorb = int(damage * self.armor_damage_reduction)
+            armor_absorb = min(armor_absorb, self.armor)
+            self.armor -= armor_absorb
+            damage -= armor_absorb
         self.health -= damage
         if self.health <= 0:
             self.health = 0

@@ -9,6 +9,7 @@ import math
 import time
 import pygame
 from constants import *
+from utils import dprint
 
 
 class NodeStatus(enum.Enum):
@@ -484,9 +485,9 @@ class PatrolAction(ActionNode):
             if distance_moved < 5:
                 # 如果上次有移动方向但位置没变化，说明卡住了
                 if self.last_move_direction and self.last_move_direction.length() > 0.1:
-                    self.stuck_time += 0.016  # 假设每帧16ms
+                    self.stuck_time += blackboard.get('dt', 0.016)
                 else:
-                    self.stuck_time += 0.016 * 0.5  # 没有移动意图时，卡住时间增长较慢
+                    self.stuck_time += blackboard.get('dt', 0.016) * 0.5
             else:
                 self.stuck_time = 0
         self.last_position = pygame.Vector2(ai_player.pos.x, ai_player.pos.y)
@@ -516,9 +517,9 @@ class PatrolAction(ActionNode):
             move_direction = ai_player.find_valid_move_direction(game_map, preferred_directions) * 0.8
             if move_direction.length() > 0:
                 self.stuck_time = 0  # 重置卡住时间
-                print(f"[AI巡逻] AI{ai_player.id}检测到卡住，找到可移动方向")
+                dprint(f"[AI巡逻] AI{ai_player.id}检测到卡住，找到可移动方向")
             else:
-                print(f"[AI巡逻] AI{ai_player.id}检测到卡住，但无法找到可移动方向")
+                dprint(f"[AI巡逻] AI{ai_player.id}检测到卡住，但无法找到可移动方向")
         else:
             ai_player.update_pathfinding(target)
             move_direction = ai_player.get_next_move_direction(game_map)
@@ -601,9 +602,9 @@ class ChaseAction(ActionNode):
             if distance_moved < 5:
                 # 如果上次有移动方向但位置没变化，说明卡住了
                 if self.last_move_direction and self.last_move_direction.length() > 0.1:
-                    self.stuck_time += 0.016  # 假设每帧16ms
+                    self.stuck_time += blackboard.get('dt', 0.016)
                 else:
-                    self.stuck_time += 0.016 * 0.5  # 没有移动意图时，卡住时间增长较慢
+                    self.stuck_time += blackboard.get('dt', 0.016) * 0.5
             else:
                 self.stuck_time = 0
         self.last_position = pygame.Vector2(ai_player.pos.x, ai_player.pos.y)
@@ -633,9 +634,9 @@ class ChaseAction(ActionNode):
             move_direction = ai_player.find_valid_move_direction(game_map, preferred_directions) * 0.8
             if move_direction.length() > 0:
                 self.stuck_time = 0  # 重置卡住时间
-                print(f"[AI追击] AI{ai_player.id}检测到卡住，找到可移动方向")
+                dprint(f"[AI追击] AI{ai_player.id}检测到卡住，找到可移动方向")
             else:
-                print(f"[AI追击] AI{ai_player.id}检测到卡住，但无法找到可移动方向")
+                dprint(f"[AI追击] AI{ai_player.id}检测到卡住，但无法找到可移动方向")
         else:
             # 尝试路径规划
             ai_player.update_pathfinding(target_pos)
@@ -645,7 +646,7 @@ class ChaseAction(ActionNode):
             if move_direction.length() < 0.1:
                 if direction.length() > 0:
                     move_direction = direction.normalize()
-                    print(f"[AI追击] AI{ai_player.id}路径规划失败，使用直接移动")
+                    dprint(f"[AI追击] AI{ai_player.id}路径规划失败，使用直接移动")
             
             # 检查移动方向是否会导致碰撞，如果会则立即使用脱困逻辑
             if move_direction.length() > 0.1:
@@ -739,9 +740,9 @@ class AttackAction(ActionNode):
             if distance_moved < 5:
                 # 如果上次有移动方向但位置没变化，说明卡住了
                 if self.last_move_direction and self.last_move_direction.length() > 0.1:
-                    self.stuck_time += 0.016  # 假设每帧16ms
+                    self.stuck_time += blackboard.get('dt', 0.016)
                 else:
-                    self.stuck_time += 0.016 * 0.5  # 没有移动意图时，卡住时间增长较慢
+                    self.stuck_time += blackboard.get('dt', 0.016) * 0.5
             else:
                 self.stuck_time = 0
         self.last_position = pygame.Vector2(ai_player.pos.x, ai_player.pos.y)
@@ -770,9 +771,9 @@ class AttackAction(ActionNode):
             move_direction = ai_player.find_valid_move_direction(game_map, preferred_directions) * 0.8
             if move_direction.length() > 0:
                 self.stuck_time = 0  # 重置卡住时间
-                print(f"[AI攻击] AI{ai_player.id}检测到卡住，找到可移动方向")
+                dprint(f"[AI攻击] AI{ai_player.id}检测到卡住，找到可移动方向")
             else:
-                print(f"[AI攻击] AI{ai_player.id}检测到卡住，但无法找到可移动方向")
+                dprint(f"[AI攻击] AI{ai_player.id}检测到卡住，但无法找到可移动方向")
         elif distance < 80:  # 非常近，直接后退（不使用路径规划）
             # 直接后退，不使用路径规划，避免卡在墙边
             retreat_dir = (ai_player.pos - target_pos)
@@ -896,7 +897,7 @@ class AttackAction(ActionNode):
                 # 有视线，可以直接接近
                 if direction.length() > 0:
                     move_direction = direction.normalize() * 0.6
-                    print(f"[AI攻击] AI{ai_player.id}使用直接接近（有视线）")
+                    dprint(f"[AI攻击] AI{ai_player.id}使用直接接近（有视线）")
             else:
                 # 没有视线，尝试侧向移动而不是直接冲向墙壁
                 if direction.length() > 0:
@@ -904,7 +905,7 @@ class AttackAction(ActionNode):
                     if random.random() > 0.5:
                         perpendicular = -perpendicular
                     move_direction = perpendicular * 0.5
-                    print(f"[AI攻击] AI{ai_player.id}使用侧向移动（路径被阻挡）")
+                    dprint(f"[AI攻击] AI{ai_player.id}使用侧向移动（路径被阻挡）")
         
         # 检查移动方向是否会导致碰撞，如果会则立即使用脱困逻辑
         if move_direction.length() > 0.1:
@@ -1211,7 +1212,7 @@ class AmbushAction(ActionNode):
             return NodeStatus.RUNNING
         else:
             # 到达伏击位置，等待敌人
-            self.wait_time += 0.016  # 假设每帧16ms
+            self.wait_time += blackboard.get('dt', 0.016)
             
             # 面向敌人
             to_enemy = enemy_pos - ai_player.pos
@@ -1599,7 +1600,7 @@ class BehaviorTree:
         self.root = root_node
         self.blackboard = {}  # 黑板（共享数据）
     
-    def tick(self, ai_player, enemies, game_map, team_manager=None, allies=None):
+    def tick(self, ai_player, enemies, game_map, team_manager=None, allies=None, dt=0.016):
         """
         执行行为树
         
@@ -1609,15 +1610,23 @@ class BehaviorTree:
             game_map: 游戏地图对象
             team_manager: 团队管理器（可选）
             allies: 队友列表（可选）
+            dt: 距上一帧的时间（秒），用于帧率无关的计时
             
         Returns:
             dict: 执行的动作
         """
+        # 清理上一帧遗留的单帧状态，避免条件节点写入的过期值跨帧泄漏
+        persistent_keys = {'enemies', 'game_map', 'team_manager', 'allies', 'action', 'dt'}
+        for key in list(self.blackboard.keys()):
+            if key not in persistent_keys:
+                del self.blackboard[key]
+        
         # 更新黑板
         self.blackboard['enemies'] = enemies
         self.blackboard['game_map'] = game_map
         self.blackboard['team_manager'] = team_manager
         self.blackboard['allies'] = allies or []
+        self.blackboard['dt'] = dt
         self.blackboard['action'] = {
             'move': pygame.Vector2(0, 0),
             'angle': ai_player.angle,

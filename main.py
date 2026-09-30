@@ -39,7 +39,7 @@ else:
 from map import Map, Door
 from network import NetworkManager, ChatMessage, generate_default_player_name
 from player import Player
-from weapons import MeleeWeapon, Bullet, Ray
+from weapons import MeleeWeapon, Bullet
 
 # 本地模块导入 - 工具和UI
 from utils import *
@@ -65,6 +65,30 @@ font = ui.font
 small_font = ui.small_font
 large_font = ui.large_font
 title_font = ui.title_font
+
+
+def interpolate_network_player(player, now):
+    """把其他玩家的显示位置/朝向插值到当前时刻，消除 20Hz 网络快照造成的跳变"""
+    t = 1.0
+    prev = player.net_prev_pos
+    curr = player.net_curr_pos
+    if prev is not None and curr is not None:
+        span = player.net_curr_time - player.net_prev_time
+        if span <= 0:
+            player.pos.update(curr)
+        else:
+            t = (now - player.net_prev_time) / span
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+            player.pos.x = prev.x + (curr.x - prev.x) * t
+            player.pos.y = prev.y + (curr.y - prev.y) * t
+    a_prev = player.net_prev_angle
+    a_curr = player.net_curr_angle
+    if a_prev is not None and a_curr is not None:
+        delta = ((a_curr - a_prev + 180.0) % 360.0) - 180.0
+        player.angle = a_prev + delta * t
 
 
 def get_local_ip():
@@ -454,322 +478,6 @@ class Game:
 
             # 绘制菜单
             menu_manager.draw()
-
-            pygame.display.flip()
-            self.clock.tick(FPS)
-
-    def _show_menu_legacy(self):
-        """[已弃用] 旧版主菜单显示方法"""
-        # 菜单状态
-        selected_option = 0  # 0=创建服务器, 1=加入游戏, 2=刷新服务器
-        input_text = ""
-        input_active = False
-
-        # 服务器和玩家命名状态
-        server_name_input = ""
-        player_name_input = ""
-        server_name_active = False
-        player_name_active = False
-        show_server_name_input = False
-        show_player_name_input = False
-
-        # 自动开始扫描
-        if not self.scanning_servers and not self.found_servers:
-            self.start_server_scan()
-
-        # 按钮定义
-        button_width = 200
-        button_height = 50
-        button_spacing = 20
-        start_y = 150
-
-        button_create = pygame.Rect(50, start_y, button_width, button_height)
-        button_refresh = pygame.Rect(
-            50, start_y + button_height + button_spacing, button_width, button_height
-        )
-        input_box = pygame.Rect(
-            50, start_y + (button_height + button_spacing) * 2 + 10, button_width, 35
-        )
-        button_connect = pygame.Rect(
-            50, start_y + (button_height + button_spacing) * 2 + 60, button_width, 40
-        )
-
-        # 服务器命名输入框
-        server_name_box = pygame.Rect(
-            50, start_y + (button_height + button_spacing) * 3 + 150, button_width, 35
-        )
-        server_name_button = pygame.Rect(
-            50, start_y + (button_height + button_spacing) * 3 + 195, button_width, 40
-        )
-
-        # 玩家命名输入框
-        player_name_box = pygame.Rect(
-            50, start_y + (button_height + button_spacing) * 3 + 150, button_width, 35
-        )
-        player_name_button = pygame.Rect(
-            50, start_y + (button_height + button_spacing) * 3 + 195, button_width, 40
-        )
-
-        # 服务器列表区域
-        server_list_x = 300
-        server_list_y = start_y
-        server_list_width = 450
-        server_item_height = 60
-
-        while self.state == "MENU":
-            for event in pygame.event.get():
-                if event.type == QUIT:
-                    self.running = False
-                    return
-                elif event.type == KEYDOWN:
-                    if event.key == K_ESCAPE:
-                        self.running = False
-                        return
-                    elif event.key == K_UP:
-                        selected_option = max(0, selected_option - 1)
-                        input_active = False
-                        server_name_active = False
-                        player_name_active = False
-                    elif event.key == K_DOWN:
-                        selected_option = min(2, selected_option + 1)
-                        input_active = False
-                    elif event.key == K_RETURN:
-                        if selected_option == 0 and not show_server_name_input:
-                            # 显示服务器命名输入框
-                            show_server_name_input = True
-                            server_name_active = True
-                            server_name_input = "我的服务器"
-                        elif (
-                            selected_option == 0
-                            and show_server_name_input
-                            and server_name_input.strip()
-                        ):
-                            # 显示玩家命名输入框
-                            show_player_name_input = True
-                            player_name_active = True
-                            player_name_input = generate_default_player_name()
-                            server_name_active = False
-                        elif (
-                            selected_option == 1
-                            and input_text.strip()
-                            and not show_player_name_input
-                        ):
-                            # 显示玩家命名输入框
-                            show_player_name_input = True
-                            player_name_active = True
-                            player_name_input = generate_default_player_name()
-                        elif (
-                            selected_option == 1
-                            and input_text.strip()
-                            and show_player_name_input
-                            and player_name_input.strip()
-                        ):
-                            # 手动连接
-                            self.connection_info = {
-                                "is_server": False,
-                                "server_ip": input_text.strip(),
-                                "player_name": player_name_input.strip(),
-                            }
-                            self.state = "CONNECTING"
-                            self.connecting_start_time = time.time()
-                            return
-                        elif selected_option == 2:
-                            # 刷新服务器列表
-                            self.start_server_scan()
-                    elif input_active:
-                        if event.key == K_BACKSPACE:
-                            input_text = input_text[:-1]
-                        else:
-                            if len(input_text) < 50:
-                                input_text += event.unicode
-                    elif server_name_active:
-                        if event.key == K_BACKSPACE:
-                            server_name_input = server_name_input[:-1]
-                        else:
-                            if len(server_name_input) < 20:
-                                server_name_input += event.unicode
-                    elif player_name_active:
-                        if event.key == K_BACKSPACE:
-                            player_name_input = player_name_input[:-1]
-                        else:
-                            if len(player_name_input) < 16:
-                                player_name_input += event.unicode
-                elif event.type == MOUSEBUTTONDOWN:
-                    if (
-                        button_create.collidepoint(event.pos)
-                        and not show_server_name_input
-                    ):
-                        selected_option = 0
-                        input_active = False
-                        # 显示服务器命名输入框
-                        show_server_name_input = True
-                        server_name_active = True
-                        server_name_input = "我的服务器"
-                    elif (
-                        button_create.collidepoint(event.pos)
-                        and show_server_name_input
-                        and server_name_input.strip()
-                    ):
-                        selected_option = 0
-                        input_active = False
-                        # 显示玩家命名输入框
-                        show_player_name_input = True
-                        player_name_active = True
-                        player_name_input = generate_default_player_name()
-                        server_name_active = False
-                        self.creating_server = True
-                    elif button_refresh.collidepoint(event.pos):
-                        selected_option = 2
-                        input_active = False
-                        # 刷新服务器列表
-                        self.start_server_scan()
-                    elif input_box.collidepoint(event.pos):
-                        input_active = True
-                        selected_option = 1
-                        server_name_active = False
-                        player_name_active = False
-                    elif show_server_name_input and server_name_box.collidepoint(
-                        event.pos
-                    ):
-                        # 激活服务器命名输入框
-                        server_name_active = True
-                        input_active = False
-                        player_name_active = False
-                    elif show_player_name_input and player_name_box.collidepoint(
-                        event.pos
-                    ):
-                        # 激活玩家命名输入框
-                        player_name_active = True
-                        input_active = False
-                        server_name_active = False
-                    elif (
-                        show_server_name_input
-                        and server_name_button.collidepoint(event.pos)
-                        and server_name_input.strip()
-                    ):
-                        # 服务器命名确认按钮点击
-                        # 显示玩家命名输入框并隐藏服务器命名输入框
-                        show_player_name_input = True
-                        show_server_name_input = False  # 隐藏服务器命名输入框
-                        player_name_active = True
-                        player_name_input = generate_default_player_name()
-                        server_name_active = False
-                        self.creating_server = True  # 设置创建服务器标志位
-                    elif (
-                        show_player_name_input
-                        and player_name_button.collidepoint(event.pos)
-                        and player_name_input.strip()
-                    ):
-                        # 玩家命名确认按钮点击
-                        print("玩家名称按钮被点击!")
-                        print(
-                            f"创建服务器标志: {hasattr(self, 'creating_server') and self.creating_server}"
-                        )
-                        print(
-                            f"选中的服务器IP: {getattr(self, 'selected_server_ip', None)}"
-                        )
-                        print(f"输入的IP: {input_text.strip()}")
-                        if hasattr(self, "creating_server") and self.creating_server:
-                            # 创建服务器
-                            self.connection_info = {
-                                "is_server": True,
-                                "server_name": server_name_input.strip(),
-                                "player_name": player_name_input.strip(),
-                            }
-                        elif (
-                            hasattr(self, "selected_server_ip")
-                            and self.selected_server_ip
-                        ):
-                            # 连接到选中的服务器
-                            self.connection_info = {
-                                "is_server": False,
-                                "server_ip": self.selected_server_ip,
-                                "player_name": player_name_input.strip(),
-                            }
-                        else:
-                            # 手动连接
-                            self.connection_info = {
-                                "is_server": False,
-                                "server_ip": input_text.strip(),
-                                "player_name": player_name_input.strip(),
-                            }
-                        self.state = "CONNECTING"
-                        self.connecting_start_time = time.time()
-                        return
-                    elif (
-                        button_connect.collidepoint(event.pos)
-                        and input_text.strip()
-                        and not show_player_name_input
-                    ):
-                        # 显示玩家命名输入框
-                        show_player_name_input = True
-                        player_name_active = True
-                        player_name_input = generate_default_player_name()
-                    # 删除重复的玩家名称按钮点击处理逻辑
-                    # 该逻辑已在上方统一处理
-                    else:
-                        # 检查是否点击了服务器列表项
-                        for i, server in enumerate(self.found_servers):
-                            server_rect = pygame.Rect(
-                                server_list_x,
-                                server_list_y + i * (server_item_height + 10),
-                                server_list_width,
-                                server_item_height,
-                            )
-                            if (
-                                server_rect.collidepoint(event.pos)
-                                and not show_player_name_input
-                            ):
-                                # 显示玩家命名输入框
-                                show_player_name_input = True
-                                player_name_active = True
-                                player_name_input = generate_default_player_name()
-                                self.selected_server_ip = server["ip"]
-                            elif (
-                                server_rect.collidepoint(event.pos)
-                                and show_player_name_input
-                                and player_name_input.strip()
-                            ):
-                                # 连接到选中的服务器
-                                self.connection_info = {
-                                    "is_server": False,
-                                    "server_ip": self.selected_server_ip,
-                                    "player_name": player_name_input.strip(),
-                                }
-                                self.state = "CONNECTING"
-                                self.connecting_start_time = time.time()
-                                return
-                        input_active = False
-
-            # 绘制菜单
-            menu_state = {
-                "selected_option": selected_option,
-                "input_text": input_text,
-                "input_active": input_active,
-                "server_name_input": server_name_input,
-                "player_name_input": player_name_input,
-                "server_name_active": server_name_active,
-                "player_name_active": player_name_active,
-                "show_server_name_input": show_server_name_input,
-                "show_player_name_input": show_player_name_input,
-                "scanning_servers": self.scanning_servers,
-                "found_servers": self.found_servers,
-                "button_rects": {
-                    "button_create": button_create,
-                    "button_refresh": button_refresh,
-                    "input_box": input_box,
-                    "button_connect": button_connect,
-                    "server_name_box": server_name_box,
-                    "server_name_button": server_name_button,
-                    "player_name_box": player_name_box,
-                    "player_name_button": player_name_button,
-                },
-                "server_list_x": server_list_x,
-                "server_list_y": server_list_y,
-                "server_list_width": server_list_width,
-                "server_item_height": server_item_height,
-            }
-            ui.draw_menu(self.screen, menu_state)
 
             pygame.display.flip()
             self.clock.tick(FPS)
@@ -1167,26 +875,14 @@ class Game:
             # 初始化游戏地图（使用九宫格地图）
             self.game_map = Map()
             self.bullets = []  # 本地子弹对象
-            self.grenades = []  # 飞行手雷列表
+            self.grenades = []  # 飞行手雷列表（由服务端状态同步）
+            self.last_grenade_explosion = None  # 爆炸特效状态
             self.camera_offset = pygame.Vector2(0, 0)
             
             # 初始化道具系统
-            from items import ItemManager, ItemType
-            self.item_manager = ItemManager()
+            from items import create_default_item_manager
+            self.item_manager = create_default_item_manager()
             self.item_manager.generate_spawn_points(self.game_map.rooms, self.game_map.walls)
-            
-            weights = {
-                ItemType.HEALTH_PACK: 0.30,
-                ItemType.AMMO_BOX: 0.20,
-                ItemType.ARMOR: 0.15,
-                ItemType.SPEED_BOOST: 0.10,
-                ItemType.DAMAGE_BOOST: 0.10,
-                ItemType.GRENADE: 0.15,
-            }
-            self.item_manager.set_spawn_weights(weights)
-            
-            spawn_count = 12
-            from config import ITEMS_SPAWN_COUNT
             self.item_manager.spawn_all_types()
             
             print(f"游戏初始化成功，玩家ID: {self.network_manager.player_id}")
@@ -1264,17 +960,11 @@ class Game:
                             )
                             direction = world_pos - self.player.pos
                             if direction.length() > 0:
-                                from items import Grenade
-                                from items import ThrownGrenade
-                                grenade = ThrownGrenade(
-                                    self.player.pos,
-                                    direction,
-                                    Grenade.THROW_SPEED,
-                                    self.player.id
+                                # 交由服务端权威生成并模拟（含网络同步与伤害结算）
+                                self.network_manager.request_throw_grenade(
+                                    [self.player.pos.x, self.player.pos.y],
+                                    [direction.x, direction.y],
                                 )
-                                self.grenades.append(grenade)
-                                self.player.grenades -= 1
-                                print(f"[手雷] 投掷手雷，3秒后爆炸")
             elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
                     if self.player.weapon_type == "melee":  # 近战武器时触发轻击
@@ -1286,52 +976,6 @@ class Game:
                         self.player.start_melee_attack(is_heavy=True)
                     else:  # 其他武器时瞄准
                         self.player.is_aiming = True
-            elif event.type == MOUSEBUTTONUP:
-                if event.button == 1:  # 左键释放
-                    if self.player.weapon_type != "melee":  # 非近战武器时停止射击
-                        self.player.shooting = False
-                elif event.button == 3:  # 右键释放
-                    if self.player.weapon_type != "melee":  # 非近战武器时停止瞄准
-                        self.player.is_aiming = False
-                elif event.button == 2:  # 中键释放 - 投掷手雷
-                    if self.player and not self.player.is_dead and hasattr(self.player, 'grenades'):
-                        if self.player.grenades > 0:
-                            mouse_pos = pygame.mouse.get_pos()
-                            world_pos = pygame.Vector2(
-                                mouse_pos[0] + self.camera_offset.x,
-                                mouse_pos[1] + self.camera_offset.y
-                            )
-                            direction = world_pos - self.player.pos
-                            if direction.length() > 0:
-                                from items import Grenade
-                                from items import ThrownGrenade
-                                grenade = ThrownGrenade(
-                                    self.player.pos,
-                                    direction,
-                                    Grenade.THROW_SPEED,
-                                    self.player.id
-                                )
-                                self.grenades.append(grenade)
-                                self.player.grenades -= 1
-                                if targets:
-                                    for target in targets:
-                                        target_id = target.get('target_id')
-                                        damage = target.get('damage')
-                                        if target_id in all_players:
-                                            target_player = all_players[target_id]
-                                            if not target_player.is_dead:
-                                                if self.is_server:
-                                                    target_player.take_damage(damage)
-                                                else:
-                                                    self.network_manager.send_data({
-                                                        'type': 'damage',
-                                                        'data': {
-                                                            'attacker_id': self.player.id,
-                                                            'target_id': target_id,
-                                                            'damage': damage,
-                                                            'source': 'grenade'
-                                                        }
-                                                    })
             elif event.type == MOUSEBUTTONUP:
                 if event.button == 1:  # 左键释放
                     if self.player.weapon_type != "melee":  # 非近战武器时停止射击
@@ -1375,7 +1019,7 @@ class Game:
 
                     wrapper = AIPlayerWrapper(ai_player)
                     all_players[ai_id] = wrapper
-                    print(
+                    dprint(
                         f"[调试] 添加AI玩家{ai_id}到all_players，位置=({wrapper.pos.x}, {wrapper.pos.y}), 死亡={wrapper.is_dead}"
                     )
 
@@ -1462,6 +1106,7 @@ class Game:
                         self.player.speed_boost_end_time = pdata.get("speed_boost_end_time", 0)
                         self.player.damage_boost_end_time = pdata.get("damage_boost_end_time", 0)
                         self.player.grenades = pdata.get("grenades", 0)
+                        self.player.protection_end = pdata.get("protection_end", 0)
                         continue
 
                     # 创建或更新其他玩家
@@ -1474,10 +1119,31 @@ class Game:
 
                     # 更新玩家数据
                     other_player = self.other_players[pid]
-                    # 只在非复活状态下更新位置
+                    # 只在非复活状态下更新位置（记录为插值目标，渲染时平滑过渡）
                     if not pdata.get("is_respawning", False):
-                        other_player.pos.update(pdata["pos"])
-                    other_player.angle = pdata["angle"]
+                        new_pos = pygame.Vector2(pdata["pos"])
+                        now_sync = time.time()
+                        prev = other_player.net_curr_pos
+                        if prev is None or new_pos.distance_to(prev) > 300:
+                            # 首次出现、复活或瞬移：直接吸附，避免拖影
+                            other_player.net_prev_pos = new_pos.copy()
+                            other_player.net_curr_pos = new_pos.copy()
+                            other_player.net_prev_time = now_sync
+                            other_player.net_curr_time = now_sync
+                            other_player.pos.update(new_pos)
+                        else:
+                            other_player.net_prev_pos = prev
+                            other_player.net_curr_pos = new_pos
+                            other_player.net_prev_time = other_player.net_curr_time
+                            other_player.net_curr_time = now_sync
+                    new_angle = pdata.get("angle", other_player.angle)
+                    if other_player.net_curr_angle is None:
+                        other_player.net_prev_angle = new_angle
+                        other_player.net_curr_angle = new_angle
+                        other_player.angle = new_angle
+                    else:
+                        other_player.net_prev_angle = other_player.net_curr_angle
+                        other_player.net_curr_angle = new_angle
                     other_player.health = pdata["health"]
                     other_player.ammo = pdata["ammo"]
                     other_player.armor = pdata.get("armor", 0)
@@ -1491,6 +1157,7 @@ class Game:
                     other_player.speed_boost_end_time = pdata.get("speed_boost_end_time", 0)
                     other_player.damage_boost_end_time = pdata.get("damage_boost_end_time", 0)
                     other_player.grenades = pdata.get("grenades", 0)
+                    other_player.protection_end = pdata.get("protection_end", 0)
 
                     # 同步团队ID
                     if "team_id" in pdata:
@@ -1509,6 +1176,11 @@ class Game:
             # 同步子弹
             self.sync_bullets()
 
+        # 平滑其他玩家位置与朝向：在网络快照之间插值，消除 20Hz 跳变
+        now_interp = time.time()
+        for other_player in self.other_players.values():
+            interpolate_network_player(other_player, now_interp)
+
         # 更新子弹
         for bullet in list(self.bullets):
             if bullet.update(dt, self.game_map, all_players, self.network_manager):
@@ -1517,45 +1189,13 @@ class Game:
                 if self.network_manager.is_server:
                     self.network_manager.remove_bullet(bullet.id)
         
-        # 更新飞行手雷
-        walls = self.game_map.walls
-        for grenade in list(self.grenades):
-            if grenade.update(dt, walls):
-                targets = grenade.get_targets(all_players)
-                if grenade.explosion_pos:
-                    self.last_grenade_explosion = {
-                        'pos': grenade.explosion_pos,
-                        'time': time.time()
-                    }
-                for target in targets:
-                    target_id = target.get('target_id')
-                    damage = target.get('damage')
-                    attacker_id = target.get('attacker_id')
-                    
-                    if self.network_manager and self.network_manager.is_server:
-                        damage_data = {
-                            'target_id': target_id,
-                            'damage': damage,
-                            'attacker_id': attacker_id,
-                            'type': 'grenade'
-                        }
-                        self.network_manager._handle_damage(damage_data)
-                    else:
-                        if target_id == self.player.id:
-                            if not self.player.is_dead:
-                                self.player.take_damage(damage)
-                                print(f"[手雷] 本地玩家{target_id}受到{damage}伤害")
-                        elif target_id in self.ai_players:
-                            ai_player = self.ai_players[target_id]
-                            if not ai_player.is_dead:
-                                ai_player.take_damage(damage)
-                                print(f"[手雷] AI玩家{target_id}受到{damage}伤害")
-                        elif target_id in self.other_players:
-                            target_player = self.other_players[target_id]
-                            if not target_player.is_dead:
-                                target_player.take_damage(damage)
-                                print(f"[手雷] 网络玩家{target_id}受到{damage}伤害")
-                self.grenades.remove(grenade)
+        # 手雷位置由服务端权威同步；客户端在两次同步之间做本地外推，消除 20Hz 跳变
+        # （服务端主机在 update_and_broadcast 中已按帧推进，无需再外推）
+        if not self.network_manager.is_server:
+            grenade_walls = self.game_map.walls
+            for grenade in self.grenades:
+                if not grenade.exploded:
+                    grenade.update(dt, grenade_walls)
 
         # 更新门
         self.game_map.update_doors(dt, self.network_manager)
@@ -1837,7 +1477,7 @@ class Game:
                     if not door.is_open:
                         # AI开门
                         door.open()
-                        print(f"[AI门交互] AI玩家{ai_id}开启了门")
+                        dprint(f"[AI门交互] AI玩家{ai_id}开启了门")
 
                 # 处理静步状态
                 if "is_walking" in action:
@@ -2040,7 +1680,8 @@ class Game:
                     self.last_grenade_explosion['pos'].y - self.camera_offset.y
                 )
                 alpha = int(255 * (1.0 - elapsed))
-                radius = int(500 * (elapsed / 1.0))
+                from items import Grenade
+                radius = max(1, int(Grenade.EXPLOSION_RADIUS * (elapsed / 1.0)))
                 grenade_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
                 pygame.draw.circle(grenade_surface, (255, 100, 0, alpha), (radius, radius), radius)
                 pygame.draw.circle(grenade_surface, (255, 200, 50, alpha), (radius, radius), int(radius * 0.7))
@@ -2579,244 +2220,6 @@ class Game:
         self.chat_history_manager.update()
         self.chat_history_manager.draw()
 
-    def process_local_command(self, text):
-        """
-        处理本地命令（以.开头的命令）
-        """
-        cmd_parts = text.split()
-        if not cmd_parts:
-            return
-
-        cmd = cmd_parts[0].lower()
-
-        # 定义系统颜色
-        from network import ChatMessage
-
-        if cmd == ".help":
-            help_msg = """可用命令:
-.help - 显示此帮助
-.kill - 自杀
-.list - 列出当前玩家
-.listai - 列出AI玩家
-.team - 切换团队聊天
-.all - 切换全局聊天
-.addai [难度] [性格] - 添加AI (难度: easy/normal/hard, 性格: aggressive/defensive/tactical/stealthy/team/random)
-.removeai <ID|all> - 移除AI
-.createteam [名称] - 创建团队
-.jointeam <ID> - 加入团队
-.leaveteam - 离开团队
-.listteams - 列出团队"""
-            self.network_manager.chat_messages.append(ChatMessage(0, "系统", help_msg))
-
-        elif cmd == ".kill":
-            if self.player and not self.player.is_dead:
-                self.player.health = 0
-                self.player.is_dead = True
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "你选择了自杀。")
-                )
-
-        elif cmd == ".list":
-            if self.network_manager:
-                player_list = [
-                    f"{p.get('name', '未知')} (ID: {pid})"
-                    for pid, p in self.network_manager.players.items()
-                ]
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "当前玩家:\n" + "\n".join(player_list))
-                )
-
-        elif cmd == ".listai":
-            if not self.network_manager.is_server:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "只有服务器可以管理AI")
-                )
-                return
-
-            if not self.ai_players:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "当前没有AI玩家")
-                )
-            else:
-                ai_list = [
-                    f"AI-{ai_id} ({ai.personality})"
-                    for ai_id, ai in self.ai_players.items()
-                ]
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "AI玩家:\n" + "\n".join(ai_list))
-                )
-
-        elif cmd == ".team":
-            self.team_chat_mode = True
-            self.network_manager.chat_messages.append(
-                ChatMessage(0, "系统", "已切换到团队聊天模式")
-            )
-
-        elif cmd == ".all":
-            self.team_chat_mode = False
-            self.network_manager.chat_messages.append(
-                ChatMessage(0, "系统", "已切换到全局聊天模式")
-            )
-
-        elif cmd == ".addai":
-            if not self.network_manager.is_server:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "只有服务器可以添加AI")
-                )
-                return
-
-            # 解析参数
-            difficulty = "normal"  # 默认难度
-            personality = "random"  # 默认性格
-
-            if len(cmd_parts) > 1:
-                difficulty = cmd_parts[1].lower()
-                if difficulty not in ["easy", "normal", "hard"]:
-                    self.network_manager.chat_messages.append(
-                        ChatMessage(0, "系统", "难度必须是 easy/normal/hard")
-                    )
-                    return
-
-            if len(cmd_parts) > 2:
-                personality = cmd_parts[2].lower()
-                if personality not in [
-                    "aggressive",
-                    "defensive",
-                    "tactical",
-                    "stealthy",
-                    "team",
-                    "random",
-                ]:
-                    self.network_manager.chat_messages.append(
-                        ChatMessage(
-                            0,
-                            "系统",
-                            "性格必须是 aggressive/defensive/tactical/stealthy/team/random",
-                        )
-                    )
-                    return
-
-            # 添加AI
-            self.add_ai_player(difficulty, personality)
-
-        elif cmd == ".removeai":
-            if not self.network_manager.is_server:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "只有服务器可以移除AI")
-                )
-                return
-
-            if len(cmd_parts) < 2:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "用法: .removeai <ID|all>")
-                )
-                return
-
-            target = cmd_parts[1]
-            if target.lower() == "all":
-                # 移除所有AI
-                count = len(self.ai_players)
-                for ai_id in list(self.ai_players.keys()):
-                    self.remove_ai_player(ai_id)
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", f"已移除所有AI ({count}个)")
-                )
-            else:
-                # 移除指定AI
-                try:
-                    ai_id = int(target)
-                    if ai_id in self.ai_players:
-                        self.remove_ai_player(ai_id)
-                        self.network_manager.chat_messages.append(
-                            ChatMessage(0, "系统", f"已移除AI-{ai_id}")
-                        )
-                    else:
-                        self.network_manager.chat_messages.append(
-                            ChatMessage(0, "系统", f"找不到AI-{ai_id}")
-                        )
-                except ValueError:
-                    self.network_manager.chat_messages.append(
-                        ChatMessage(0, "系统", "ID必须是数字")
-                    )
-
-        elif cmd == ".createteam":
-            if not self.network_manager.is_server:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "只有服务器可以创建团队")
-                )
-                return
-
-            team_name = (
-                " ".join(cmd_parts[1:])
-                if len(cmd_parts) > 1
-                else f"团队{len(self.team_manager.teams) + 1}"
-            )
-            team = self.team_manager.create_team(team_name, self.player.id)
-            self.network_manager.chat_messages.append(
-                ChatMessage(0, "系统", f"已创建团队: {team_name} (ID: {team.team_id})")
-            )
-
-        elif cmd == ".jointeam":
-            if len(cmd_parts) < 2:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "用法: .jointeam <团队ID>")
-                )
-                return
-
-            try:
-                team_id = int(cmd_parts[1])
-                if self.team_manager.join_team(self.player.id, team_id):
-                    team = self.team_manager.get_player_team(self.player.id)
-                    self.network_manager.chat_messages.append(
-                        ChatMessage(0, "系统", f"已加入团队: {team.name}")
-                    )
-                else:
-                    self.network_manager.chat_messages.append(
-                        ChatMessage(0, "系统", "加入团队失败（团队不存在或已满）")
-                    )
-            except ValueError:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "团队ID必须是数字")
-                )
-
-        elif cmd == ".leaveteam":
-            if self.team_manager.leave_team(self.player.id):
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "已离开团队")
-                )
-            else:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "你不在任何团队中")
-                )
-
-        elif cmd == ".listteams":
-            teams = self.team_manager.get_all_teams()
-            if not teams:
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "当前没有团队")
-                )
-            else:
-                team_info = []
-                for team in teams:
-                    member_names = [
-                        self.network_manager.players.get(mid, {}).get(
-                            "name", f"未知-{mid}"
-                        )
-                        for mid in team.members
-                        if mid in self.network_manager.players
-                    ]
-                    team_info.append(
-                        f"{team.name} (ID: {team.team_id}) - 成员: {', '.join(member_names)}"
-                    )
-                self.network_manager.chat_messages.append(
-                    ChatMessage(0, "系统", "团队列表:\n" + "\n".join(team_info))
-                )
-
-        else:
-            self.network_manager.chat_messages.append(
-                ChatMessage(0, "系统", f"未知命令: {cmd}\n输入 .help 查看可用命令")
-            )
-
     def render_minimap(self):
         """绘制小地图（显示所有队员的位置）"""
         minimap_width, minimap_height = 200, 150
@@ -2938,7 +2341,7 @@ class Game:
 
             # 调试输出：显示玩家状态
             if distance < 300:  # 只对附近的玩家输出调试信息
-                print(
+                dprint(
                     f"[声音检测] 玩家{player_id}: 距离{distance:.1f}, 射击={player.shooting}, 静步={getattr(player, 'is_walking', False)}, 发声={getattr(player, 'is_making_sound', False)}, 音量={getattr(player, 'sound_volume', 0.0)}"
                 )
 
@@ -2986,7 +2389,7 @@ class Game:
                     }
                 )
 
-                print(
+                dprint(
                     f"[声音检测] 检测到玩家{player_id}的{sound_type}，距离{distance:.1f}，强度{sound_intensity:.2f}"
                 )
 

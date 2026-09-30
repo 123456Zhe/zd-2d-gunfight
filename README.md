@@ -16,13 +16,13 @@
 8. [AI玩家系统](#ai玩家系统) ⭐新增
 9. [增强版AI系统](#增强版ai系统) ⭐新增
 10. [管理员命令](#管理员命令)
-9. [打包发布](#打包发布)
-10. [Ubuntu支持](#ubuntu支持)
-11. [字体系统](#字体系统)
-12. [聊天系统](#聊天系统)
-13. [故障排除](#故障排除)
-14. [开发信息](#开发信息)
-15. [许可证](#许可证)
+11. [打包发布](#打包发布)
+12. [Ubuntu支持](#ubuntu支持)
+13. [字体系统](#字体系统)
+14. [聊天系统](#聊天系统)
+15. [故障排除](#故障排除)
+16. [开发信息](#开发信息)
+17. [许可证](#许可证)
 
 ---
 
@@ -34,28 +34,30 @@ ZD 2D Gunfight是一款基于Python和Pygame开发的多人射击游戏，支持
 - **语言**: Python 3.7+
 - **游戏引擎**: Pygame 2.0+
 - **网络**: UDP Socket
-- **打包工具**: PyInstaller / Nuitka / cx_Freeze
+- **打包工具**: Nuitka（见 `build.py`）
 
 ### 项目结构
 ```
 zd-2d-gunfight/
-├── main.py              # 游戏主循环和Game类（已重构）
+├── main.py              # 游戏主循环和Game类
 ├── player.py            # 玩家类（完整功能）
-├── ai_player.py         # AI玩家系统 ⭐
-├── ai_player_enhanced.py # 增强版AI玩家系统 ⭐新增
-├── ai_behavior_tree.py  # AI行为树系统 ⭐新增
-├── ai_personality.py    # AI个性化系统 ⭐新增
-├── team.py              # 团队系统模块 ⭐新增
-├── map.py               # 地图和门系统（完整功能）
-├── weapons.py           # 武器系统（MeleeWeapon, Bullet, Ray）
+├── ai_player.py         # AI玩家系统（基础版，状态机）
+├── ai_player_enhanced.py # 增强版AI玩家系统（行为树）
+├── ai_behavior_tree.py  # AI行为树系统
+├── ai_personality.py    # AI个性化系统
+├── ai_cost_calculator.py # AI代价/掩体计算
+├── team.py              # 团队系统模块
+├── map.py               # 地图和门系统
+├── weapons.py           # 武器系统（MeleeWeapon, Bullet）
+├── items.py             # 道具系统（医疗包/护甲/手雷等）
 ├── network.py           # 网络管理（NetworkManager, ChatMessage）
-├── utils.py             # 工具函数模块 ⭐新增
-├── ui.py                # UI渲染模块 ⭐新增
-├── constants.py         # 游戏常量
-├── README.md            # 主文档（包含AI使用说明）
-├── README_Ubuntu.md     # Ubuntu支持文档
-├── Ubuntu使用说明.md    # Ubuntu快速指南
-├── 字体修复说明.md      # 字体兼容性说明
+├── game_commands.py     # 游戏内 `.` 命令系统
+├── utils.py             # 工具函数模块
+├── ui.py                # UI渲染模块
+├── config.py            # 配置加载（读取 settings.json）
+├── settings.json        # 游戏配置（唯一数据源）
+├── constants.py         # 常量（从 config.py 再导出）
+├── test_comprehensive.py # 综合自测脚本
 └── build.py             # 跨平台Nuitka打包脚本
 ```
 
@@ -66,7 +68,7 @@ zd-2d-gunfight/
 - **player.py**: 完整的玩家类，包含移动、射击、受伤、复活等所有玩家相关功能
 - **ai_player.py**: AI玩家系统，提供智能对手功能
 - **map.py**: 地图生成和管理，包含九宫格房间系统和门的交互逻辑
-- **weapons.py**: 武器系统，包含近战武器(MeleeWeapon)、子弹(Bullet)和射线(Ray)类
+- **weapons.py**: 武器系统，包含近战武器(MeleeWeapon)和子弹(Bullet)类
 - **network.py**: 网络通信管理，包含NetworkManager和ChatMessage类
 
 #### 工具模块 ⭐重构新增
@@ -1386,14 +1388,18 @@ pip install pyinstaller
 - `player.py` - 完整的玩家类，处理移动、射击、生命值、武器切换等
 - `ai_player.py` - AI玩家系统，智能对手逻辑 ⭐
 - `map.py` - 完整的地图系统，包含九宫格房间和门的管理
-- `weapons.py` - 武器系统，包含MeleeWeapon、Bullet、Ray类
+- `weapons.py` - 武器系统，包含MeleeWeapon、Bullet类
+- `items.py` - 道具系统，包含医疗包、护甲、手雷等
 - `network.py` - 网络管理，包含NetworkManager和ChatMessage类
-- `utils.py` - 工具函数模块，提供角度计算、视野检测、碰撞检测等 ⭐新增
-- `ui.py` - UI渲染模块，提供字体管理和界面绘制函数 ⭐新增
-- `constants.py` - 游戏常量配置
+- `game_commands.py` - 游戏内 `.` 命令系统
+- `utils.py` - 工具函数模块，提供角度计算、视野检测、碰撞检测等
+- `ui.py` - UI渲染模块，提供字体管理和界面绘制函数
+- `config.py` - 配置加载，读取 settings.json
+- `settings.json` - 游戏配置（唯一数据源）
+- `constants.py` - 常量配置（从 config.py 再导出）
 
 #### 代码重构 ⭐已完成
-项目已完成大规模代码重构，将原本5000+行的main.py拆分为模块化结构：
+项目已完成大规模代码重构，将原本庞大的main.py拆分为模块化结构：
 - **模块化设计**: 代码按功能分离到独立模块
 - **消除重复**: 合并了重复的类定义
 - **职责清晰**: 每个模块有明确的职责
@@ -1401,7 +1407,6 @@ pip install pyinstaller
 
 #### 打包脚本
 - `build.py` - Nuitka统一打包脚本（自动识别平台和依赖）
-- `setup_cxfreeze.py` - cx_Freeze打包配置
 
 #### 工具脚本
 - `install_ubuntu_fonts.py` - Ubuntu字体安装助手

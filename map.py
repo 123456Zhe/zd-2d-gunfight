@@ -93,8 +93,8 @@ class Door:
         return False
     
     def check_collision(self, rect):
-        """检查与门的碰撞，如果门打开则不碰撞"""
-        if self.is_open:
+        """检查与门的碰撞：门一旦开始打开就不再阻挡通行"""
+        if self.is_open or self.is_opening:
             return False
         return self.rect.colliderect(rect)
     

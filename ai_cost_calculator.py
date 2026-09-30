@@ -13,6 +13,7 @@ except ImportError:
     print("警告: numpy未安装，将使用较慢的fallback实现。建议安装numpy: pip install numpy")
 
 import math
+import time
 import pygame
 from constants import *
 
@@ -32,6 +33,11 @@ class AICostCalculator:
         self.map_height = ROOM_SIZE * 3
         self.grid_width = int(self.map_width / grid_size)
         self.grid_height = int(self.map_height / grid_size)
+        
+        # 代价网格缓存：避免每帧重算（AI 决策对网格的时效性要求很低）
+        self.cost_update_interval = AI_COST_UPDATE_INTERVAL
+        self._grid_cache = None
+        self._grid_cache_time = 0.0
         
         # 预计算网格中心点坐标
         if HAS_NUMPY:
@@ -160,6 +166,12 @@ class AICostCalculator:
         Returns:
             numpy.ndarray or list: 代价网格（值越小越好）
         """
+        # 命中缓存则直接复用，显著降低纯 Python 逐格计算的开销
+        now = time.time()
+        if (self._grid_cache is not None and
+                now - self._grid_cache_time < self.cost_update_interval):
+            return self._grid_cache
+        
         # 初始化代价网格
         if HAS_NUMPY:
             cost_grid = np.zeros((self.grid_height, self.grid_width))
@@ -205,6 +217,8 @@ class AICostCalculator:
                 else:
                     cost_grid[i][j] = max(0.0, total_cost)
         
+        self._grid_cache = cost_grid
+        self._grid_cache_time = now
         return cost_grid
     
     def find_best_position(self, ai_pos, enemies, game_map, allies=None, 

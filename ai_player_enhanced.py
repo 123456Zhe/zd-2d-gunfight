@@ -8,6 +8,7 @@ import math
 import random
 import time
 from constants import *
+from utils import dprint
 from pathfinding.core.diagonal_movement import DiagonalMovement
 from pathfinding.core.grid import Grid
 from pathfinding.finder.a_star import AStarFinder
@@ -283,7 +284,7 @@ class EnhancedAIPlayer:
 
             # 如果路径规划失败，记录日志
             if len(self.current_path) == 0:
-                print(
+                dprint(
                     f"[AI路径规划] AI{self.id}路径规划失败，目标位置: ({target_pos.x:.1f}, {target_pos.y:.1f})"
                 )
 
@@ -475,7 +476,7 @@ class EnhancedAIPlayer:
         # 如果所有方向都不行，返回零向量
         return pygame.Vector2(0, 0)
 
-    def update_stealth_mode(self, players, game_map):
+    def update_stealth_mode(self, players, game_map, team_manager=None):
         """更新静步模式"""
         current_time = time.time()
 
@@ -484,8 +485,14 @@ class EnhancedAIPlayer:
 
         self.last_stealth_decision = current_time
 
-        # 使用个性化特征判断是否应该静步
-        enemies = [p for p in players.values() if not p.get("is_dead", False)]
+        # 统计真正的敌人（排除自己、死亡的玩家和队友）
+        enemies = []
+        for pid, p in players.items():
+            if pid == self.id or p.get("is_dead", False):
+                continue
+            if team_manager and team_manager.are_teammates(self.id, pid):
+                continue
+            enemies.append(p)
         if not enemies:
             self.stealth_mode = False
             return
@@ -544,7 +551,7 @@ class EnhancedAIPlayer:
                 self.ammo = MAGAZINE_SIZE
 
         # 更新静步模式
-        self.update_stealth_mode(players, game_map)
+        self.update_stealth_mode(players, game_map, team_manager)
 
         # 准备敌人和友军数据
         enemies = []
@@ -586,9 +593,9 @@ class EnhancedAIPlayer:
             else:
                 enemies.append(player_data)
 
-        # 执行行为树（传递team_manager和allies）
+        # 执行行为树（传递team_manager、allies和dt）
         action = self.behavior_tree.tick(
-            self, enemies, game_map, team_manager=team_manager, allies=allies
+            self, enemies, game_map, team_manager=team_manager, allies=allies, dt=dt
         )
 
         # 检查门交互

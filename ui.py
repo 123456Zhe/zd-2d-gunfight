@@ -627,18 +627,38 @@ class ChatMenuManager:
         text = self.input_text.strip()
         if text:
             if text.startswith("."):
-                from game_commands import process_command
+                from game_commands import (
+                    process_command,
+                    get_command_permission,
+                    get_command_name,
+                    CommandPermission,
+                )
 
                 if hasattr(self.game, "network_manager"):
                     is_server = getattr(self.game.network_manager, "is_server", False)
                     player_id = getattr(self.game.network_manager, "player_id", 0)
-                    result = process_command(text, self.game, player_id, is_server)
-                    if result:
-                        from network import ChatMessage
 
+                    permission = get_command_permission(text)
+                    cmd_name = get_command_name(text)
+                    needs_server = permission in (
+                        CommandPermission.SERVER,
+                        CommandPermission.ADMIN,
+                    ) or cmd_name in ("team", "kill")
+
+                    from network import ChatMessage
+
+                    if not is_server and needs_server:
+                        # 客户端：转发给服务器，由服务端以绑定的身份执行
+                        self.game.network_manager.send_chat_message(text)
                         self.game.network_manager.chat_messages.append(
-                            ChatMessage(0, "系统", result)
+                            ChatMessage(0, "系统", "已发送到服务器")
                         )
+                    else:
+                        result = process_command(text, self.game, player_id, is_server)
+                        if result:
+                            self.game.network_manager.chat_messages.append(
+                                ChatMessage(0, "系统", result)
+                            )
             else:
                 is_team_chat = getattr(self.game, "team_chat_mode", False)
                 if self.game.network_manager:
@@ -1228,8 +1248,10 @@ class HUDManager:
                 self.ammo_color = GREEN
                 self.status_text = ""
             else:
-                remaining_cooldown = MELEE_COOLDOWN - (
-                    current_time - player.melee_weapon.last_attack_time
+                melee = player.melee_weapon
+                cooldown = melee.heavy_cooldown if melee.is_heavy_attack else MELEE_COOLDOWN
+                remaining_cooldown = cooldown - (
+                    current_time - melee.last_attack_time
                 )
                 self.ammo_text = f"近战武器: {remaining_cooldown:.1f}s"
                 self.ammo_color = RED
@@ -1658,6 +1680,30 @@ class MinimapManager:
             (int(minimap_center_x), int(minimap_center_y)),
             4,
         )
+
+        # 绘制队友位置
+        team_color = (0, 200, 0)
+        for teammate_id in self._get_teammates():
+            teammate_pos = None
+            obj = self._find_player(teammate_id)
+            if obj is not None and hasattr(obj, "pos"):
+                teammate_pos = obj.pos
+            elif hasattr(self.game, "network_manager"):
+                pdata = self.game.network_manager.players.get(teammate_id)
+                if pdata and pdata.get("pos"):
+                    teammate_pos = pygame.Vector2(pdata["pos"][0], pdata["pos"][1])
+            if teammate_pos is None:
+                continue
+            rel_x = (
+                teammate_pos.x - self.game.player.pos.x
+            ) * self.minimap_scale + minimap_center_x
+            rel_y = (
+                teammate_pos.y - self.game.player.pos.y
+            ) * self.minimap_scale + minimap_center_y
+            if 0 <= rel_x <= self.minimap_width and 0 <= rel_y <= self.minimap_height:
+                pygame.draw.circle(
+                    self.minimap_surface, team_color, (int(rel_x), int(rel_y)), 3
+                )
 
         # 绘制小地图边框
         pygame.draw.rect(

@@ -14,7 +14,7 @@ try:
     from player import Player
     from map import Map, Door
     from network import NetworkManager, ChatMessage, generate_default_player_name
-    from weapons import MeleeWeapon, Bullet, Ray
+    from weapons import MeleeWeapon, Bullet
     from ai_player import AIPlayer
     from utils import *
     import ui
