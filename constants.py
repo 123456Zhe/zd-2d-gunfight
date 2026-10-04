@@ -9,6 +9,11 @@ try:
         SCREEN_HEIGHT,
         FPS,
         PLAYER_SPEED,
+        PLAYER_ROTATION_SPEED,
+        ROTATE_CAMERA,
+        CAMERA_FOLLOW_LERP,
+        MOUSE_TURN_SPEED,
+        MOUSE_TURN_DEADZONE,
         AIMING_SPEED_MULTIPLIER,
         BULLET_SPEED,
         BULLET_COOLDOWN,
@@ -20,10 +25,19 @@ try:
         RESPAWN_TIME,
         RESPAWN_PROTECTION,
         # 地图配置
+        MAP_TYPE,
         ROOM_SIZE,
         WALL_THICKNESS,
         DOOR_SIZE,
         DOOR_ANIMATION_SPEED,
+        DOOR_OPEN_ANGLE,
+        DOOR_PUSH_ACCEL,
+        DOOR_DAMPING,
+        DOOR_MAX_SPEED,
+        DOOR_GRAB_DISTANCE,
+        DOOR_SELF_CLOSE_ANGLE,
+        DOOR_SELF_CLOSE_SPEED,
+        DOOR_SELF_CLOSE_VELOCITY,
         # 效果配置
         HIT_SLOWDOWN_DURATION,
         HIT_SLOWDOWN_FACTOR,
@@ -41,6 +55,7 @@ try:
         # 瞄准配置
         AIM_CAMERA_RANGE,
         AIM_SENSITIVITY,
+        AIM_OFFSET_LERP,
         # 网络配置
         SERVER_PORT,
         BUFFER_SIZE,
@@ -117,6 +132,11 @@ except ImportError:
     SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
     FPS = 60
     PLAYER_SPEED = 300
+    PLAYER_ROTATION_SPEED = 180
+    ROTATE_CAMERA = True
+    CAMERA_FOLLOW_LERP = 0.18
+    MOUSE_TURN_SPEED = 180
+    MOUSE_TURN_DEADZONE = 0.2
     AIMING_SPEED_MULTIPLIER = 0.5
     BULLET_SPEED = 800
     BULLET_COOLDOWN = 0.15
@@ -129,10 +149,19 @@ except ImportError:
     RESPAWN_PROTECTION = 2.0
 
     # 地图配置
+    MAP_TYPE = "grid3x3"
     ROOM_SIZE = 600
     WALL_THICKNESS = 20
     DOOR_SIZE = 80
     DOOR_ANIMATION_SPEED = 2.0
+    DOOR_OPEN_ANGLE = 150.0
+    DOOR_PUSH_ACCEL = 18.0
+    DOOR_DAMPING = 0.6
+    DOOR_MAX_SPEED = 6.0
+    DOOR_GRAB_DISTANCE = 110
+    DOOR_SELF_CLOSE_ANGLE = 5.0
+    DOOR_SELF_CLOSE_SPEED = 16.0
+    DOOR_SELF_CLOSE_VELOCITY = 0.2
 
     # 效果配置
     HIT_SLOWDOWN_DURATION = 0.5
@@ -153,6 +182,7 @@ except ImportError:
     # 瞄准配置
     AIM_CAMERA_RANGE = 400
     AIM_SENSITIVITY = 1
+    AIM_OFFSET_LERP = 0.25
 
     # 网络配置
     SERVER_PORT = 5555

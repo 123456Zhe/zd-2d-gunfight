@@ -113,6 +113,113 @@ class EnhancedAIPlayer:
         self.last_known_enemy_pos = None
         self.last_sound_time = 0
 
+        # 瞄准技巧：目标速度估计 + 提前量 + 难度误差
+        self.enemy_tracks = {}  # 敌人 id -> {pos, time}
+        self.enemy_velocity = {}  # 敌人 id -> 估计速度
+        self.aim_error = 0.0  # 当前瞄准误差（度）
+        self.aim_error_target = 0.0  # 误差的目标值
+        self.last_aim_error_time = 0.0
+
+    def _get_lead_factor(self):
+        """预判能力：越强的AI越会打提前量"""
+        if self.difficulty == "easy":
+            return 0.35
+        if self.difficulty == "normal":
+            return 0.75
+        return 1.0
+
+    def track_enemy_motion(self, enemies):
+        """根据敌人位置变化估算其速度，用于计算射击提前量"""
+        now = time.time()
+        for enemy in enemies:
+            enemy_id = enemy.get("id")
+            if enemy_id is None:
+                continue
+
+            pos = pygame.Vector2(enemy.get("pos", (0, 0)))
+            track = self.enemy_tracks.get(enemy_id)
+            if track is not None:
+                elapsed = now - track["time"]
+                if 0.02 < elapsed < 1.0:
+                    velocity = (pos - track["pos"]) / elapsed
+                    previous = self.enemy_velocity.get(enemy_id)
+                    if previous is None:
+                        self.enemy_velocity[enemy_id] = velocity
+                    else:
+                        self.enemy_velocity[enemy_id] = previous.lerp(velocity, 0.4)
+
+            self.enemy_tracks[enemy_id] = {"pos": pos, "time": now}
+
+    def _update_aim_error(self, dt):
+        """瞄准误差缓慢漂移，短时间内保持稳定，避免每帧乱跳"""
+        now = time.time()
+        if now - self.last_aim_error_time > 0.25:
+            self.last_aim_error_time = now
+            self.aim_error_target = random.uniform(-self.accuracy, self.accuracy)
+        self.aim_error += (self.aim_error_target - self.aim_error) * min(1.0, 6.0 * dt)
+
+    def aim_target_for_angle(self, desired_angle):
+        """找出当前朝向最接近的敌人（就是正在瞄的那个）"""
+        if not self.enemy_tracks:
+            return None
+
+        aim_dir = pygame.Vector2(
+            math.cos(math.radians(desired_angle)), -math.sin(math.radians(desired_angle))
+        )
+        min_dot = math.cos(math.radians(35.0))
+        best = None
+        best_dot = min_dot
+
+        for enemy_id, track in self.enemy_tracks.items():
+            to_enemy = track["pos"] - self.pos
+            distance = to_enemy.length()
+            if distance < 1.0:
+                continue
+            dot = to_enemy.normalize().dot(aim_dir)
+            if dot > best_dot:
+                best_dot = dot
+                best = (enemy_id, track["pos"], distance)
+
+        return best
+
+    def apply_aim_skill(self, desired_angle, dt):
+        """在行为树给出的朝向上加入提前量与难度误差"""
+        self._update_aim_error(dt)
+        angle = desired_angle
+
+        target = self.aim_target_for_angle(desired_angle)
+        if target is not None and BULLET_SPEED > 0:
+            enemy_id, target_pos, distance = target
+            velocity = self.enemy_velocity.get(enemy_id)
+            if velocity is not None and velocity.length() > 1.0:
+                flight_time = distance / BULLET_SPEED
+                aim_point = target_pos + velocity * (flight_time * self._get_lead_factor())
+                dx = aim_point.x - self.pos.x
+                dy = aim_point.y - self.pos.y
+                if abs(dx) > 1e-6 or abs(dy) > 1e-6:
+                    angle = math.degrees(math.atan2(-dy, dx))
+
+        return angle + self.aim_error
+
+    def is_line_clear_of_allies(self, allies, angle):
+        """射击方向上是否挡着队友（避免误伤/浪费子弹）"""
+        if not allies:
+            return True
+
+        aim_dir = pygame.Vector2(
+            math.cos(math.radians(angle)), -math.sin(math.radians(angle))
+        )
+        for ally in allies:
+            to_ally = pygame.Vector2(ally.get("pos", (0, 0))) - self.pos
+            forward = to_ally.dot(aim_dir)
+            if forward <= 0 or forward > 800:
+                continue
+            lateral = abs(to_ally.cross(aim_dir))
+            if lateral < PLAYER_RADIUS * 2.2:
+                return False
+
+        return True
+
     def _get_reaction_time(self):
         """根据难度获取反应时间"""
         if self.difficulty == "easy":
@@ -597,6 +704,18 @@ class EnhancedAIPlayer:
         action = self.behavior_tree.tick(
             self, enemies, game_map, team_manager=team_manager, allies=allies, dt=dt
         )
+
+        # 瞄准技巧：根据敌人移动打提前量，并叠加难度相关的瞄准误差
+        self.track_enemy_motion(enemies)
+        raw_angle = action.get("angle", self.angle)
+        self.angle = raw_angle
+        action["angle"] = self.apply_aim_skill(raw_angle, dt)
+
+        # 射击线上有队友时不开火
+        if action.get("shoot") and not self.is_line_clear_of_allies(
+            allies, action["angle"]
+        ):
+            action["shoot"] = False
 
         # 检查门交互
         door_to_open = self.check_door_interaction()

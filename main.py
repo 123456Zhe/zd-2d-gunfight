@@ -37,6 +37,11 @@ else:
     print("[AI系统] 使用原版AI系统")
 
 from map import Map, Door
+from camera import Camera
+
+# 视野射线长度上限：覆盖整张地图对角线，等效于取消视距限制
+# （射线仍会被墙壁和门板挡住，只是不再有固定长度截断）
+VISION_MAX_RANGE = ROOM_SIZE * 3 * 1.5
 from network import NetworkManager, ChatMessage, generate_default_player_name
 from player import Player
 from weapons import MeleeWeapon, Bullet
@@ -357,6 +362,10 @@ class Game:
         self.clock = pygame.time.Clock()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("游戏")
+
+        # 相机：把世界坐标变换到屏幕坐标（含跟随朝向的旋转）
+        self.camera = Camera()
+        self.camera_follow = pygame.Vector2(0, 0)  # 平滑跟随玩家的相机中心
 
         # 游戏状态
         self.state = "MENU"  # MENU, SCANNING, CONNECTING, PLAYING, ERROR
@@ -872,12 +881,13 @@ class Game:
             )
             self.other_players = {}  # 存储其他玩家
 
-            # 初始化游戏地图（使用九宫格地图）
-            self.game_map = Map()
+            # 初始化游戏地图（地图类型由 settings.json 的 map.type 决定）
+            self.game_map = Map(MAP_TYPE)
             self.bullets = []  # 本地子弹对象
             self.grenades = []  # 飞行手雷列表（由服务端状态同步）
             self.last_grenade_explosion = None  # 爆炸特效状态
-            self.camera_offset = pygame.Vector2(0, 0)
+            self.camera_follow = pygame.Vector2(self.player.pos)
+            self.camera.set_view(self.player.pos, 0.0)
             
             # 初始化道具系统
             from items import create_default_item_manager
@@ -953,36 +963,29 @@ class Game:
                 elif event.key == K_g:  # 按G投掷手雷
                     if self.player and not self.player.is_dead and hasattr(self.player, 'grenades'):
                         if self.player.grenades > 0:
-                            mouse_pos = pygame.mouse.get_pos()
-                            world_pos = pygame.Vector2(
-                                mouse_pos[0] + self.camera_offset.x,
-                                mouse_pos[1] + self.camera_offset.y
+                            # 沿当前朝向投掷
+                            direction = pygame.Vector2(
+                                math.cos(math.radians(self.player.angle)),
+                                -math.sin(math.radians(self.player.angle)),
                             )
-                            direction = world_pos - self.player.pos
-                            if direction.length() > 0:
-                                # 交由服务端权威生成并模拟（含网络同步与伤害结算）
-                                self.network_manager.request_throw_grenade(
-                                    [self.player.pos.x, self.player.pos.y],
-                                    [direction.x, direction.y],
-                                )
+                            # 交由服务端权威生成并模拟（含网络同步与伤害结算）
+                            self.network_manager.request_throw_grenade(
+                                [self.player.pos.x, self.player.pos.y],
+                                [direction.x, direction.y],
+                            )
             elif event.type == MOUSEBUTTONDOWN:
                 if event.button == 1 and not self.player.is_dead:  # 左键按下且未死亡
                     if self.player.weapon_type == "melee":  # 近战武器时触发轻击
                         self.player.start_melee_attack(is_heavy=False)
                     else:  # 其他武器时射击
-                        self.player.shooting = True
+                        self.player.mouse_shooting = True
                 elif event.button == 3 and not self.player.is_dead:  # 右键按下
                     if self.player.weapon_type == "melee":  # 近战武器时触发重击
                         self.player.start_melee_attack(is_heavy=True)
-                    else:  # 其他武器时瞄准
-                        self.player.is_aiming = True
             elif event.type == MOUSEBUTTONUP:
                 if event.button == 1:  # 左键释放
                     if self.player.weapon_type != "melee":  # 非近战武器时停止射击
-                        self.player.shooting = False
-                elif event.button == 3:  # 右键释放
-                    if self.player.weapon_type != "melee":  # 非近战武器时停止瞄准
-                        self.player.is_aiming = False
+                        self.player.mouse_shooting = False
 
     def update(self, dt):
         # 检查网络连接状态
@@ -1016,6 +1019,7 @@ class Game:
                             self.id = ai.id
                             self.pos = ai.pos
                             self.is_dead = ai.is_dead
+                            self.source = ai  # AI 每帧可能重新绑定 pos，这里保留真实对象
 
                     wrapper = AIPlayerWrapper(ai_player)
                     all_players[ai_id] = wrapper
@@ -1198,19 +1202,26 @@ class Game:
                     grenade.update(dt, grenade_walls)
 
         # 更新门
+        door_progress_snapshot = {
+            id(door): door.animation_progress for door in self.game_map.doors
+        }
         self.game_map.update_doors(dt, self.network_manager)
 
-        # 更新相机（考虑瞄准偏移）
+        # 门板扫到玩家时把玩家推开
+        self.resolve_door_push(all_players, door_progress_snapshot)
+
+        # 更新相机：位置平滑跟随玩家，瞄准偏移直接叠加。
+        # 偏移方向跟随朝向，若连它一起平滑，开镜转身时相机会明显拖尾。
         if not self.player.is_dead and not self.player.is_respawning:
-            target_offset = pygame.Vector2(
-                self.player.pos.x - SCREEN_WIDTH / 2,
-                self.player.pos.y - SCREEN_HEIGHT / 2,
-            )
+            self.camera_follow += (
+                self.player.pos - self.camera_follow
+            ) * CAMERA_FOLLOW_LERP
 
-            # 添加瞄准偏移
-            target_offset += self.player.aim_offset
+        target_center = self.camera_follow + self.player.aim_offset
 
-            self.camera_offset += (target_offset - self.camera_offset) * 0.1
+        # 相机跟随朝向旋转：玩家正前方始终朝向屏幕上方
+        angle = (90.0 - self.player.angle) % 360 if ROTATE_CAMERA else 0.0
+        self.camera.set_view(target_center, angle)
 
         # 检测附近的脚步声
         self.detect_nearby_footsteps()
@@ -1227,6 +1238,69 @@ class Game:
             self.hit_effect_time -= dt
             if self.hit_effect_time < 0:
                 self.hit_effect_time = 0
+
+    def is_circle_free(self, center, radius, ignore_door=None):
+        """圆形位置是否不与墙壁或其它门板重叠"""
+        rect = pygame.Rect(
+            center.x - radius, center.y - radius, radius * 2, radius * 2
+        )
+
+        for wall in self.game_map.walls:
+            if rect.colliderect(wall):
+                return False
+
+        for door in self.game_map.doors:
+            if door is ignore_door:
+                continue
+            if door.check_collision(rect):
+                return False
+
+        return True
+
+    def resolve_door_push(self, all_players, progress_snapshot):
+        """门板旋转扫到玩家时把玩家推开；玩家被墙夹住时门也停下来"""
+        targets = []
+        if self.player is not None:
+            targets.append(self.player)
+        # 服务端权威模拟所有玩家（含AI）；客户端只纠正自己，避免和插值打架
+        if self.network_manager is not None and self.network_manager.is_server:
+            ai_players = getattr(self, "ai_players", {})
+            for pid, player in all_players.items():
+                if player is self.player:
+                    continue
+                # AI 在 all_players 里可能只是网络同步出来的副本，用真正的 AI 对象
+                ai_entity = ai_players.get(pid)
+                targets.append(ai_entity if ai_entity is not None else player)
+
+        for door in self.game_map.doors:
+            for player in targets:
+                # all_players 里可能混有用于碰撞检测的轻量 AI 包装对象，
+                # 它每帧可能被重新绑定 pos，所以要通过 source 取真实对象
+                entity = getattr(player, "source", player)
+
+                if getattr(entity, "is_dead", False) or getattr(entity, "is_respawning", False):
+                    continue
+
+                pos = getattr(entity, "pos", None)
+                if not isinstance(pos, pygame.Vector2):
+                    continue
+
+                pushed = door.resolve_circle(pos, PLAYER_RADIUS)
+                if pushed is None:
+                    continue
+
+                if self.is_circle_free(pushed, PLAYER_RADIUS, ignore_door=door):
+                    pos.update(pushed)
+                    if hasattr(entity, "position"):
+                        entity.position = entity.pos
+                else:
+                    # 玩家被墙夹住推不动：门回退到这一帧之前的角度
+                    previous = progress_snapshot.get(id(door))
+                    if previous is not None and previous != door.animation_progress:
+                        door.animation_progress = previous
+                        door.is_open = abs(previous) >= 1.0
+                        door.update_rect()
+                    break
 
     def is_position_safe(self, x, y):
         """检查位置是否安全（不与墙壁或门碰撞）"""
@@ -1477,6 +1551,13 @@ class Game:
                     if not door.is_open:
                         # AI开门
                         door.open()
+                        try:
+                            door_index = self.game_map.doors.index(door)
+                            self.network_manager.update_door(
+                                door_index, door.get_state()
+                            )
+                        except ValueError:
+                            pass
                         dprint(f"[AI门交互] AI玩家{ai_id}开启了门")
 
                 # 处理静步状态
@@ -1645,7 +1726,7 @@ class Game:
             is_aiming = getattr(self.player, 'is_aiming', False)
             self.item_manager.draw(
                 self.screen,
-                self.camera_offset,
+                self.camera,
                 player_pos,
                 player_angle,
                 self.game_map.walls,
@@ -1658,7 +1739,7 @@ class Game:
             if self.show_vision and not self.player.is_dead:
                 bullet.draw(
                     self.screen,
-                    self.camera_offset,
+                    self.camera,
                     self.player.pos,
                     self.player.angle,
                     self.game_map.walls,
@@ -1666,18 +1747,18 @@ class Game:
                     self.player.is_aiming,
                 )
             else:
-                bullet.draw(self.screen, self.camera_offset)
+                bullet.draw(self.screen, self.camera)
         
         # 绘制飞行手雷
         for grenade in self.grenades:
-            grenade.draw(self.screen, self.camera_offset)
+            grenade.draw(self.screen, self.camera)
         
         if self.last_grenade_explosion:
             elapsed = time.time() - self.last_grenade_explosion['time']
             if elapsed < 1.0:
-                screen_pos = (
-                    self.last_grenade_explosion['pos'].x - self.camera_offset.x,
-                    self.last_grenade_explosion['pos'].y - self.camera_offset.y
+                screen_pos = self.camera.to_screen(
+                    self.last_grenade_explosion['pos'].x,
+                    self.last_grenade_explosion['pos'].y,
                 )
                 alpha = int(255 * (1.0 - elapsed))
                 from items import Grenade
@@ -1693,7 +1774,7 @@ class Game:
             if self.show_vision and not self.player.is_dead:
                 player.draw(
                     self.screen,
-                    self.camera_offset,
+                    self.camera,
                     self.player.pos,
                     self.player.angle,
                     self.game_map.walls,
@@ -1706,7 +1787,7 @@ class Game:
             else:
                 player.draw(
                     self.screen,
-                    self.camera_offset,
+                    self.camera,
                     None,
                     None,
                     None,
@@ -1719,7 +1800,7 @@ class Game:
         # 本地玩家总是绘制
         self.player.draw(
             self.screen,
-            self.camera_offset,
+            self.camera,
             None,
             None,
             None,
@@ -1759,11 +1840,8 @@ class Game:
         # 创建一个透明表面用于绘制视野
         vision_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
 
-        # 玩家屏幕位置
-        player_screen_pos = (
-            self.player.pos.x - self.camera_offset.x,
-            self.player.pos.y - self.camera_offset.y,
-        )
+        # 玩家屏幕位置（相机中心即屏幕中心）
+        player_screen_pos = self.camera.to_screen_vec(self.player.pos)
 
         # 使用光线投射算法计算可见区域
         half_fov = current_fov / 2
@@ -1786,20 +1864,20 @@ class Game:
                 (self.player.pos.x - wall_center_x) ** 2
                 + (self.player.pos.y - wall_center_y) ** 2
             )
-            if distance <= VISION_RANGE * 1.5:  # 稍微扩大检查范围
+            if distance <= VISION_MAX_RANGE:  # 稍微扩大检查范围
                 potential_walls.append(wall)
 
         potential_doors = []
         for door in self.game_map.doors:
-            if not door.is_open:
-                door_center_x = door.rect.x + door.rect.width / 2
-                door_center_y = door.rect.y + door.rect.height / 2
-                distance = math.sqrt(
-                    (self.player.pos.x - door_center_x) ** 2
-                    + (self.player.pos.y - door_center_y) ** 2
-                )
-                if distance <= VISION_RANGE * 1.5:
-                    potential_doors.append(door)
+            door_center_x = door.original_rect.centerx
+            door_center_y = door.original_rect.centery
+            distance = math.sqrt(
+                (self.player.pos.x - door_center_x) ** 2
+                + (self.player.pos.y - door_center_y) ** 2
+            )
+            reach = VISION_MAX_RANGE + max(door.panel_length, door.panel_thickness)
+            if distance <= reach:
+                potential_doors.append(door)
 
         # 使用批处理方式处理光线
         batch_size = 5  # 每批处理的光线数量
@@ -1811,8 +1889,8 @@ class Game:
             for i in range(batch_start, min(batch_start + batch_size, ray_count + 1)):
                 angle = self.player.angle - half_fov + (angle_step * i)
                 angle_rad = math.radians(angle)
-                ray_end_x = self.player.pos.x + math.cos(angle_rad) * VISION_RANGE
-                ray_end_y = self.player.pos.y - math.sin(angle_rad) * VISION_RANGE
+                ray_end_x = self.player.pos.x + math.cos(angle_rad) * VISION_MAX_RANGE
+                ray_end_y = self.player.pos.y - math.sin(angle_rad) * VISION_MAX_RANGE
                 ray_end = pygame.Vector2(ray_end_x, ray_end_y)
                 batch_rays.append(ray_end)
                 batch_angles.append(angle)
@@ -1833,11 +1911,9 @@ class Game:
                             closest_distance = distance
                             closest_hit = intersection
 
-                # 检查门碰撞
+                # 检查门碰撞（按门板当前旋转后的实际形状）
                 for door in potential_doors:
-                    intersection = self.get_line_rect_intersection(
-                        self.player.pos, ray_end, door.rect
-                    )
+                    intersection = door.line_intersection(self.player.pos, ray_end)
                     if intersection:
                         distance = self.player.pos.distance_to(intersection)
                         if distance < closest_distance:
@@ -1851,9 +1927,7 @@ class Game:
                     final_point = ray_end
 
                 # 转换为屏幕坐标并添加到可见点列表
-                screen_x = final_point.x - self.camera_offset.x
-                screen_y = final_point.y - self.camera_offset.y
-                visible_points.append((screen_x, screen_y))
+                visible_points.append(self.camera.to_screen(final_point.x, final_point.y))
 
         # 绘制可见区域多边形
         if len(visible_points) >= 3:
@@ -1965,9 +2039,8 @@ class Game:
                             teammate_angle_step = teammate_fov / teammate_ray_count
 
                             # 收集队友的可见点
-                            teammate_screen_pos = (
-                                teammate.pos.x - self.camera_offset.x,
-                                teammate.pos.y - self.camera_offset.y,
+                            teammate_screen_pos = self.camera.to_screen(
+                                teammate.pos.x, teammate.pos.y
                             )
                             teammate_visible_points = [teammate_screen_pos]
 
@@ -1980,20 +2053,22 @@ class Game:
                                     (teammate.pos.x - wall_center_x) ** 2
                                     + (teammate.pos.y - wall_center_y) ** 2
                                 )
-                                if distance <= VISION_RANGE * 1.5:
+                                if distance <= VISION_MAX_RANGE:
                                     teammate_potential_walls.append(wall)
 
                             teammate_potential_doors = []
                             for door in self.game_map.doors:
-                                if not door.is_open:
-                                    door_center_x = door.rect.x + door.rect.width / 2
-                                    door_center_y = door.rect.y + door.rect.height / 2
-                                    distance = math.sqrt(
-                                        (teammate.pos.x - door_center_x) ** 2
-                                        + (teammate.pos.y - door_center_y) ** 2
-                                    )
-                                    if distance <= VISION_RANGE * 1.5:
-                                        teammate_potential_doors.append(door)
+                                door_center_x = door.original_rect.centerx
+                                door_center_y = door.original_rect.centery
+                                distance = math.sqrt(
+                                    (teammate.pos.x - door_center_x) ** 2
+                                    + (teammate.pos.y - door_center_y) ** 2
+                                )
+                                reach = VISION_MAX_RANGE + max(
+                                    door.panel_length, door.panel_thickness
+                                )
+                                if distance <= reach:
+                                    teammate_potential_doors.append(door)
 
                             # 为队友进行射线检测
                             for i in range(teammate_ray_count + 1):
@@ -2004,10 +2079,10 @@ class Game:
                                 )
                                 angle_rad = math.radians(angle)
                                 ray_end_x = (
-                                    teammate.pos.x + math.cos(angle_rad) * VISION_RANGE
+                                    teammate.pos.x + math.cos(angle_rad) * VISION_MAX_RANGE
                                 )
                                 ray_end_y = (
-                                    teammate.pos.y - math.sin(angle_rad) * VISION_RANGE
+                                    teammate.pos.y - math.sin(angle_rad) * VISION_MAX_RANGE
                                 )
                                 ray_end = pygame.Vector2(ray_end_x, ray_end_y)
 
@@ -2027,10 +2102,10 @@ class Game:
                                             closest_distance = distance
                                             closest_hit = intersection
 
-                                # 检查门碰撞
+                                # 检查门碰撞（按门板当前旋转后的实际形状）
                                 for door in teammate_potential_doors:
-                                    intersection = self.get_line_rect_intersection(
-                                        teammate.pos, ray_end, door.rect
+                                    intersection = door.line_intersection(
+                                        teammate.pos, ray_end
                                     )
                                     if intersection:
                                         distance = teammate.pos.distance_to(
@@ -2047,9 +2122,9 @@ class Game:
                                     final_point = ray_end
 
                                 # 转换为屏幕坐标
-                                screen_x = final_point.x - self.camera_offset.x
-                                screen_y = final_point.y - self.camera_offset.y
-                                teammate_visible_points.append((screen_x, screen_y))
+                                teammate_visible_points.append(
+                                    self.camera.to_screen(final_point.x, final_point.y)
+                                )
 
                             # 绘制队友的视野区域
                             if len(teammate_visible_points) >= 3:
@@ -2074,34 +2149,22 @@ class Game:
                         self.screen,
                         VISION_GROUND,
                         (int(player_screen_pos[0]), int(player_screen_pos[1])),
-                        min(VISION_RANGE, 200),
+                        VISION_MAX_RANGE,
                         0,
                     )
 
     def get_line_rect_intersection(self, start, end, rect):
-        """获取线段与矩形的交点"""
-        # 检查与四条边的交点
-        edges = [
-            ((rect.left, rect.top), (rect.left, rect.bottom)),  # 左边
-            ((rect.right, rect.top), (rect.right, rect.bottom)),  # 右边
-            ((rect.left, rect.top), (rect.right, rect.top)),  # 上边
-            ((rect.left, rect.bottom), (rect.right, rect.bottom)),  # 下边
-        ]
+        """获取线段与矩形的最近交点（Rect.clipline 为 C 实现，比逐边求交快）"""
+        clipped = rect.clipline((start[0], start[1]), (end[0], end[1]))
+        if not clipped:
+            return None
 
-        closest_point = None
-        min_distance = float("inf")
-
-        for edge in edges:
-            intersection = self.get_line_line_intersection(
-                start, end, pygame.Vector2(edge[0]), pygame.Vector2(edge[1])
-            )
-            if intersection:
-                distance = start.distance_to(intersection)
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_point = intersection
-
-        return closest_point
+        point_a = pygame.Vector2(clipped[0])
+        point_b = pygame.Vector2(clipped[1])
+        start_vec = pygame.Vector2(start)
+        if start_vec.distance_squared_to(point_a) <= start_vec.distance_squared_to(point_b):
+            return point_a
+        return point_b
 
     def get_line_line_intersection(self, p1, p2, p3, p4):
         """获取两条线段的交点"""
@@ -2126,34 +2189,32 @@ class Game:
 
     def render_full_ground(self):
         """绘制完整的灰色地面（不使用视角系统时）"""
-        # 绘制一个大的灰色矩形作为地面
-        ground_rect = pygame.Rect(
-            -self.camera_offset.x, -self.camera_offset.y, ROOM_SIZE * 3, ROOM_SIZE * 3
+        # 绘制一个大的灰色矩形作为地面（随相机旋转）
+        size = ROOM_SIZE * 3
+        ground_points = [(0, 0), (size, 0), (size, size), (0, size)]
+        pygame.draw.polygon(
+            self.screen, LIGHT_GRAY, self.camera.to_screen_polygon(ground_points)
         )
-        pygame.draw.rect(self.screen, LIGHT_GRAY, ground_rect)
 
     def render_walls_and_doors(self):
         """绘制所有墙壁和门（始终显示）"""
-        # 绘制所有墙壁
+        # 绘制所有墙壁（随相机旋转，需要按多边形绘制）
         for wall in self.game_map.walls:
-            wall_rect = pygame.Rect(
-                wall.x - self.camera_offset.x,
-                wall.y - self.camera_offset.y,
-                wall.width,
-                wall.height,
+            corners = (
+                (wall.left, wall.top),
+                (wall.right, wall.top),
+                (wall.right, wall.bottom),
+                (wall.left, wall.bottom),
             )
-            pygame.draw.rect(self.screen, GRAY, wall_rect)
+            pygame.draw.polygon(
+                self.screen, GRAY, self.camera.to_screen_polygon(corners)
+            )
 
-        # 绘制所有门
+        # 绘制所有门（门板绕铰链旋转）
         for door in self.game_map.doors:
-            if door.animation_progress < 1.0:  # 只绘制未完全打开的门
-                door_rect = pygame.Rect(
-                    door.rect.x - self.camera_offset.x,
-                    door.rect.y - self.camera_offset.y,
-                    door.rect.width,
-                    door.rect.height,
-                )
-                pygame.draw.rect(self.screen, door.get_color(False), door_rect)
+            points = self.camera.to_screen_polygon(door.get_corners())
+            pygame.draw.polygon(self.screen, door.get_color(False), points)
+            pygame.draw.polygon(self.screen, DARK_DOOR_COLOR, points, 1)
 
     def draw_fov_indicator(self):
         """绘制视角指示线"""
@@ -2382,10 +2443,7 @@ class Game:
                         "direction": direction,
                         "is_shooting": player.shooting,  # 标记是否为开枪声音
                         "sound_intensity": sound_intensity,  # 声音强度
-                        "screen_pos": pygame.Vector2(
-                            player.pos.x - self.camera_offset.x,
-                            player.pos.y - self.camera_offset.y,
-                        ),
+                        "screen_pos": self.camera.to_screen_vec(player.pos),
                     }
                 )
 
@@ -2394,6 +2452,10 @@ class Game:
                 )
 
         self.nearby_sound_players = nearby_players
+
+    def world_dir_to_screen(self, direction):
+        """把世界方向向量转换到旋转后的屏幕方向"""
+        return self.camera.rotate_direction(direction)
 
     def render_footstep_indicators(self):
         """渲染方向指示器（箭头指向声音来源，根据声音强度调整透明度）"""
@@ -2423,8 +2485,9 @@ class Game:
 
             # 计算箭头位置（屏幕边缘）
             arrow_distance = 80
-            arrow_x = center_x + direction.x * arrow_distance
-            arrow_y = center_y + direction.y * arrow_distance
+            screen_direction = self.world_dir_to_screen(direction)
+            arrow_x = center_x + screen_direction.x * arrow_distance
+            arrow_y = center_y + screen_direction.y * arrow_distance
 
             # 创建指示器表面
             indicator_surface = pygame.Surface(

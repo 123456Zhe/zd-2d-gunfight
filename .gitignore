@@ -15,4 +15,12 @@ dist/*
 build/*
 ZD-2D-Gunfight.spec
 nul
-nuitka-crash-report.xml 
+.venv/
+.tmp/
+nuitka-crash-report.xml
+
+# RL 训练：虚拟环境与训练产物（rl/ 下的源码仍然纳入版本控制）
+rl/data/
+rl/models/
+rl/checkpoints/
+rl/logs/

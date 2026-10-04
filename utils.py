@@ -67,15 +67,15 @@ def friendly_fire_enabled(game_rules) -> bool:
 
 
 def has_line_of_sight(start_pos, end_pos, walls, doors):
-    """检查两点之间是否有视线（不被墙壁或关闭的门阻挡）"""
+    """检查两点之间是否有视线（不被墙壁或门板阻挡）"""
     # 检查与墙壁的碰撞
     for wall in walls:
         if line_intersects_rect(start_pos, end_pos, wall):
             return False
     
-    # 检查与关闭的门的碰撞
+    # 检查与门板的碰撞（按门板当前旋转后的实际形状判定）
     for door in doors:
-        if not door.is_open and line_intersects_rect(start_pos, end_pos, door.rect):
+        if door.line_intersects(start_pos, end_pos):
             return False
     
     return True
@@ -114,28 +114,11 @@ def create_vision_fan_points(player_pos, player_angle, fov_degrees, vision_range
 # ============================================================================
 
 def line_intersects_rect(start, end, rect):
-    """检查线段是否与矩形相交"""
-    # 获取矩形的四条边
-    left = rect.left
-    right = rect.right
-    top = rect.top
-    bottom = rect.bottom
-    
-    # 检查线段是否与矩形的四条边相交
-    # 左边
-    if line_intersects_line(start, end, (left, top), (left, bottom)):
-        return True
-    # 右边
-    if line_intersects_line(start, end, (right, top), (right, bottom)):
-        return True
-    # 上边
-    if line_intersects_line(start, end, (left, top), (right, top)):
-        return True
-    # 下边
-    if line_intersects_line(start, end, (left, bottom), (right, bottom)):
-        return True
-    
-    return False
+    """检查线段是否与矩形相交（含线段完全落在矩形内的情况）
+
+    使用 pygame 的 Rect.clipline（C 实现），比逐条边做线段求交快得多。
+    """
+    return bool(rect.clipline((start[0], start[1]), (end[0], end[1])))
 
 
 def line_intersects_line(p1, p2, p3, p4):

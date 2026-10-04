@@ -111,17 +111,14 @@ class Item:
                 self.respawn_time_remaining = 0
                 self.is_active = True
     
-    def draw(self, surface: pygame.Surface, camera_offset: pygame.Vector2,
+    def draw(self, surface: pygame.Surface, camera,
              player_pos: pygame.Vector2 = None, player_angle: float = None,
              walls: List = None, doors: List = None, is_aiming: bool = False):
         """绘制道具"""
         if not self.is_active:
             return
         
-        screen_pos = pygame.Vector2(
-            self.pos.x - camera_offset.x,
-            self.pos.y - camera_offset.y
-        )
+        screen_pos = camera.to_screen_vec(self.pos)
         
         if player_pos is not None and player_angle is not None and walls is not None and doors is not None:
             from utils import is_visible
@@ -420,12 +417,9 @@ class ThrownGrenade:
         
         return targets
     
-    def draw(self, surface: pygame.Surface, camera_offset: pygame.Vector2):
+    def draw(self, surface: pygame.Surface, camera):
         """绘制手雷"""
-        screen_pos = (
-            self.pos.x - camera_offset.x,
-            self.pos.y - camera_offset.y
-        )
+        screen_pos = camera.to_screen(self.pos.x, self.pos.y)
         
         pygame.draw.circle(surface, (100, 100, 100), (int(screen_pos[0]), int(screen_pos[1])), 8)
         pygame.draw.circle(surface, (50, 50, 50), (int(screen_pos[0]), int(screen_pos[1])), 8, 2)
@@ -654,11 +648,13 @@ class ItemManager:
         walls = getattr(game_map, 'walls', [])
         doors = getattr(game_map, 'doors', [])
         
-        # 只有关闭的门才阻挡视线
-        obstacles = list(walls) + [d.rect for d in doors if not d.is_open]
+        for wall in walls:
+            if self._line_intersects_rect(from_pos, to_pos, wall):
+                return False
         
-        for obstacle in obstacles:
-            if self._line_intersects_rect(from_pos, to_pos, obstacle):
+        # 按门板当前旋转后的实际形状判断遮挡
+        for door in doors:
+            if door.line_intersects(from_pos, to_pos):
                 return False
         
         return True
@@ -736,12 +732,12 @@ class ItemManager:
             if item_id in self.items:
                 del self.items[item_id]
     
-    def draw(self, surface: pygame.Surface, camera_offset: pygame.Vector2,
+    def draw(self, surface: pygame.Surface, camera,
              player_pos: pygame.Vector2 = None, player_angle: float = None,
              walls: List = None, doors: List = None, is_aiming: bool = False):
         """绘制所有活跃道具"""
         for item in self.items.values():
-            item.draw(surface, camera_offset, player_pos, player_angle, walls, doors, is_aiming)
+            item.draw(surface, camera, player_pos, player_angle, walls, doors, is_aiming)
 
 
 def create_default_item_manager() -> ItemManager:

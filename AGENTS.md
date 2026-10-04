@@ -92,7 +92,8 @@ else:
 - `network.py`: UDP communication, state sync
 - `ai_player_enhanced.py`: Behavior tree AI
 - `team.py`: Team management system
-- `map.py`: Room-based map generation
+- `map.py`: Room-based map generation, hinged doors (oriented-box collision)
+- `camera.py`: World-to-screen transform with camera rotation
 - `game_commands.py`: In-game command system
 
 ## In-Game Commands

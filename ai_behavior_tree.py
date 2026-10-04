@@ -219,28 +219,39 @@ class HasEnemyInSight(ConditionNode):
         sight_range = 400 if is_aggressive else 300
         close_range = 200  # 近距离范围（即使没有视线也尝试攻击）
         
-        closest_enemy = None
-        closest_distance = float('inf')
-        closest_has_los = False
+        best_enemy = None
+        best_score = float('-inf')
+        best_has_los = False
         
         for enemy in filtered_enemies:
             enemy_pos = pygame.Vector2(*enemy['pos'])
             distance = ai_player.pos.distance_to(enemy_pos)
             
-            if distance <= sight_range:
-                has_los = ai_player.has_line_of_sight(enemy_pos, game_map)
-                
-                # 优先选择有视线的敌人，如果距离很近也考虑
-                if has_los or (distance <= close_range and is_aggressive):
-                    if distance < closest_distance or (has_los and not closest_has_los):
-                        closest_enemy = enemy
-                        closest_distance = distance
-                        closest_has_los = has_los
+            if distance > sight_range:
+                continue
+            
+            has_los = ai_player.has_line_of_sight(enemy_pos, game_map)
+            
+            # 优先选择有视线的敌人，如果距离很近也考虑
+            if not has_los and not (distance <= close_range and is_aggressive):
+                continue
+            
+            # 威胁评估：能打到的、近的、残血的、正在开火的优先
+            score = 100.0 if has_los else 0.0
+            score += max(0.0, 60.0 - distance / 10.0)
+            score += max(0.0, 100.0 - enemy.get('health', 100)) * 0.6
+            if enemy.get('shooting', False):
+                score += 30.0
+            
+            if score > best_score:
+                best_score = score
+                best_enemy = enemy
+                best_has_los = has_los
         
-        if closest_enemy:
-            blackboard['target_enemy'] = closest_enemy
-            blackboard['target_pos'] = pygame.Vector2(*closest_enemy['pos'])
-            blackboard['has_line_of_sight'] = closest_has_los  # 记录是否有视线
+        if best_enemy:
+            blackboard['target_enemy'] = best_enemy
+            blackboard['target_pos'] = pygame.Vector2(*best_enemy['pos'])
+            blackboard['has_line_of_sight'] = best_has_los  # 记录是否有视线
             return NodeStatus.SUCCESS
         
         return NodeStatus.FAILURE

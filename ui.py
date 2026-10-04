@@ -884,7 +884,7 @@ def draw_hud(screen, hud_state):
 
     # 控制提示
     if not player.is_dead and not player.is_respawning:
-        interact_text = "按E键开/关门"
+        interact_text = "E抓/放门 ←→推门"
         screen.blit(
             font.render(interact_text, True, WHITE),
             (SCREEN_WIDTH - 150, SCREEN_HEIGHT - 120),
@@ -892,9 +892,9 @@ def draw_hud(screen, hud_state):
 
         # 武器控制提示
         if player.weapon_type == "gun":
-            weapon_text = "左键射击 右键瞄准"
+            weapon_text = "←→转向 ↑射击 空格瞄准"
         else:
-            weapon_text = "左键近战攻击"
+            weapon_text = "←→转向 ↑近战攻击"
         screen.blit(
             font.render(weapon_text, True, WHITE),
             (SCREEN_WIDTH - 200, SCREEN_HEIGHT - 90),
@@ -1549,13 +1549,13 @@ class ControlHintsManager:
             self.switch_text = ""
         else:
             # 交互提示
-            self.interact_text = "按E键开/关门"
+            self.interact_text = "E抓/放门 ←→推门"
 
             # 武器提示
             if player.weapon_type == "gun":
-                self.weapon_text = "左键射击 右键瞄准"
+                self.weapon_text = "←→转向 ↑射击 空格瞄准"
             else:
-                self.weapon_text = "左键近战攻击"
+                self.weapon_text = "←→转向 ↑近战攻击"
 
             self.switch_text = "按3切换武器"
 

@@ -254,12 +254,9 @@ class Bullet:
                 
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_aiming=False):
+    def draw(self, surface, camera, player_pos=None, player_angle=None, walls=None, doors=None, is_aiming=False):
         """绘制子弹（考虑视线遮挡）"""
-        bullet_screen_pos = pygame.Vector2(
-            self.pos.x - camera_offset.x,
-            self.pos.y - camera_offset.y
-        )
+        bullet_screen_pos = camera.to_screen_vec(self.pos)
         
         # 根据瞄准状态选择视野角度
         current_fov = 30 if is_aiming else 120

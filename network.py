@@ -825,7 +825,7 @@ class NetworkManager:
             self.active_bullets = bullets_data
 
     def _bullet_hit_world(self, pos, walls, doors):
-        """子弹是否撞到墙壁/关闭的门/越界"""
+        """子弹是否撞到墙壁/门板/越界"""
         import pygame
         r = BULLET_RADIUS
         bullet_rect = pygame.Rect(pos.x - r, pos.y - r, r * 2, r * 2)
@@ -833,7 +833,7 @@ class NetworkManager:
             if bullet_rect.colliderect(wall):
                 return True
         for door in doors:
-            if not door.is_open and door.check_collision(bullet_rect):
+            if door.check_collision(bullet_rect):
                 return True
         map_size = ROOM_SIZE * 3
         if pos.x < 0 or pos.y < 0 or pos.x > map_size or pos.y > map_size:

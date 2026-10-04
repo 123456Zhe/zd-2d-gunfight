@@ -8,6 +8,8 @@ from weapons import MeleeWeapon
 from utils import friendly_fire_enabled, dprint
 import ui
 
+DOOR_SYNC_INTERVAL = 0.05  # 手动推门时的网络同步间隔（秒）
+
 class Player:
     def __init__(self, player_id, x, y, is_local=False, name=None):
         self.id = player_id
@@ -24,12 +26,16 @@ class Player:
         self.is_local = is_local
         self.name = name if name is not None else f"玩家{player_id}"
         self.shooting = False
+        self.mouse_shooting = False  # 鼠标左键按下状态，与上方向键共同决定是否开火
         self.is_dead = False
         self.death_time = 0
         self.respawn_time = 0
         self.is_respawning = False
         self.last_respawn_check = 0
         self.last_door_interaction = 0
+        self.controlled_door = None  # 当前正在用手推的门
+        self.last_door_sync = 0
+        self.door_toggle_held = False  # E 键是否处于按下状态（用于切换抓门）
         
         # 网络位置插值（仅用于其他玩家在网络快照之间的平滑显示）
         self.net_prev_pos = None
@@ -61,6 +67,7 @@ class Player:
         # 新增：瞄准系统
         self.is_aiming = False
         self.aim_offset = pygame.Vector2(0, 0)  # 瞄准时的相机偏移
+        self.aim_offset_length = 0.0  # 偏移长度的平滑值
         
         # 被击中减速效果
         self.hit_slowdown_end_time = 0  # 减速结束时间
@@ -243,26 +250,95 @@ class Player:
         print(f"玩家{self.id}切换到{'近战武器' if self.weapon_type == 'melee' else '枪械'}")
         return True
 
-    def update_aim_offset(self, mouse_pos, screen_center):
-        """更新瞄准偏移"""
-        if self.is_aiming:
-            # 计算鼠标相对于屏幕中心的偏移
-            mouse_offset = pygame.Vector2(
-                mouse_pos[0] - screen_center[0],
-                mouse_pos[1] - screen_center[1]
+    def update_aim_offset(self):
+        """更新瞄准时的相机偏移
+
+        长度平滑过渡、方向立刻跟随朝向，这样开镜转身时相机不会拖尾。
+        """
+        target_length = AIM_CAMERA_RANGE * AIM_SENSITIVITY if self.is_aiming else 0.0
+        self.aim_offset_length += (target_length - self.aim_offset_length) * AIM_OFFSET_LERP
+        if target_length == 0.0 and self.aim_offset_length < 1.0:
+            self.aim_offset_length = 0.0
+        
+        if self.aim_offset_length > 0.0:
+            rad = math.radians(self.angle)
+            self.aim_offset = (
+                pygame.Vector2(math.cos(rad), -math.sin(rad)) * self.aim_offset_length
             )
-            
-            # 限制偏移距离
-            if mouse_offset.length() > AIM_CAMERA_RANGE:
-                mouse_offset = mouse_offset.normalize() * AIM_CAMERA_RANGE
-            
-            # 应用灵敏度
-            self.aim_offset = mouse_offset * AIM_SENSITIVITY
         else:
-            # 平滑回到中心
-            self.aim_offset *= 0.9
-            if self.aim_offset.length() < 1:
-                self.aim_offset = pygame.Vector2(0, 0)
+            self.aim_offset = pygame.Vector2(0, 0)
+
+    def find_nearby_door(self, game_map):
+        """找到抓取范围内最近的一扇门（按门板四个端点的距离判定）"""
+        if game_map is None:
+            return None
+        
+        closest = None
+        min_distance = float("inf")
+        for door in game_map.doors:
+            distance = door.nearest_corner_distance(self.pos)
+            if distance <= DOOR_GRAB_DISTANCE and distance < min_distance:
+                min_distance = distance
+                closest = door
+        return closest
+
+    def sync_controlled_door(self, game_map, network_manager, force=False):
+        """把手动推门的状态同步给网络（限制发送频率）"""
+        door = self.controlled_door
+        if door is None or game_map is None or network_manager is None:
+            return
+        
+        current_time = time.time()
+        if not force and current_time - self.last_door_sync < DOOR_SYNC_INTERVAL:
+            return
+        self.last_door_sync = current_time
+        
+        try:
+            index = game_map.doors.index(door)
+        except ValueError:
+            return
+        network_manager.update_door(index, door.get_state())
+
+    def release_door(self, game_map, network_manager):
+        """松开E键：同步最终状态并放弃对门的控制"""
+        if self.controlled_door is None:
+            return
+        self.sync_controlled_door(game_map, network_manager, force=True)
+        self.controlled_door = None
+
+    def update_door_control(self, dt, game_map, network_manager, keys):
+        """E 键切换是否抓门；抓住后用左右键推门（带加速度与惯性）"""
+        if keys[K_e]:
+            if not self.door_toggle_held:
+                self.door_toggle_held = True
+                if self.controlled_door is None:
+                    self.controlled_door = self.find_nearby_door(game_map)
+                    self.last_door_sync = 0
+                else:
+                    self.release_door(game_map, network_manager)
+        else:
+            self.door_toggle_held = False
+        
+        door = self.controlled_door
+        if door is None:
+            return
+        
+        # 到门板四个端点的最近距离超过抓取距离就自动脱离
+        if door.nearest_corner_distance(self.pos) > DOOR_GRAB_DISTANCE:
+            self.release_door(game_map, network_manager)
+            return
+        
+        direction = 0
+        if keys[K_LEFT]:
+            direction -= 1  # 向左推（屏幕上逆时针）
+        if keys[K_RIGHT]:
+            direction += 1  # 向右推（屏幕上顺时针）
+        
+        if direction == 0:
+            return
+        
+        door.apply_push(direction, dt)
+        self.sync_controlled_door(game_map, network_manager)
 
     def respawn(self, network_manager=None):
         """复活"""
@@ -281,11 +357,14 @@ class Player:
         self.respawn_time = 0
         self.velocity = pygame.Vector2(0, 0)
         self.last_door_interaction = 0  # 重置门交互冷却
+        self.controlled_door = None  # 复活后松开门
+        self.door_toggle_held = False
         
         # 重置武器和瞄准状态
         self.weapon_type = "gun"
         self.is_aiming = False
         self.aim_offset = pygame.Vector2(0, 0)
+        self.aim_offset_length = 0.0
         
         # 重置子弹散布相关属性
         self.last_movement_time = 0
@@ -386,26 +465,61 @@ class Player:
         if is_local_player:
             # 复活由服务端统一处理，客户端不再自行检查复活时间
             if self.is_dead:
+                self.release_door(game_map, network_manager)
                 return
             
             # 只有在非聊天状态下才处理移动和攻击输入
             if not chat_active:
-                # 鼠标控制旋转
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                rel_x = mouse_x - SCREEN_WIDTH / 2
-                rel_y = mouse_y - SCREEN_HEIGHT / 2
-                self.angle = (180 / math.pi) * -math.atan2(rel_y, rel_x)
+                keys = pygame.key.get_pressed()
+                
+                # E 键切换抓门，抓住时左右键用于推门而不是转身
+                self.update_door_control(dt, game_map, network_manager, keys)
+                
+                # 转向：方向键与鼠标水平位置都能改变相机朝向
+                if self.controlled_door is None:
+                    turn_rate = 0.0
+                    if keys[K_LEFT]:
+                        turn_rate += PLAYER_ROTATION_SPEED
+                    if keys[K_RIGHT]:
+                        turn_rate -= PLAYER_ROTATION_SPEED
+
+                    # 鼠标偏离屏幕中心越远，转向越快；中心附近的死区避免误转
+                    mouse_offset = (
+                        pygame.mouse.get_pos()[0] - SCREEN_WIDTH / 2
+                    ) / (SCREEN_WIDTH / 2)
+                    if abs(mouse_offset) > MOUSE_TURN_DEADZONE:
+                        strength = (abs(mouse_offset) - MOUSE_TURN_DEADZONE) / (
+                            1.0 - MOUSE_TURN_DEADZONE
+                        )
+                        turn_rate -= math.copysign(
+                            min(1.0, strength) * MOUSE_TURN_SPEED, mouse_offset
+                        )
+
+                    if turn_rate:
+                        self.angle = (self.angle + turn_rate * dt) % 360
+                
+                # 上方向键开枪（鼠标左键仍可作为备用开火键）
+                self.shooting = bool(keys[K_UP]) or self.mouse_shooting
+                
+                # 空格开镜（仅枪械）
+                self.is_aiming = bool(keys[K_SPACE]) and self.weapon_type == "gun"
                 
                 # 更新瞄准偏移
-                self.update_aim_offset((mouse_x, mouse_y), (SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2))
+                self.update_aim_offset()
                 
-                # 键盘控制移动
-                keys = pygame.key.get_pressed()
+                # 键盘控制移动（WASD 相对视角：W 为屏幕正上方）
+                if ROTATE_CAMERA:
+                    rad = math.radians(self.angle)
+                    forward = pygame.Vector2(math.cos(rad), -math.sin(rad))
+                else:
+                    forward = pygame.Vector2(0, -1)
+                right = pygame.Vector2(-forward.y, forward.x)
+                
                 move_dir = pygame.Vector2(0, 0)
-                if keys[K_w]: move_dir.y -= 1
-                if keys[K_s]: move_dir.y += 1
-                if keys[K_a]: move_dir.x -= 1
-                if keys[K_d]: move_dir.x += 1
+                if keys[K_w]: move_dir += forward
+                if keys[K_s]: move_dir -= forward
+                if keys[K_d]: move_dir += right
+                if keys[K_a]: move_dir -= right
                 
                 # 检测静步状态
                 self.is_walking = keys[K_LSHIFT] or keys[K_RSHIFT]
@@ -539,6 +653,8 @@ class Player:
                 self.shooting = False
                 self.is_making_sound = False
                 self.sound_volume = 0.0
+                # 聊天时松开正在推的门
+                self.release_door(game_map, network_manager)
 
             # 即使在聊天时，物理检测（如近战）也允许完成
             if self.melee_weapon.is_attacking:
@@ -577,10 +693,9 @@ class Player:
                     # 添加墙壁作为障碍物
                     for wall in game_map.walls:
                         obstacles.append(wall)
-                    # 添加门作为障碍物
+                    # 添加门作为障碍物（门板始终有碰撞体积）
                     for door in game_map.doors:
-                        if not door.is_open:  # 只有关闭的门才作为障碍物
-                            obstacles.append(door.rect)
+                        obstacles.append(door.rect)
                 
                 hit_targets = self.melee_weapon.check_hit(self.pos, targets, obstacles)
                 if hit_targets:
@@ -635,18 +750,6 @@ class Player:
             if can_move:
                 self.pos = new_pos
                 self.position = self.pos  # 保持别名同步
-
-        # 门交互检测（只有本地玩家）
-        if (is_local_player and not self.is_dead and not self.is_respawning):
-            keys = pygame.key.get_pressed()
-            if keys[K_e] and current_time - self.last_door_interaction > 0.5:
-                self.last_door_interaction = current_time
-                for i, door in enumerate(game_map.doors):
-                    if door.try_interact(self.pos):
-                        # 发送门状态更新
-                        door_state = door.get_state()
-                        network_manager.update_door(i, door_state)
-                        break
 
         # 从网络同步生命值和死亡状态（只有本地玩家）
         if is_local_player and self.id in network_manager.players:
@@ -762,12 +865,9 @@ class Player:
         
         return False
 
-    def draw(self, surface, camera_offset, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False, is_aiming=False, team_manager=None, local_player_id=None):
+    def draw(self, surface, camera, player_pos=None, player_angle=None, walls=None, doors=None, is_local_player=False, is_aiming=False, team_manager=None, local_player_id=None):
         """绘制玩家（考虑视线遮挡和团队共享视野）"""
-        player_screen_pos = pygame.Vector2(
-            self.pos.x - camera_offset.x,
-            self.pos.y - camera_offset.y
-        )
+        player_screen_pos = camera.to_screen_vec(self.pos)
         
         # 如果不是本地玩家，检查是否可见
         if not is_local_player and player_pos and player_angle and walls and doors:
@@ -813,7 +913,7 @@ class Player:
         
         # 绘制近战攻击效果（仅当使用近战武器时）
         if self.weapon_type == "melee" and self.melee_weapon.is_attacking:
-            self.draw_melee_attack(surface, camera_offset)
+            self.draw_melee_attack(surface, camera)
         
         # 绘制瞄准状态指示
         if is_local_player and self.is_aiming:
@@ -829,7 +929,7 @@ class Player:
                                     -math.sin(math.radians(self.angle - 120)) * PLAYER_RADIUS / 2)
         ]
         
-        screen_points = [(p.x - camera_offset.x, p.y - camera_offset.y) for p in points]
+        screen_points = camera.to_screen_polygon(points)
         
         # 根据武器类型改变颜色
         player_color = self.color
@@ -878,12 +978,9 @@ class Player:
                         (player_screen_pos.x, player_screen_pos.y - crosshair_size),
                         (player_screen_pos.x, player_screen_pos.y + crosshair_size), 2)
 
-    def draw_melee_attack(self, surface, camera_offset):
+    def draw_melee_attack(self, surface, camera):
         """绘制近战攻击效果"""
-        player_screen_pos = pygame.Vector2(
-            self.pos.x - camera_offset.x,
-            self.pos.y - camera_offset.y
-        )
+        player_screen_pos = camera.to_screen_vec(self.pos)
         
         progress = self.melee_weapon.get_attack_progress()
         
@@ -891,25 +988,29 @@ class Player:
         half_angle = MELEE_ANGLE / 2
         current_angle = MELEE_ANGLE * progress
         
-        # 创建攻击弧形的点
-        arc_points = [player_screen_pos]
+        # 创建攻击弧形的点（世界坐标，随后交给相机变换）
+        arc_points = [self.pos]
         
         for i in range(int(current_angle) + 1):
             angle = self.melee_weapon.attack_direction - half_angle + i
             angle_rad = math.radians(angle)
             
-            end_x = player_screen_pos.x + math.cos(angle_rad) * MELEE_RANGE
-            end_y = player_screen_pos.y - math.sin(angle_rad) * MELEE_RANGE
-            arc_points.append((end_x, end_y))
+            arc_points.append(
+                self.pos + pygame.Vector2(
+                    math.cos(angle_rad) * MELEE_RANGE,
+                    -math.sin(angle_rad) * MELEE_RANGE,
+                )
+            )
         
         # 绘制半透明的攻击扇形
         if len(arc_points) >= 3:
+            screen_points = camera.to_screen_polygon(arc_points)
             try:
                 attack_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
                 attack_color = (*MELEE_COLOR, int(150 * (1 - progress)))  # 随着动画进度淡出
-                pygame.draw.polygon(attack_surface, attack_color, arc_points)
+                pygame.draw.polygon(attack_surface, attack_color, screen_points)
                 surface.blit(attack_surface, (0, 0))
-            except:
+            except Exception:
                 # 如果绘制失败，画一个简单的圆弧
                 pygame.draw.arc(surface, MELEE_COLOR, 
                                (player_screen_pos.x - MELEE_RANGE, player_screen_pos.y - MELEE_RANGE,

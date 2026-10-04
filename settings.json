@@ -4,6 +4,11 @@
         "screen_height": 600,
         "fps": 60,
         "player_speed": 300,
+        "rotation_speed": 180,
+        "rotate_camera": true,
+        "camera_follow_lerp": 0.18,
+        "mouse_turn_speed": 180,
+        "mouse_turn_deadzone": 0.2,
         "aiming_speed_multiplier": 0.5,
         "bullet_speed": 800,
         "bullet_cooldown": 0.15,
@@ -16,10 +21,19 @@
         "respawn_protection": 2.0
     },
     "map": {
+        "type": "grid3x3",
         "room_size": 600,
         "wall_thickness": 20,
         "door_size": 80,
-        "door_animation_speed": 2.0
+        "door_animation_speed": 2.0,
+        "door_open_angle": 150,
+        "door_push_accel": 18.0,
+        "door_damping": 0.6,
+        "door_max_speed": 6.0,
+        "door_grab_distance": 110,
+        "door_self_close_angle": 5.0,
+        "door_self_close_speed": 16.0,
+        "door_self_close_velocity": 0.2
     },
     "hit_effects": {
         "slowdown_duration": 0.5,
@@ -39,7 +53,8 @@
     },
     "aiming": {
         "camera_range": 400,
-        "sensitivity": 1
+        "sensitivity": 1,
+        "offset_lerp": 0.25
     },
     "network": {
         "server_port": 5555,
