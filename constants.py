@@ -38,6 +38,8 @@ try:
         DOOR_SELF_CLOSE_ANGLE,
         DOOR_SELF_CLOSE_SPEED,
         DOOR_SELF_CLOSE_VELOCITY,
+        DOOR_TAP_TIME,
+        DOOR_SLAM_VELOCITY,
         # 效果配置
         HIT_SLOWDOWN_DURATION,
         HIT_SLOWDOWN_FACTOR,
@@ -56,6 +58,12 @@ try:
         AIM_CAMERA_RANGE,
         AIM_SENSITIVITY,
         AIM_OFFSET_LERP,
+        AIM_TURN_SPEED,
+        # 操作/音频/教学配置
+        CONTROL_SCHEME,
+        CONTROL_BINDINGS,
+        AUDIO_VOLUME,
+        TUTORIAL_SEEN,
         # 网络配置
         SERVER_PORT,
         MAX_PLAYERS,
@@ -168,13 +176,15 @@ except ImportError:
     DOOR_SIZE = 80
     DOOR_ANIMATION_SPEED = 2.0
     DOOR_OPEN_ANGLE = 150.0
-    DOOR_PUSH_ACCEL = 18.0
-    DOOR_DAMPING = 0.6
+    DOOR_PUSH_ACCEL = 8.0
+    DOOR_DAMPING = 2.0
     DOOR_MAX_SPEED = 6.0
     DOOR_GRAB_DISTANCE = 110
-    DOOR_SELF_CLOSE_ANGLE = 5.0
-    DOOR_SELF_CLOSE_SPEED = 16.0
-    DOOR_SELF_CLOSE_VELOCITY = 0.2
+    DOOR_SELF_CLOSE_ANGLE = 25.0
+    DOOR_SELF_CLOSE_SPEED = 12.0
+    DOOR_SELF_CLOSE_VELOCITY = 0.25
+    DOOR_TAP_TIME = 0.3
+    DOOR_SLAM_VELOCITY = 1.5
 
     # 效果配置
     HIT_SLOWDOWN_DURATION = 0.5
@@ -196,6 +206,17 @@ except ImportError:
     AIM_CAMERA_RANGE = 400
     AIM_SENSITIVITY = 1
     AIM_OFFSET_LERP = 0.25
+    AIM_TURN_SPEED = 540
+
+    # 操作/音频/教学配置
+    CONTROL_SCHEME = "twinstick"
+    CONTROL_BINDINGS = {
+        "move_up": "w", "move_down": "s", "move_left": "a", "move_right": "d",
+        "aim": "space", "reload": "r", "grenade": "g", "chat": "y",
+        "switch_weapon": "3", "interact": "e",
+    }
+    AUDIO_VOLUME = 80
+    TUTORIAL_SEEN = False
 
     # 网络配置
     SERVER_PORT = 5555

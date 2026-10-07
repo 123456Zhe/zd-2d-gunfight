@@ -38,6 +38,7 @@ else:
     print("[AI系统] 使用原版AI系统")
 
 from map import Map, Door
+import map as map_module
 from camera import Camera
 
 # 视野射线长度上限：覆盖整张地图对角线，等效于取消视距限制
@@ -1190,6 +1191,8 @@ class Game:
         # 相机跟随朝向旋转：玩家正前方始终朝向屏幕上方
         angle = (90.0 - self.player.angle) % 360 if ROTATE_CAMERA else 0.0
         self.camera.set_view(target_center, angle)
+        # 门音效的听者位置：本地玩家（用于距离衰减）
+        map_module.DOOR_SOUND_LISTENER = self.player.pos
 
         # 检测附近的脚步声
         self.detect_nearby_footsteps()
@@ -2188,6 +2191,12 @@ class Game:
             points = self.camera.to_screen_polygon(door.get_corners())
             pygame.draw.polygon(self.screen, door.get_color(False), points)
             pygame.draw.polygon(self.screen, DARK_DOOR_COLOR, points, 1)
+            # 门交互高亮：可操作描边，抓住的门用醒目颜色
+            if self.player is not None and not self.player.is_dead:
+                if door is self.player.controlled_door:
+                    pygame.draw.polygon(self.screen, ORANGE, points, 3)
+                elif door.in_interaction_range(self.player.pos):
+                    pygame.draw.polygon(self.screen, YELLOW, points, 2)
 
     def render_ui(self):
         """绘制UI元素（使用新的 pygame-menu 管理器）"""

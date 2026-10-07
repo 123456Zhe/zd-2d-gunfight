@@ -3,6 +3,7 @@ import pygame
 import random
 from pygame.locals import *
 from constants import *
+from audio import audio
 
 # 门开度小于这个值时自动回位到关闭（由角度换算成开度比例）
 DOOR_SELF_CLOSE_PROGRESS = DOOR_SELF_CLOSE_ANGLE / DOOR_OPEN_ANGLE if DOOR_OPEN_ANGLE else 0.0
@@ -35,6 +36,19 @@ def segment_intersection(p1, p2, p3, p4):
     return None
 
 
+
+
+DOOR_SOUND_LISTENER = None  # 本地玩家世界坐标（Game 每帧设置），用于门音效距离衰减
+
+
+def _play_door_sound(name, pos):
+    """播放门音效：按门与本地玩家的距离衰减，听不到远处的门"""
+    listener = None
+    if DOOR_SOUND_LISTENER is not None:
+        listener = (DOOR_SOUND_LISTENER.x, DOOR_SOUND_LISTENER.y)
+    audio.play(name, pos=(pos.x, pos.y), listener_pos=listener, max_dist=700.0)
+
+
 class Door:
     """门类，管理门的状态、动画和交互
 
@@ -54,7 +68,7 @@ class Door:
         self.swing_velocity = 0.0  # 手动推门时的角速度（进度/秒）
         self.is_being_pushed = False  # 本帧是否有人正在推（用于自动回位判定）
         self.interaction_cooldown = 0.5  # 交互冷却时间(秒)
-        self.last_interaction_time = 0  # 上次交互时间
+        self.last_interaction_time = -999.0  # 上次交互时间（初始允许立即交互）
         self.state_version = 0  # 门状态版本号，用于同步
         self.angle = 0.0  # 门板当前旋转角度
         self._init_hinge()
@@ -152,9 +166,13 @@ class Door:
         self.animation_progress += self.swing_velocity * dt
         
         if self.animation_progress >= 1.0:
+            if abs(self.swing_velocity) > DOOR_SLAM_VELOCITY:
+                _play_door_sound('door_slam', self.hinge)
             self.animation_progress = 1.0
             self.swing_velocity = 0.0
         elif self.animation_progress <= -1.0:
+            if abs(self.swing_velocity) > DOOR_SLAM_VELOCITY:
+                _play_door_sound('door_slam', self.hinge)
             self.animation_progress = -1.0
             self.swing_velocity = 0.0
         else:
@@ -227,6 +245,7 @@ class Door:
         self.is_closing = False
         self.swing_velocity = 0.0
         self.state_version += 1
+        _play_door_sound('door_open', self.hinge)
         return True
     
     def close(self):
@@ -237,6 +256,7 @@ class Door:
         self.is_opening = False
         self.swing_velocity = 0.0
         self.state_version += 1
+        _play_door_sound('door_close', self.hinge)
         return True
     
     def apply_push(self, direction, dt):
@@ -255,6 +275,18 @@ class Door:
         self.swing_velocity = max(-DOOR_MAX_SPEED, min(DOOR_MAX_SPEED, self.swing_velocity))
         self.state_version += 1
     
+    def push_sign_for_player(self, player_angle):
+        """玩家按“左”推门时应传给 apply_push 的 direction 符号（+1/-1）
+
+        计算门板自由端在 direction=+1 时的运动方向：若朝向玩家左侧则返回 +1，
+        这样无论站在门的哪一侧，“按左”都让门板往自己的左侧摆，直觉一致。
+        """
+        tangent = (rotate_vector(self.base_dir, self.angle + 2.0)
+                   - rotate_vector(self.base_dir, self.angle))
+        rad = math.radians(player_angle + 90.0)
+        left = pygame.Vector2(math.cos(rad), -math.sin(rad))
+        return 1 if tangent.dot(left) >= 0 else -1
+
     def nearest_corner_distance(self, pos):
         """位置到门板四个端点的最近距离"""
         return min(pos.distance_to(corner) for corner in self.get_corners())

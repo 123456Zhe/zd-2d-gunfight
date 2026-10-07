@@ -9,6 +9,8 @@ import pygame_menu
 from pygame_menu import themes
 import platform
 from constants import *
+from config import get as cfg_get
+from utils import get_binding, key_display_name
 
 # 全局字体变量
 fonts = None
@@ -1138,23 +1140,42 @@ class ControlHintsManager:
             return
 
         player = self.game.player
+        scheme = cfg_get("controls.scheme", "twinstick")
+        bindings = cfg_get("controls.bindings", None) or {}
+        k_interact = key_display_name(get_binding(bindings, "interact", "e"))
 
-        # 根据玩家状态显示不同提示
         if player.is_dead or player.is_respawning:
             self.interact_text = ""
             self.weapon_text = ""
             self.switch_text = ""
-        else:
-            # 交互提示
-            self.interact_text = "E抓/放门 ←→推门"
+            return
 
-            # 武器提示
-            if player.weapon_type == "gun":
-                self.weapon_text = "←→转向 ↑射击 空格瞄准"
+        # 抓门状态提示优先
+        if player.controlled_door is not None:
+            if scheme == "twinstick":
+                push_keys = "A/D"
             else:
-                self.weapon_text = "←→转向 ↑近战攻击"
+                push_keys = "←/→"
+            self.interact_text = f"已抓门：{push_keys}推门，松开{k_interact}释放"
+            self.weapon_text = ""
+            self.switch_text = ""
+            return
 
-            self.switch_text = "按3切换武器"
+        # 交互提示：点按开关门，长按抓门
+        self.interact_text = f"点按{k_interact}开关门 · 长按{k_interact}抓门"
+
+        # 武器提示
+        if scheme == "twinstick":
+            self.weapon_text = "WASD移动 · 鼠标瞄准 · 左键射击 · 右键瞄准"
+        elif player.weapon_type == "gun":
+            self.weapon_text = "←→转向 ↑射击 空格瞄准"
+        else:
+            self.weapon_text = "←→转向 ↑近战攻击"
+
+        k_switch = key_display_name(get_binding(bindings, "switch_weapon", "3"))
+        k_chat = key_display_name(get_binding(bindings, "chat", "y"))
+        self.switch_text = f"按{k_switch}切换武器"
+        self.chat_text = f"按{k_chat}键聊天"
 
     def draw(self):
         """绘制控制提示"""

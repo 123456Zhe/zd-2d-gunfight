@@ -27,13 +27,15 @@
         "door_size": 80,
         "door_animation_speed": 2.0,
         "door_open_angle": 150,
-        "door_push_accel": 18.0,
-        "door_damping": 0.6,
+        "door_push_accel": 8.0,
+        "door_damping": 2.0,
         "door_max_speed": 6.0,
         "door_grab_distance": 110,
-        "door_self_close_angle": 5.0,
-        "door_self_close_speed": 16.0,
-        "door_self_close_velocity": 0.2
+        "door_self_close_angle": 25.0,
+        "door_self_close_speed": 12.0,
+        "door_self_close_velocity": 0.25,
+        "door_tap_time": 0.3,
+        "door_slam_velocity": 1.5
     },
     "hit_effects": {
         "slowdown_duration": 0.5,
@@ -54,7 +56,8 @@
     "aiming": {
         "camera_range": 400,
         "sensitivity": 1,
-        "offset_lerp": 0.25
+        "offset_lerp": 0.25,
+        "turn_speed": 540
     },
     "network": {
         "server_port": 5555,
@@ -159,5 +162,27 @@
         "melee": [255, 100, 100],
         "melee_range": [255, 0, 0, 80],
         "aim": [0, 255, 255]
+    },
+    "controls": {
+        "scheme": "twinstick",
+        "bindings": {
+            "move_up": "w",
+            "move_down": "s",
+            "move_left": "a",
+            "move_right": "d",
+            "shoot": "up",
+            "aim": "space",
+            "reload": "r",
+            "grenade": "g",
+            "chat": "y",
+            "switch_weapon": "3",
+            "interact": "e"
+        }
+    },
+    "audio": {
+        "volume": 80
+    },
+    "tutorial": {
+        "seen": false
     }
 }

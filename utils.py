@@ -153,3 +153,30 @@ def is_in_melee_range(attacker_pos, attacker_angle, target_pos, melee_range, mel
     # 检查是否在攻击角度范围内
     angle_diff = angle_difference(attacker_angle, target_angle)
     return angle_diff <= melee_angle / 2
+
+
+def key_code_from_name(name):
+    """按键名（如 "w"/"space"/"3"/转为 pygame 键码，无效名返回 None"""
+    try:
+        return pygame.key.key_code(str(name).lower())
+    except (ValueError, AttributeError):
+        return None
+
+
+def get_binding(bindings, action, default_name):
+    """从绑定字典取按键码；配置缺失时用默认键名回退"""
+    name = default_name
+    if isinstance(bindings, dict):
+        name = bindings.get(action, default_name)
+    code = key_code_from_name(name)
+    if code is None:
+        code = key_code_from_name(default_name)
+    return code
+
+
+def key_display_name(code):
+    """键码（用于设置界面显示"""
+    try:
+        return pygame.key.name(code)
+    except (ValueError, AttributeError):
+        return "?"

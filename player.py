@@ -4,11 +4,26 @@ import time
 import random
 from pygame.locals import *
 from constants import *
+from config import get as cfg_get
+from audio import audio
 from weapons import MeleeWeapon
-from utils import friendly_fire_enabled, dprint
+from utils import friendly_fire_enabled, dprint, get_binding
 import ui
 
 DOOR_SYNC_INTERVAL = 0.05  # 手动推门时的网络同步间隔（秒）
+
+
+def turn_angle_toward(current, target, max_delta):
+    """将角度按最短弧向目标转动，每步最多转 max_delta 度，返回新角度（0-360）"""
+    current = current % 360.0
+    target = target % 360.0
+    diff = (target - current) % 360.0
+    if diff > 180.0:
+        diff -= 360.0
+    if abs(diff) <= max_delta:
+        return target
+    return (current + math.copysign(max_delta, diff)) % 360.0
+
 
 class Player:
     def __init__(self, player_id, x, y, is_local=False, name=None):
@@ -27,6 +42,8 @@ class Player:
         self.name = name if name is not None else f"玩家{player_id}"
         self.shooting = False
         self.mouse_shooting = False  # 鼠标左键按下状态，与上方向键共同决定是否开火
+        self.mouse_aiming = False
+        self.aim_angle = 0.0  # twinstick 瞄准目标角度；self.angle 为实际朝向（枪口）
         self.is_dead = False
         self.death_time = 0
         self.respawn_time = 0
@@ -35,7 +52,9 @@ class Player:
         self.last_door_interaction = 0
         self.controlled_door = None  # 当前正在用手推的门
         self.last_door_sync = 0
-        self.door_toggle_held = False  # E 键是否处于按下状态（用于切换抓门）
+        self._interact_down_at = 0.0  # 交互键按下时刻（点按/长按区分）
+        self._interact_was_down = False  # 上一帧交互键状态
+        self._grab_hold = False  # 是否处于长按抓门状态
         
         # 网络位置插值（仅用于其他玩家在网络快照之间的平滑显示）
         self.net_prev_pos = None
@@ -255,7 +274,7 @@ class Player:
 
         长度平滑过渡、方向立刻跟随朝向，这样开镜转身时相机不会拖尾。
         """
-        target_length = AIM_CAMERA_RANGE * AIM_SENSITIVITY if self.is_aiming else 0.0
+        target_length = AIM_CAMERA_RANGE * cfg_get("aiming.sensitivity", 1) if self.is_aiming else 0.0
         self.aim_offset_length += (target_length - self.aim_offset_length) * AIM_OFFSET_LERP
         if target_length == 0.0 and self.aim_offset_length < 1.0:
             self.aim_offset_length = 0.0
@@ -306,39 +325,86 @@ class Player:
         self.sync_controlled_door(game_map, network_manager, force=True)
         self.controlled_door = None
 
-    def update_door_control(self, dt, game_map, network_manager, keys):
-        """E 键切换是否抓门；抓住后用左右键推门（带加速度与惯性）"""
-        if keys[K_e]:
-            if not self.door_toggle_held:
-                self.door_toggle_held = True
-                if self.controlled_door is None:
-                    self.controlled_door = self.find_nearby_door(game_map)
-                    self.last_door_sync = 0
-                else:
-                    self.release_door(game_map, network_manager)
-        else:
-            self.door_toggle_held = False
-        
+    def update_door_control(self, dt, game_map, network_manager, keys,
+                            scheme="classic", bindings=None):
+        """门交互：点按交互键（0.3s 内松开）= 自动开关门；长按 = 抓取推门
+
+        推门方向按玩家站位动态决定：按“左”时门板自由端朝玩家左侧摆，
+        站在门两侧都直觉一致。松开交互键即释放。
+        """
+        bindings = bindings or {}
+        k_interact = get_binding(bindings, "interact", "e")
+        down = bool(keys[k_interact])
+        now = time.time()
+        tap_time = cfg_get("map.door_tap_time", 0.3)
+
+        if down and not self._interact_was_down:
+            self._interact_down_at = now
+        if down and not self._grab_hold and self.controlled_door is None:
+            if now - self._interact_down_at >= tap_time:
+                self.controlled_door = self.find_nearby_door(game_map)
+                self.last_door_sync = 0
+                self._grab_hold = True
+        if not down and self._interact_was_down:
+            if self._grab_hold:
+                self.release_door(game_map, network_manager)
+                self._grab_hold = False
+            elif now - self._interact_down_at < tap_time:
+                door = self.find_nearby_door(game_map)
+                if door is not None and door.try_interact(self.pos):
+                    try:
+                        index = game_map.doors.index(door)
+                    except ValueError:
+                        index = None
+                    if index is not None and network_manager is not None:
+                        network_manager.update_door(index, door.get_state())
+        self._interact_was_down = down
+
         door = self.controlled_door
         if door is None:
             return
-        
+
         # 到门板四个端点的最近距离超过抓取距离就自动脱离
         if door.nearest_corner_distance(self.pos) > DOOR_GRAB_DISTANCE:
             self.release_door(game_map, network_manager)
+            self._grab_hold = False
             return
-        
+
+        if scheme == "twinstick":
+            push_left = keys[get_binding(bindings, "move_left", "a")]
+            push_right = keys[get_binding(bindings, "move_right", "d")]
+        else:
+            push_left = keys[K_LEFT]
+            push_right = keys[K_RIGHT]
+        if not push_left and not push_right:
+            return
+        sign = door.push_sign_for_player(self.angle)
         direction = 0
-        if keys[K_LEFT]:
-            direction -= 1  # 向左推（屏幕上逆时针）
-        if keys[K_RIGHT]:
-            direction += 1  # 向右推（屏幕上顺时针）
-        
+        if push_left:
+            direction += sign
+        if push_right:
+            direction -= sign
         if direction == 0:
             return
-        
+
         door.apply_push(direction, dt)
         self.sync_controlled_door(game_map, network_manager)
+
+    def _update_twinstick_aim(self, camera):
+        """双摇杆模式：计算鼠标瞄准目标角度（存入 aim_angle，不直接转身）
+
+        该模式下相机不旋转，屏幕向量与世界向量方向一致，
+        因此鼠标相对玩家的屏幕偏移方向即为世界瞄准方向。
+        实际朝向（self.angle）由 update() 按 turn_speed 上限平滑转向 aim_angle，
+        这样朝向/瞄准解耦：无论之后选"整个人跟转"还是"只有枪转"，
+        都只需改转向应用处，瞄准计算不用动。
+        """
+        if camera is None:
+            return
+        mouse = pygame.Vector2(pygame.mouse.get_pos())
+        delta = mouse - camera.to_screen_vec(self.pos)
+        if delta.length_squared() > 9.0:
+            self.aim_angle = (math.degrees(math.atan2(-delta.y, delta.x))) % 360.0
 
     def respawn(self, network_manager=None):
         """复活"""
@@ -358,7 +424,9 @@ class Player:
         self.velocity = pygame.Vector2(0, 0)
         self.last_door_interaction = 0  # 重置门交互冷却
         self.controlled_door = None  # 复活后松开门
-        self.door_toggle_held = False
+        self.aim_angle = self.angle  # 复活时瞄准与朝向同步
+        self._grab_hold = False
+        self._interact_was_down = False
         
         # 重置武器和瞄准状态
         self.weapon_type = "gun"
@@ -448,7 +516,7 @@ class Player:
         
         return spread
 
-    def update(self, dt, game_map, bullets, network_manager=None, all_players=None, chat_active=False):
+    def update(self, dt, game_map, bullets, network_manager=None, all_players=None, chat_active=False, camera=None):
         current_time = time.time()
         
         # 重置复活状态
@@ -472,54 +540,92 @@ class Player:
             if not chat_active:
                 keys = pygame.key.get_pressed()
                 
-                # E 键切换抓门，抓住时左右键用于推门而不是转身
-                self.update_door_control(dt, game_map, network_manager, keys)
+                # 操作方案：twinstick（默认）= WASD 移动 + 鼠标瞄准；classic = 坦克式
+                scheme = cfg_get("controls.scheme", "twinstick")
+                bindings = cfg_get("controls.bindings", None) or {}
                 
-                # 转向：方向键与鼠标水平位置都能改变相机朝向
-                if self.controlled_door is None:
-                    turn_rate = 0.0
-                    if keys[K_LEFT]:
-                        turn_rate += PLAYER_ROTATION_SPEED
-                    if keys[K_RIGHT]:
-                        turn_rate -= PLAYER_ROTATION_SPEED
+                # 抓门 / 推门
+                self.update_door_control(dt, game_map, network_manager, keys,
+                                         scheme, bindings)
+                
+                if scheme == "twinstick":
+                    # 鼠标瞄准：朝向直接跟随准星（该模式下相机不旋转）
+                    if self.controlled_door is None:
+                        self._update_twinstick_aim(camera)
+                    # 朝向以有限角速度转向瞄准方向（保住视野锥的战术意义）
+                    turn_speed = cfg_get("aiming.turn_speed", 540)
+                    self.angle = turn_angle_toward(self.angle, self.aim_angle,
+                                                      turn_speed * dt)
+                    # 左键射击；空格 / 右键开镜（仅枪械）
+                    self.shooting = self.mouse_shooting
+                    k_aim = get_binding(bindings, "aim", "space")
+                    self.is_aiming = (self.mouse_aiming or keys[k_aim]) \
+                        and self.weapon_type == "gun"
+                else:
+                    # 转向：方向键与鼠标水平位置都能改变相机朝向
+                    if self.controlled_door is None:
+                        turn_rate = 0.0
+                        if keys[K_LEFT]:
+                            turn_rate += PLAYER_ROTATION_SPEED
+                        if keys[K_RIGHT]:
+                            turn_rate -= PLAYER_ROTATION_SPEED
 
-                    # 鼠标偏离屏幕中心越远，转向越快；中心附近的死区避免误转
-                    mouse_offset = (
-                        pygame.mouse.get_pos()[0] - SCREEN_WIDTH / 2
-                    ) / (SCREEN_WIDTH / 2)
-                    if abs(mouse_offset) > MOUSE_TURN_DEADZONE:
-                        strength = (abs(mouse_offset) - MOUSE_TURN_DEADZONE) / (
-                            1.0 - MOUSE_TURN_DEADZONE
-                        )
-                        turn_rate -= math.copysign(
-                            min(1.0, strength) * MOUSE_TURN_SPEED, mouse_offset
-                        )
+                        # 鼠标偏离屏幕中心越远，转向越快；中心附近的死区避免误转
+                        mouse_offset = (
+                            pygame.mouse.get_pos()[0] - SCREEN_WIDTH / 2
+                        ) / (SCREEN_WIDTH / 2)
+                        if abs(mouse_offset) > MOUSE_TURN_DEADZONE:
+                            strength = (abs(mouse_offset) - MOUSE_TURN_DEADZONE) / (
+                                1.0 - MOUSE_TURN_DEADZONE
+                            )
+                            turn_rate -= math.copysign(
+                                min(1.0, strength) * MOUSE_TURN_SPEED, mouse_offset
+                            )
 
-                    if turn_rate:
-                        self.angle = (self.angle + turn_rate * dt) % 360
+                        if turn_rate:
+                            self.angle = (self.angle + turn_rate * dt) % 360
                 
-                # 上方向键开枪（鼠标左键仍可作为备用开火键）
-                self.shooting = bool(keys[K_UP]) or self.mouse_shooting
+                    # 开火键或鼠标左键
+                    k_shoot = get_binding(bindings, "shoot", "up")
+                    self.shooting = bool(keys[k_shoot]) or self.mouse_shooting
                 
-                # 空格开镜（仅枪械）
-                self.is_aiming = bool(keys[K_SPACE]) and self.weapon_type == "gun"
+                    # 开镜（仅枪械）
+                    k_aim = get_binding(bindings, "aim", "space")
+                    self.is_aiming = bool(keys[k_aim]) and self.weapon_type == "gun"
                 
                 # 更新瞄准偏移
                 self.update_aim_offset()
                 
-                # 键盘控制移动（WASD 相对视角：W 为屏幕正上方）
-                if ROTATE_CAMERA:
-                    rad = math.radians(self.angle)
-                    forward = pygame.Vector2(math.cos(rad), -math.sin(rad))
+                k_up = get_binding(bindings, "move_up", "w")
+                k_down = get_binding(bindings, "move_down", "s")
+                k_left = get_binding(bindings, "move_left", "a")
+                k_right = get_binding(bindings, "move_right", "d")
+                if scheme == "twinstick":
+                    # 相机不旋转：WASD / 方向键对应屏幕方向；抓门时只推门不移动
+                    move_dir = pygame.Vector2(0, 0)
+                    if self.controlled_door is None:
+                        if keys[k_up] or keys[K_UP]:
+                            move_dir.y -= 1
+                        if keys[k_down] or keys[K_DOWN]:
+                            move_dir.y += 1
+                        if keys[k_left] or keys[K_LEFT]:
+                            move_dir.x -= 1
+                        if keys[k_right] or keys[K_RIGHT]:
+                            move_dir.x += 1
                 else:
-                    forward = pygame.Vector2(0, -1)
-                right = pygame.Vector2(-forward.y, forward.x)
-                
-                move_dir = pygame.Vector2(0, 0)
-                if keys[K_w]: move_dir += forward
-                if keys[K_s]: move_dir -= forward
-                if keys[K_d]: move_dir += right
-                if keys[K_a]: move_dir -= right
+                    # 键盘控制移动（WASD 相对视角：W 为屏幕正上方）
+                    if ROTATE_CAMERA:
+                        rad = math.radians(self.angle)
+                        forward = pygame.Vector2(math.cos(rad), -math.sin(rad))
+                    else:
+                        forward = pygame.Vector2(0, -1)
+                    right = pygame.Vector2(-forward.y, forward.x)
+                    
+                    move_dir = pygame.Vector2(0, 0)
+                    if keys[k_up]: move_dir += forward
+                    if keys[k_down]: move_dir -= forward
+                    if keys[k_right]: move_dir += right
+                    if keys[k_left]: move_dir -= right
                 
                 # 检测静步状态
                 self.is_walking = keys[K_LSHIFT] or keys[K_RSHIFT]
@@ -628,6 +734,7 @@ class Player:
                                 
                                 self.ammo -= 1
                                 self.last_shot = current_time
+                                audio.play("shoot")
                                 self.last_shot_time = current_time
                                 self.shot_count += 1
                                 self.is_making_sound = True  # 射击时发出声音
@@ -647,6 +754,7 @@ class Player:
                 if self.is_reloading and (current_time - self.reload_start) >= RELOAD_TIME:
                     self.ammo = MAGAZINE_SIZE
                     self.is_reloading = False
+                    audio.play("reload")
             else:
                 # 聊天状态下，停止移动，但保持摩擦力
                 self.velocity *= 0.9
@@ -655,6 +763,7 @@ class Player:
                 self.sound_volume = 0.0
                 # 聊天时松开正在推的门
                 self.release_door(game_map, network_manager)
+                self._grab_hold = False
 
             # 即使在聊天时，物理检测（如近战）也允许完成
             if self.melee_weapon.is_attacking:
@@ -828,7 +937,10 @@ class Player:
     def start_melee_attack(self, is_heavy=False):
         """开始近战攻击"""
         if not self.is_dead and not self.is_respawning and self.weapon_type == "melee":
-            return self.melee_weapon.start_attack(self.angle, is_heavy)
+            result = self.melee_weapon.start_attack(self.angle, is_heavy)
+            if result:
+                audio.play("melee")
+            return result
         return False
 
     def is_protected(self):

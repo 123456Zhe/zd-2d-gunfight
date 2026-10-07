@@ -149,13 +149,15 @@ WALL_THICKNESS = get("map.wall_thickness", 20)
 DOOR_SIZE = get("map.door_size", 80)
 DOOR_ANIMATION_SPEED = get("map.door_animation_speed", 2.0)
 DOOR_OPEN_ANGLE = get("map.door_open_angle", 150.0)
-DOOR_PUSH_ACCEL = get("map.door_push_accel", 18.0)
-DOOR_DAMPING = get("map.door_damping", 0.6)
+DOOR_PUSH_ACCEL = get("map.door_push_accel", 8.0)
+DOOR_DAMPING = get("map.door_damping", 2.0)
 DOOR_MAX_SPEED = get("map.door_max_speed", 6.0)
 DOOR_GRAB_DISTANCE = get("map.door_grab_distance", 110)
-DOOR_SELF_CLOSE_ANGLE = get("map.door_self_close_angle", 5.0)
-DOOR_SELF_CLOSE_SPEED = get("map.door_self_close_speed", 16.0)
-DOOR_SELF_CLOSE_VELOCITY = get("map.door_self_close_velocity", 0.2)
+DOOR_SELF_CLOSE_ANGLE = get("map.door_self_close_angle", 25.0)
+DOOR_SELF_CLOSE_SPEED = get("map.door_self_close_speed", 12.0)
+DOOR_SELF_CLOSE_VELOCITY = get("map.door_self_close_velocity", 0.25)
+DOOR_TAP_TIME = get("map.door_tap_time", 0.3)
+DOOR_SLAM_VELOCITY = get("map.door_slam_velocity", 1.5)
 
 # 被击中减速效果
 HIT_SLOWDOWN_DURATION = get("hit_effects.slowdown_duration", 0.5)
@@ -177,6 +179,28 @@ HEAVY_MELEE_ANGLE = get("melee.heavy_angle", 60)
 AIM_CAMERA_RANGE = get("aiming.camera_range", 400)
 AIM_SENSITIVITY = get("aiming.sensitivity", 1)
 AIM_OFFSET_LERP = get("aiming.offset_lerp", 0.25)
+AIM_TURN_SPEED = get("aiming.turn_speed", 540)
+
+# 操作配置
+CONTROL_SCHEME = get("controls.scheme", "twinstick")
+CONTROL_BINDINGS = get("controls.bindings", {
+    "move_up": "w",
+    "move_down": "s",
+    "move_left": "a",
+    "move_right": "d",
+    "aim": "space",
+    "reload": "r",
+    "grenade": "g",
+    "chat": "y",
+    "switch_weapon": "3",
+    "interact": "e",
+})
+
+# 音频配置
+AUDIO_VOLUME = get("audio.volume", 80)
+
+# 新手教学
+TUTORIAL_SEEN = get("tutorial.seen", False)
 
 # 网络配置
 SERVER_PORT = get("network.server_port", 5555)

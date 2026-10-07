@@ -88,6 +88,7 @@ class NetworkManager:
         self.last_server_response = 0
         
         self.last_damage_time = {}  # 防止重复处理伤害
+        self._combat_listeners = []  # 战斗事件（命中/击杀）监听器
         self.last_broadcast = 0  # 上次广播时间
         
         # 简化的子弹管理
@@ -457,6 +458,11 @@ class NetworkManager:
             self._handle_grenade_request(msg_data, sender_id)
         elif msg_type == 'grenade_update':
             self._update_grenades(msg_data)
+        elif msg_type == 'combat_feedback':
+            # 服务端转发的战斗事件（命中/击杀），交给游戏 UI 层
+            combat_handler = getattr(self.game_instance, 'handle_combat_feedback', None)
+            if combat_handler:
+                combat_handler(msg_data)
         elif msg_type == 'hit_damage':
             # 伤害由服务端权威模拟结算，从不经网络传输；
             # 任何来源的 hit_damage 包一律丢弃（防单包秒杀）。
@@ -1295,6 +1301,8 @@ class NetworkManager:
         """目标在服务端没有本地玩家对象时，直接结算到权威玩家数据上"""
         old_health = self.players[target_id]['health']
         self.players[target_id]['health'] = max(0, old_health - damage)
+        self._emit_combat_event('hit', attacker_id, target_id, damage, damage_type,
+                                self._player_pos(target_id))
         dprint(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{old_health}->{self.players[target_id]['health']}")
 
         if self.players[target_id]['health'] <= 0:
@@ -1305,6 +1313,8 @@ class NetworkManager:
             if game_instance and hasattr(game_instance, 'game_rules'):
                 respawn_time = game_instance.game_rules['respawn_time']
             self.players[target_id]['respawn_time'] = current_time + respawn_time
+            self._emit_combat_event('kill', attacker_id, target_id, damage, damage_type,
+                                    self._player_pos(target_id))
             dprint(f"[死亡] 玩家{target_id}死亡，将在{respawn_time}秒后复活")
 
             attacker_name = self.players.get(attacker_id, {}).get('name', f"玩家{attacker_id}")
@@ -1314,6 +1324,59 @@ class NetworkManager:
             self.chat_messages.append(death_chat)
             if self.is_server:
                 self.broadcast_chat_message(death_chat)
+
+    def add_combat_listener(self, fn):
+        """注册战斗事件监听器，收到 {"kind": "hit"/"kill", ...} 事件字典"""
+        self._combat_listeners.append(fn)
+
+    def _emit_combat_event(self, kind, attacker_id, target_id, damage=0.0,
+                           damage_type="bullet", target_pos=None):
+        """从服务端权威伤害结算处发出战斗事件
+
+        本地攻击者直接回调监听器；远程攻击者由服务端单播通知；
+        击杀事件广播给所有客户端用于 killfeed。走现有 socket 通道，
+        不另起同步机制。
+        """
+        attacker_name = self.players.get(attacker_id, {}).get("name", f"玩家{attacker_id}")
+        target_name = self.players.get(target_id, {}).get("name", f"玩家{target_id}")
+        pos = None
+        if target_pos is not None:
+            try:
+                pos = [float(target_pos[0]), float(target_pos[1])]
+            except (TypeError, ValueError, IndexError):
+                pos = None
+        try:
+            dmg = round(float(damage), 1)
+        except (TypeError, ValueError):
+            dmg = 0.0
+        event = {
+            "kind": kind,
+            "attacker_id": attacker_id,
+            "target_id": target_id,
+            "attacker_name": attacker_name,
+            "target_name": target_name,
+            "damage": dmg,
+            "damage_type": damage_type,
+            "target_pos": pos,
+            "time": time.time(),
+        }
+        # 本地监听器收到全部事件（killfeed 需要展示所有击杀）；
+        # UI 层按 attacker_id 过滤 hitmarker/伤害数字/音效
+        for fn in list(self._combat_listeners):
+            try:
+                fn(event)
+            except Exception:
+                pass
+        if not self.is_server:
+            return
+        payload = {"type": "combat_feedback", "data": event}
+        if kind == "kill":
+            addrs = list(self.clients.keys())
+        else:
+            addrs = [addr for addr, pid in self.clients.items()
+                     if pid == attacker_id]
+        for addr in addrs:
+            self.send_to_client(payload, addr)
 
     def _handle_damage(self, damage_data, sender_id=None):
         """处理伤害事件"""
@@ -1413,9 +1476,13 @@ class NetworkManager:
                             self.players[target_id]['health'] = ai_player.health
                             self.players[target_id]['armor'] = ai_player.armor
                             self.players[target_id]['is_dead'] = ai_player.is_dead
+                            self._emit_combat_event('hit', attacker_id, target_id, damage,
+                                                    damage_type, self._player_pos(target_id))
                             if is_dead:
                                 self.players[target_id]['death_time'] = current_time
                                 self.players[target_id]['respawn_time'] = ai_player.respawn_time
+                                self._emit_combat_event('kill', attacker_id, target_id, damage,
+                                                        damage_type, self._player_pos(target_id))
                             
                             dprint(f"[{damage_type}伤害] AI玩家{target_id}被玩家{attacker_id}击中，{old_health}->{ai_player.health}")
                             
@@ -1450,6 +1517,8 @@ class NetworkManager:
                                 self.players[target_id]['health'] = target_player.health
                                 self.players[target_id]['armor'] = target_player.armor
                                 self.players[target_id]['is_dead'] = target_player.is_dead
+                                self._emit_combat_event('hit', attacker_id, target_id, damage,
+                                                        damage_type, self._player_pos(target_id))
                                 if is_dead:
                                     self.players[target_id]['death_time'] = current_time
                                     
@@ -1459,6 +1528,8 @@ class NetworkManager:
                                         respawn_time = game_instance.game_rules['respawn_time']
                                     
                                     self.players[target_id]['respawn_time'] = current_time + respawn_time
+                                    self._emit_combat_event('kill', attacker_id, target_id, damage,
+                                                            damage_type, self._player_pos(target_id))
                                 
                                 dprint(f"[{damage_type}伤害] 玩家{target_id}被玩家{attacker_id}击中，{target_player.health + damage}->{target_player.health}")
                                 
