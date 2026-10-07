@@ -26,6 +26,29 @@ def generate_default_player_name():
     """生成默认玩家名：玩家+3位随机数字"""
     return f"玩家{random.randint(100, 999)}"
 
+# 单个 UDP 数据报的安全载荷上限。VPN/隧道下 IP 分片常被丢弃，
+# 超过 MTU 的包（如 3KB 的 player_update）会直接丢失，因此大包必须在应用层拆分。
+UDP_SAFE_PAYLOAD = 1200
+
+
+def chunk_dict_payload(payload, max_bytes=UDP_SAFE_PAYLOAD):
+    """按序列化大小把 {key: value} 拆成多个子 dict，每个 json 序列化后 < max_bytes。"""
+    chunks = []
+    cur = {}
+    cur_size = 0
+    for k, v in payload.items():
+        entry_size = len(json.dumps({k: v}).encode("utf-8"))
+        if cur and cur_size + entry_size + 64 > max_bytes:
+            chunks.append(cur)
+            cur = {}
+            cur_size = 0
+        cur[k] = v
+        cur_size += entry_size
+    if cur:
+        chunks.append(cur)
+    return chunks or [{}]
+
+
 class ChatMessage:
     """聊天消息类"""
     def __init__(self, player_id, player_name, message, timestamp=None):
@@ -553,11 +576,17 @@ class NetworkManager:
             }
             self.socket.sendto(json.dumps(response).encode(), addr)
             
-            # 发送当前游戏状态给新玩家
+            # 发送当前游戏状态给新玩家（大包拆分；首包 init_players 清屏，后续包按 player_update 增量合并）
+            init_chunks = chunk_dict_payload({str(pid): pdata for pid, pdata in self.players.items()})
             self.send_to_client({
                 'type': 'init_players',
-                'data': self.players
+                'data': init_chunks[0]
             }, addr)
+            for chunk in init_chunks[1:]:
+                self.send_to_client({
+                    'type': 'player_update',
+                    'data': chunk
+                }, addr)
             
             # 发送门状态
             for door_id, door_state in self.doors.items():
@@ -2940,10 +2969,12 @@ class NetworkManager:
             # 广播玩家状态（在锁内取快照，避免接收线程并发修改导致 RuntimeError）
             with self.lock:
                 players_snapshot = {str(pid): dict(pdata) for pid, pdata in self.players.items()}
-            self.send_data({
-                'type': 'player_update', 
-                'data': players_snapshot
-            })
+            # 大包拆分：单个数据报超过 MTU 会被 VPN 丢弃（IP 分片不重组）
+            for chunk in chunk_dict_payload(players_snapshot):
+                self.send_data({
+                    'type': 'player_update',
+                    'data': chunk
+                })
             
             with self.lock:
                 bullets_snapshot = list(self.active_bullets)
