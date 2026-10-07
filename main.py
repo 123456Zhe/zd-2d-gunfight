@@ -401,11 +401,45 @@ class Game:
         self.chat_history_manager = ui.ChatHistoryManager(self.screen, self)
         self.control_hints_manager = ui.ControlHintsManager(self.screen, self)
         self.minimap_manager = ui.MinimapManager(self.screen, self)
+        self.combat_feedback_manager = ui.CombatFeedbackManager(self.screen, self)
+        self.pause_menu_manager = ui.PauseMenuManager(self.screen, self)
+        self.paused = False
 
     def trigger_hit_effect(self):
         """触发被击中时的红色滤镜效果"""
         print("[受击效果] 触发红色滤镜效果")
         self.hit_effect_time = self.hit_effect_duration
+
+    def open_pause_menu(self):
+        """ESC 打开暂停菜单（不再直接退出程序）"""
+        if not self.paused:
+            self.paused = True
+            self.pause_menu_manager.show()
+
+    def handle_pause_events(self):
+        """暂停事件处理：ESC 恢复或取消按键捕获，其余转发给暂停菜单"""
+        events = pygame.event.get()
+        forwarded = []
+        for event in events:
+            if event.type == QUIT:
+                self.running = False
+            elif event.type == KEYDOWN and event.key == K_ESCAPE:
+                if not self.pause_menu_manager.on_escape():
+                    self.paused = False
+                    self.pause_menu_manager.hide()
+            elif event.type == KEYDOWN:
+                if not self.pause_menu_manager.handle_keydown(event):
+                    forwarded.append(event)
+            else:
+                forwarded.append(event)
+        self.pause_menu_manager.update(forwarded)
+
+    def handle_combat_feedback(self, event):
+        """战斗事件（命中/击杀）统一入口：服务端本地监听与
+        combat_feedback 网络消息都汇入此处"""
+        mgr = getattr(self, "combat_feedback_manager", None)
+        if mgr is not None:
+            mgr.on_event(event)
 
     def start_server_scan(self):
         """启动服务器扫描"""
@@ -817,6 +851,10 @@ class Game:
                         player_name=player_name,
                     )
 
+            # 战斗事件（命中/击杀）监听：服务端本地直调，远程客户端走
+            # combat_feedback 网络消息，两路都汇入 handle_combat_feedback
+            self.network_manager.add_combat_listener(self.handle_combat_feedback)
+
             # 检查连接是否成功
             if not self.network_manager.connected:
                 self.error_message = (
@@ -898,7 +936,7 @@ class Game:
                 self.running = False
             elif event.type == KEYDOWN:
                 if event.key == K_ESCAPE:
-                    self.running = False
+                    self.open_pause_menu()
                 elif event.key == K_y:  # 按Y开启聊天
                     self.chat_active = True
                     self.chat_menu_manager.enable()
@@ -1802,6 +1840,12 @@ class Game:
             overlay.fill((255, 0, 0, alpha))
             self.screen.blit(overlay, (0, 0))
 
+        if getattr(self, "paused", False):
+            dim = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            dim.fill((0, 0, 0, 150))
+            self.screen.blit(dim, (0, 0))
+            self.pause_menu_manager.draw()
+
         pygame.display.flip()
 
     def render_vision_fan(self):
@@ -2215,6 +2259,10 @@ class Game:
         # 更新并绘制小地图
         self.minimap_manager.draw()
 
+        # 战斗反馈（hitmarker / 伤害数字 / killfeed）
+        self.combat_feedback_manager.update()
+        self.combat_feedback_manager.draw()
+
     def render_multiline_text(self, text, font, color, x, y, line_spacing=5):
         """渲染多行文本，返回渲染的行数和总高度"""
         lines = text.split("\n")
@@ -2464,6 +2512,10 @@ class Game:
                 self.show_error_screen()
             elif self.state == "PLAYING":
                 dt = min(self.clock.tick(FPS) / 1000.0, 1 / 20)
+                if self.paused:
+                    self.handle_pause_events()
+                    self.render()
+                    continue
                 self.handle_events()
                 self.update(dt)
 

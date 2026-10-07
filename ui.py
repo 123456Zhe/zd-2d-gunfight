@@ -4,12 +4,15 @@ UI模块 - 处理所有用户界面相关功能
 包括字体加载、菜单绘制、HUD显示、聊天界面等
 """
 
+import math
+import time
 import pygame
 import pygame_menu
 from pygame_menu import themes
 import platform
 from constants import *
 from config import get as cfg_get
+from config import settings as cfg_settings
 from utils import get_binding, key_display_name
 
 # 全局字体变量
@@ -777,146 +780,155 @@ class ChatMenuManager:
 
 class HUDManager:
     """
-    游戏内 HUD 管理器
+    游戏内 HUD 管理器（图形化）
     使用直接绘制方式，避免 pygame-menu 背景问题
     """
+
+    BAR_W = 240
+    HEALTH_H = 20
+    ARMOR_H = 8
 
     def __init__(self, screen, game):
         self.screen = screen
         self.game = game
 
-        # HUD 位置设置
         self.hud_x = 10
         self.hud_y = 10
-        self.line_height = 22
-        self.padding = 5
 
-        # 缓存的HUD数据
-        self.health_text = ""
-        self.health_color = GREEN
-        self.weapon_text = ""
-        self.weapon_color = YELLOW
-        self.ammo_text = ""
-        self.ammo_color = WHITE
-        self.status_text = ""
-        self.status_color = ORANGE
-        self.aim_text = ""
-        self.aim_color = AIM_COLOR
-
-        self.buff_texts = []
-        self.grenade_text = ""
-        self.grenade_color = WHITE
+        self.health = 100
+        self.max_health = 100
+        self.armor = 0
+        self.ammo = 0
+        self.magazine = MAGAZINE_SIZE
+        self.weapon_type = "gun"
+        self.grenades = 0
+        self.is_reloading = False
+        self.reload_ratio = 0.0
+        self.melee_ready = True
+        self.melee_ratio = 1.0
+        self.is_aiming = False
+        self.buffs = []
 
     def update(self):
-        """更新 HUD 内容"""
+        """更新 HUD 数据"""
         if not self.game.player:
             return
-
         player = self.game.player
-        import time
-        current_time = time.time()
+        now = time.time()
 
-        self.health_text = f"生命: {player.health}/{player.max_health}"
-        self.health_color = (
-            GREEN if player.health > 50 else (YELLOW if player.health > 25 else RED)
-        )
+        self.max_health = max(1, getattr(player, "max_health", 100))
+        self.health = max(0, min(player.health, self.max_health))
+        self.armor = max(0, getattr(player, "armor", 0))
+        self.ammo = max(0, getattr(player, "ammo", 0))
+        self.weapon_type = getattr(player, "weapon_type", "gun")
+        self.grenades = max(0, getattr(player, "grenades", 0))
+        self.is_aiming = getattr(player, "is_aiming", False)
 
-        weapon_name = "近战" if player.weapon_type == "melee" else "枪械"
-        self.weapon_text = f"武器: {weapon_name}"
-        self.weapon_color = YELLOW if player.weapon_type == "melee" else GREEN
-
-        if player.weapon_type == "gun":
-            self.ammo_text = f"弹药: {player.ammo}/{MAGAZINE_SIZE}"
-            self.ammo_color = WHITE
-
-            if player.is_reloading:
-                reload_time = max(0, RELOAD_TIME - (current_time - player.reload_start))
-                self.status_text = f"换弹中: {reload_time:.1f}s"
-                self.status_color = YELLOW
-                self.aim_text = ""
-            else:
-                self.status_text = ""
-                if player.is_aiming:
-                    self.aim_text = "瞄准中"
-                    self.aim_color = AIM_COLOR
-                else:
-                    self.aim_text = ""
+        self.is_reloading = getattr(player, "is_reloading", False)
+        if self.is_reloading:
+            elapsed = now - getattr(player, "reload_start", now)
+            self.reload_ratio = min(1.0, elapsed / max(0.01, RELOAD_TIME))
         else:
-            if player.melee_weapon.can_attack():
-                self.ammo_text = "近战武器: 就绪"
-                self.ammo_color = GREEN
-                self.status_text = ""
-            else:
-                melee = player.melee_weapon
-                cooldown = melee.heavy_cooldown if melee.is_heavy_attack else MELEE_COOLDOWN
-                remaining_cooldown = cooldown - (
-                    current_time - melee.last_attack_time
-                )
-                self.ammo_text = f"近战武器: {remaining_cooldown:.1f}s"
-                self.ammo_color = RED
-                self.status_text = ""
-            self.aim_text = ""
+            self.reload_ratio = 0.0
 
-        self.buff_texts = []
-
-        if player.armor > 0:
-            self.buff_texts.append((f"护甲: {player.armor}", (100, 150, 255)))
-
-        if hasattr(player, 'speed_boost_end_time') and player.speed_boost_end_time > current_time:
-            remaining = player.speed_boost_end_time - current_time
-            self.buff_texts.append((f"加速: {remaining:.1f}s", (100, 255, 100)))
-
-        if hasattr(player, 'damage_boost_end_time') and player.damage_boost_end_time > current_time:
-            remaining = player.damage_boost_end_time - current_time
-            self.buff_texts.append((f"伤害提升: {remaining:.1f}s", (255, 100, 100)))
-
-        grenade_count = getattr(player, 'grenades', 0)
-        if grenade_count > 0:
-            self.grenade_text = f"手雷: {grenade_count}"
-            self.grenade_color = (255, 200, 100)
+        melee = getattr(player, "melee_weapon", None)
+        if melee is not None:
+            self.melee_ready = melee.can_attack()
+            cd = melee.heavy_cooldown if getattr(melee, "is_heavy_attack", False) \
+                else MELEE_COOLDOWN
+            elapsed = now - getattr(melee, "last_attack_time", 0)
+            self.melee_ratio = min(1.0, elapsed / max(0.01, cd))
         else:
-            self.grenade_text = ""
+            self.melee_ready = True
+            self.melee_ratio = 1.0
+
+        self.buffs = []
+        if self.armor > 0:
+            self.buffs.append(("甲", (100, 150, 255), min(1.0, self.armor / 100)))
+        if getattr(player, "speed_boost_end_time", 0) > now:
+            remain = player.speed_boost_end_time - now
+            self.buffs.append(("速", (100, 255, 100),
+                               remain / max(0.01, ITEM_SPEED_BOOST_DURATION)))
+        if getattr(player, "damage_boost_end_time", 0) > now:
+            remain = player.damage_boost_end_time - now
+            self.buffs.append(("伤", (255, 120, 120),
+                               remain / max(0.01, ITEM_DAMAGE_BOOST_DURATION)))
+
+    @staticmethod
+    def _lerp_color(ratio, low, high):
+        return tuple(int(low[i] + (high[i] - low[i]) * ratio) for i in range(3))
+
+    def _draw_bar(self, x, y, w, h, ratio, fill_color, bg_color=(30, 30, 30)):
+        pygame.draw.rect(self.screen, bg_color, (x, y, w, h))
+        fw = int(w * max(0.0, min(1.0, ratio)))
+        if fw > 0:
+            pygame.draw.rect(self.screen, fill_color, (x, y, fw, h))
+        pygame.draw.rect(self.screen, (200, 200, 200), (x, y, w, h), 1)
 
     def draw(self):
-        """绘制 HUD"""
-        global font, small_font
+        """绘制图形化 HUD"""
+        global small_font
+        x, y = self.hud_x, self.hud_y
+        now = time.time()
 
-        health_surface = font.render(self.health_text, True, self.health_color)
-        self.screen.blit(health_surface, (self.hud_x, self.hud_y))
+        if self.armor > 0:
+            self._draw_bar(x, y, self.BAR_W, self.ARMOR_H,
+                           self.armor / 100.0, (80, 140, 255))
+            y += self.ARMOR_H + 3
 
-        weapon_surface = font.render(self.weapon_text, True, self.weapon_color)
-        self.screen.blit(weapon_surface, (self.hud_x, self.hud_y + self.line_height))
+        hp_ratio = self.health / self.max_health
+        hp_color = self._lerp_color(hp_ratio, (220, 40, 40), (60, 200, 80))
+        self._draw_bar(x, y, self.BAR_W, self.HEALTH_H, hp_ratio, hp_color)
+        if hp_ratio < 0.3 and int(now * 4) % 2 == 0:
+            pygame.draw.rect(self.screen, (255, 60, 60),
+                             (x - 2, y - 2, self.BAR_W + 4, self.HEALTH_H + 4), 2)
+        hp_text = small_font.render(f"{int(self.health)}/{self.max_health}",
+                                    True, WHITE)
+        self.screen.blit(hp_text, (x + self.BAR_W + 8, y + 2))
+        y += self.HEALTH_H + 8
 
-        ammo_surface = font.render(self.ammo_text, True, self.ammo_color)
-        self.screen.blit(ammo_surface, (self.hud_x, self.hud_y + self.line_height * 2))
+        if self.weapon_type == "gun":
+            if self.is_reloading:
+                rtxt = small_font.render("换弹中...", True, YELLOW)
+                self.screen.blit(rtxt, (x, y))
+                self._draw_bar(x + 90, y + 2, 110, 12,
+                               self.reload_ratio, (220, 200, 60))
+            else:
+                ammo_ratio = self.ammo / max(1, self.magazine)
+                acolor = (240, 240, 240) if ammo_ratio > 0.25 else (255, 80, 80)
+                atxt = small_font.render(f"弹药 {self.ammo}", True, acolor)
+                self.screen.blit(atxt, (x, y))
+                self._draw_bar(x + 90, y + 2, 110, 12, ammo_ratio, (200, 170, 60))
+            y += 24
+        else:
+            mtxt = small_font.render("近战", True,
+                                     GREEN if self.melee_ready else (255, 120, 120))
+            self.screen.blit(mtxt, (x, y))
+            self._draw_bar(x + 60, y + 2, 110, 12, self.melee_ratio, (150, 150, 150))
+            y += 24
 
-        current_line = 3
+        if self.is_aiming:
+            aimtxt = small_font.render("瞄准中", True, AIM_COLOR)
+            self.screen.blit(aimtxt, (x, y))
+            y += 22
 
-        if self.status_text:
-            status_surface = font.render(self.status_text, True, self.status_color)
-            self.screen.blit(
-                status_surface, (self.hud_x, self.hud_y + self.line_height * current_line)
-            )
-            current_line += 1
+        if self.grenades > 0:
+            for i in range(min(self.grenades, 12)):
+                cx = x + 10 + i * 22
+                cy = y + 10
+                pygame.draw.circle(self.screen, (60, 60, 60), (cx, cy), 9)
+                pygame.draw.circle(self.screen, (255, 200, 100), (cx, cy), 9, 2)
+                pygame.draw.circle(self.screen, (255, 200, 100), (cx, cy - 3), 3)
+            y += 26
 
-        if self.aim_text:
-            aim_surface = font.render(self.aim_text, True, self.aim_color)
-            self.screen.blit(aim_surface, (self.hud_x, self.hud_y + self.line_height * current_line))
-            current_line += 1
-
-        if self.buff_texts:
-            buff_y = self.hud_y + self.line_height * current_line + 5
-            for buff_text, buff_color in self.buff_texts:
-                buff_surface = small_font.render(buff_text, True, buff_color)
-                self.screen.blit(buff_surface, (self.hud_x, buff_y))
-                buff_y += 16
-
-        if self.grenade_text:
-            grenade_y = self.hud_y + self.line_height * current_line
-            if self.buff_texts:
-                grenade_y += len(self.buff_texts) * 16 + 5
-            grenade_surface = font.render(self.grenade_text, True, self.grenade_color)
-            self.screen.blit(grenade_surface, (self.hud_x, grenade_y))
+        for label, color, ratio in self.buffs:
+            pygame.draw.rect(self.screen, (25, 25, 35), (x, y, 64, 22))
+            pygame.draw.rect(self.screen, color, (x, y, 64, 22), 1)
+            ltxt = small_font.render(label, True, color)
+            self.screen.blit(ltxt, (x + 6, y + 2))
+            pygame.draw.rect(self.screen, color,
+                             (x + 26, y + 8, int(32 * ratio), 6))
+            y += 26
 
 
 class InfoPanelManager:
@@ -1397,3 +1409,280 @@ class MinimapManager:
         title_surface = small_font.render("── 小地图 ──", True, GRAY)
         title_x = self.minimap_x + (self.minimap_width - title_surface.get_width()) // 2
         self.screen.blit(title_surface, (title_x, self.minimap_y - 18))
+
+
+class PauseMenuManager:
+    """
+    暂停菜单管理器（pygame-menu 风格，与 MenuManager 一致）
+    ESC 在游戏中打开此菜单，而非直接退出程序
+    """
+
+    KEY_ACTIONS = [
+        ("move_up", "上移", "w"),
+        ("move_down", "下移", "s"),
+        ("move_left", "左移", "a"),
+        ("move_right", "右移", "d"),
+        ("shoot", "射击", "up"),
+        ("aim", "瞄准", "space"),
+        ("reload", "换弹", "r"),
+        ("grenade", "手雷", "g"),
+        ("chat", "聊天", "y"),
+        ("switch_weapon", "切换武器", "3"),
+        ("interact", "交互/开门", "e"),
+    ]
+
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        self.theme = create_custom_theme()
+        self.capturing = None
+        self.key_buttons = {}
+        self.action_labels = {a: label for a, label, _ in self.KEY_ACTIONS}
+
+        self.pause_menu = pygame_menu.Menu(
+            "暂停", SCREEN_WIDTH, SCREEN_HEIGHT, theme=self.theme
+        )
+        self.pause_menu.add.button("继续游戏", self.resume)
+        self.pause_menu.add.button("设置", self.open_settings)
+        self.pause_menu.add.button("断开连接", self.disconnect)
+        self.pause_menu.add.button("退出游戏", self.quit_game)
+        self.pause_menu.disable()
+
+        self._build_settings_menu()
+
+    def _save(self, key, value):
+        cfg_settings.set(key, value)
+        cfg_settings.save()
+
+    def _build_settings_menu(self):
+        self.settings_menu = pygame_menu.Menu(
+            "设置", SCREEN_WIDTH, SCREEN_HEIGHT, theme=self.theme
+        )
+        self.settings_menu.add.range_slider(
+            "鼠标灵敏度 ",
+            default=float(cfg_get("aiming.sensitivity", 1.0)),
+            range_values=(0.2, 3.0),
+            increment=0.1,
+            onchange=lambda v: self._save("aiming.sensitivity", round(float(v), 2)),
+        )
+        self.settings_menu.add.range_slider(
+            "主音量 ",
+            default=int(cfg_get("audio.volume", 80)),
+            range_values=(0, 100),
+            increment=5,
+            onchange=lambda v: self._save("audio.volume", int(v)),
+        )
+        scheme = cfg_get("controls.scheme", "twinstick")
+        self.scheme_selector = self.settings_menu.add.selector(
+            "操作方案 ",
+            [("双摇杆鼠标", "twinstick"), ("经典坦克", "classic")],
+            default=0 if scheme == "twinstick" else 1,
+            onchange=lambda *a: self._on_scheme_change(),
+        )
+        self.settings_menu.add.label("── 按键绑定 ──", font_size=16)
+        bindings = cfg_get("controls.bindings", {}) or {}
+        for action, label, default_key in self.KEY_ACTIONS:
+            code = get_binding(bindings, action, default_key)
+            btn = self.settings_menu.add.button(
+                f"{label}: {key_display_name(code)}",
+                lambda a=action: self._start_capture(a),
+            )
+            self.key_buttons[action] = btn
+        self.settings_menu.add.button("返回", pygame_menu.events.BACK)
+
+    def _on_scheme_change(self):
+        value = self.scheme_selector.get_value()[0][1]
+        self._save("controls.scheme", value)
+
+    def _start_capture(self, action):
+        self.capturing = action
+        label = self.action_labels[action]
+        self.key_buttons[action].set_title(f"{label}: 按任意键...(ESC取消)")
+
+    def _cancel_capture(self):
+        if self.capturing:
+            action = self.capturing
+            label = self.action_labels[action]
+            bindings = cfg_get("controls.bindings", {}) or {}
+            default_key = dict((a, d) for a, _, d in self.KEY_ACTIONS)[action]
+            code = get_binding(bindings, action, default_key)
+            self.key_buttons[action].set_title(f"{label}: {key_display_name(code)}")
+            self.capturing = None
+
+    def handle_keydown(self, event):
+        """按键捕获中时消费 KEYDOWN；返回 True 表示已消费"""
+        if self.capturing and event.type == pygame.KEYDOWN:
+            action = self.capturing
+            label = self.action_labels[action]
+            if event.key != pygame.K_ESCAPE:
+                name = pygame.key.name(event.key)
+                self._save(f"controls.bindings.{action}", name)
+                self.key_buttons[action].set_title(
+                    f"{label}: {key_display_name(event.key)}"
+                )
+            else:
+                self._cancel_capture()
+                return True
+            self.capturing = None
+            return True
+        return False
+
+    def on_escape(self):
+        """ESC 到达时：捕获中则取消并消费；否则返回 False 让主循环恢复游戏"""
+        if self.capturing:
+            self._cancel_capture()
+            return True
+        return False
+
+    def open_settings(self):
+        self.pause_menu._open(self.settings_menu)
+
+    def resume(self):
+        self.game.paused = False
+        self.hide()
+
+    def disconnect(self):
+        self.hide()
+        self.game.paused = False
+        nm = getattr(self.game, "network_manager", None)
+        if nm is not None:
+            try:
+                nm.stop()
+            except Exception:
+                pass
+            self.game.network_manager = None
+        self.game.state = "MENU"
+
+    def quit_game(self):
+        self.game.running = False
+
+    def show(self):
+        self.pause_menu.enable()
+
+    def hide(self):
+        self._cancel_capture()
+        self.pause_menu.disable()
+
+    def is_open(self):
+        return self.pause_menu.is_enabled()
+
+    def update(self, events):
+        if self.pause_menu.is_enabled():
+            self.pause_menu.update(events)
+
+    def draw(self):
+        if self.pause_menu.is_enabled():
+            self.pause_menu.draw(self.screen)
+
+
+class CombatFeedbackManager:
+    """战斗反馈：hitmarker / 伤害数字 / killfeed
+
+    数据源为 network._emit_combat_event 经 combat_feedback 通道下发的事件，
+    不另起同步机制。
+    """
+
+    HITMARKER_DURATION = 0.25
+    DAMAGE_NUMBER_DURATION = 1.0
+    KILLFEED_DURATION = 5.0
+    KILLFEED_MAX = 5
+
+    def __init__(self, screen, game):
+        self.screen = screen
+        self.game = game
+        self.hitmarker_until = 0.0
+        self.damage_numbers = []
+        self.killfeed = []
+
+    def _local_id(self):
+        nm = getattr(self.game, "network_manager", None)
+        return getattr(nm, "player_id", None) if nm is not None else None
+
+    def _play(self, name):
+        try:
+            from audio import audio as audio_mgr
+            audio_mgr.play(name)
+        except Exception:
+            pass
+
+    def on_event(self, event):
+        if not isinstance(event, dict):
+            return
+        kind = event.get("kind")
+        now = time.time()
+        local_id = self._local_id()
+        if kind == "hit":
+            if event.get("attacker_id") == local_id:
+                self.hitmarker_until = now + self.HITMARKER_DURATION
+                pos = event.get("target_pos")
+                if pos:
+                    try:
+                        self.damage_numbers.append(
+                            {
+                                "x": float(pos[0]),
+                                "y": float(pos[1]),
+                                "text": str(event.get("damage", "")),
+                                "born": now,
+                            }
+                        )
+                    except (TypeError, ValueError, IndexError):
+                        pass
+                self._play("hit")
+        elif kind == "kill":
+            text = f"{event.get('attacker_name', '?')} 击杀了 {event.get('target_name', '?')}"
+            highlight = event.get("attacker_id") == local_id
+            self.killfeed.append(
+                {"text": text, "highlight": highlight, "born": now}
+            )
+            self.killfeed = self.killfeed[-self.KILLFEED_MAX:]
+            if highlight or event.get("target_id") == local_id:
+                self._play("kill")
+
+    def update(self):
+        now = time.time()
+        self.damage_numbers = [
+            d
+            for d in self.damage_numbers
+            if now - d["born"] < self.DAMAGE_NUMBER_DURATION
+        ]
+        self.killfeed = [
+            k for k in self.killfeed if now - k["born"] < self.KILLFEED_DURATION
+        ]
+
+    def draw(self):
+        global small_font
+        now = time.time()
+
+        if now < self.hitmarker_until:
+            alpha = (self.hitmarker_until - now) / self.HITMARKER_DURATION
+            mx, my = pygame.mouse.get_pos()
+            s = 12
+            surf = pygame.Surface((s * 2 + 4, s * 2 + 4), pygame.SRCALPHA)
+            color = (255, 255, 255, int(255 * max(0.0, alpha)))
+            pygame.draw.line(surf, color, (4, 4), (s * 2, s * 2), 3)
+            pygame.draw.line(surf, color, (s * 2, 4), (4, s * 2), 3)
+            self.screen.blit(surf, (mx - s - 2, my - s - 2))
+
+        camera = getattr(self.game, "camera", None)
+        if camera is not None:
+            for d in self.damage_numbers:
+                t = (now - d["born"]) / self.DAMAGE_NUMBER_DURATION
+                try:
+                    sp = camera.to_screen_vec(pygame.Vector2(d["x"], d["y"]))
+                except Exception:
+                    continue
+                sy = sp.y - t * 40
+                txt = small_font.render(d["text"], True, (255, 220, 80))
+                txt.set_alpha(int(255 * (1.0 - t)))
+                self.screen.blit(txt, (sp.x - txt.get_width() // 2, sy))
+
+        x = SCREEN_WIDTH - 340
+        y = 12
+        for k in self.killfeed:
+            t = (now - k["born"]) / self.KILLFEED_DURATION
+            alpha = int(255 * (1.0 - t)) if t > 0.7 else 255
+            color = (255, 215, 0) if k["highlight"] else (230, 230, 230)
+            txt = small_font.render(k["text"], True, color)
+            txt.set_alpha(alpha)
+            self.screen.blit(txt, (x, y))
+            y += 24

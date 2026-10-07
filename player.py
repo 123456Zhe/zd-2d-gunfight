@@ -553,7 +553,8 @@ class Player:
                     if self.controlled_door is None:
                         self._update_twinstick_aim(camera)
                     # 朝向以有限角速度转向瞄准方向（保住视野锥的战术意义）
-                    turn_speed = cfg_get("aiming.turn_speed", 540)
+                    turn_speed = cfg_get("aiming.turn_speed", 540) * \
+                        cfg_get("aiming.sensitivity", 1.0)
                     self.angle = turn_angle_toward(self.angle, self.aim_angle,
                                                       turn_speed * dt)
                     # 左键射击；空格 / 右键开镜（仅枪械）
