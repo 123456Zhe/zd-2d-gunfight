@@ -183,7 +183,6 @@ class Bullet:
         self.speed = custom_speed if custom_speed is not None else BULLET_SPEED
         self.radius = BULLET_RADIUS
         self.creation_time = bullet_data['time']
-        self.has_hit = set()
 
     def update(self, dt, game_map, players, network_manager=None):
         """更新子弹位置并检测碰撞"""
@@ -198,9 +197,7 @@ class Bullet:
         
         # 检查与其他玩家的碰撞
         for player in players.values():
-            if (player.id != self.owner_id and 
-                not player.is_dead and 
-                player.id not in self.has_hit):
+            if player.id != self.owner_id and not player.is_dead:
                 
                 # 检查是否是队友（友军伤害开启时不跳过）
                 if network_manager and not friendly_fire_enabled(
@@ -238,7 +235,6 @@ class Bullet:
                     PLAYER_RADIUS * 2
                 )
                 if bullet_rect.colliderect(player_rect):
-                    self.has_hit.add(player.id)
                     # 命中判定由服务端权威处理，客户端只做本地视觉移除
                     return True
         

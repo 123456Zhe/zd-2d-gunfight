@@ -14,7 +14,7 @@ from pathfinding.core.grid import Grid
 from pathfinding.finder.a_star import AStarFinder
 
 # 导入行为树和个性化系统
-from ai_behavior_tree import BehaviorTree
+from ai_behavior_tree import BehaviorTree, ai_has_reacted
 from ai_personality import AIPersonality, AIPersonalityTraits
 
 
@@ -34,7 +34,7 @@ class EnhancedAIPlayer:
 
         # 护甲系统
         self.armor = 0
-        self.armor_damage_reduction = 0.5
+        self.armor_damage_reduction = ITEM_ARMOR_REDUCTION
 
         # 速度提升效果
         self.speed_boost_end_time = 0
@@ -82,7 +82,7 @@ class EnhancedAIPlayer:
         self.pathfind_interval = 1.0
         self.grid_size = 20
         self.game_grid = None
-        self.finder = AStarFinder(diagonal_movement=DiagonalMovement.always)
+        self.finder = AStarFinder(diagonal_movement=DiagonalMovement.only_when_no_obstacle)
 
         # 巡逻路径
         self.patrol_points = []
@@ -131,6 +131,7 @@ class EnhancedAIPlayer:
     def track_enemy_motion(self, enemies):
         """根据敌人位置变化估算其速度，用于计算射击提前量"""
         now = time.time()
+        seen_ids = set()
         for enemy in enemies:
             enemy_id = enemy.get("id")
             if enemy_id is None:
@@ -149,6 +150,17 @@ class EnhancedAIPlayer:
                         self.enemy_velocity[enemy_id] = previous.lerp(velocity, 0.4)
 
             self.enemy_tracks[enemy_id] = {"pos": pos, "time": now}
+            seen_ids.add(enemy_id)
+
+        # 清理过期（5 秒未更新）或已不在敌人列表中的 track，防止内存泄漏
+        # 及对着已死亡/离线敌人的最后位置打提前量
+        stale_ids = [
+            eid for eid, track in self.enemy_tracks.items()
+            if eid not in seen_ids or now - track["time"] > 5.0
+        ]
+        for eid in stale_ids:
+            self.enemy_tracks.pop(eid, None)
+            self.enemy_velocity.pop(eid, None)
 
     def _update_aim_error(self, dt):
         """瞄准误差缓慢漂移，短时间内保持稳定，避免每帧乱跳"""
@@ -281,16 +293,15 @@ class EnhancedAIPlayer:
         # 为了更安全，扩展2个网格（40像素）
         expansion = max(1, int((PLAYER_RADIUS + 10) // self.grid_size))
 
-        # 标记墙壁（扩大区域以避免路径点太靠近墙壁）
+        # 标记墙壁（按 expansion 格数扩大，避免路径点太靠近墙壁）
         for wall in game_map.walls:
-            # 扩大墙壁区域
-            start_x = max(0, (wall.left - PLAYER_RADIUS - 10) // self.grid_size)
+            start_x = max(0, wall.left // self.grid_size - expansion)
             end_x = min(
-                grid_width - 1, (wall.right + PLAYER_RADIUS + 10) // self.grid_size
+                grid_width - 1, wall.right // self.grid_size + expansion
             )
-            start_y = max(0, (wall.top - PLAYER_RADIUS - 10) // self.grid_size)
+            start_y = max(0, wall.top // self.grid_size - expansion)
             end_y = min(
-                grid_height - 1, (wall.bottom + PLAYER_RADIUS + 10) // self.grid_size
+                grid_height - 1, wall.bottom // self.grid_size + expansion
             )
 
             for y in range(start_y, end_y + 1):
@@ -505,7 +516,7 @@ class EnhancedAIPlayer:
         """检查线段是否与矩形相交"""
         try:
             return rect.clipline((start.x, start.y), (end.x, end.y))
-        except:
+        except (TypeError, ValueError):
             min_x = min(start.x, end.x)
             max_x = max(start.x, end.x)
             min_y = min(start.y, end.y)
@@ -715,6 +726,10 @@ class EnhancedAIPlayer:
         if action.get("shoot") and not self.is_line_clear_of_allies(
             allies, action["angle"]
         ):
+            action["shoot"] = False
+
+        # 反应时间：锁定新目标后需经过反应时间才能开火
+        if action.get("shoot") and not ai_has_reacted(self):
             action["shoot"] = False
 
         # 检查门交互

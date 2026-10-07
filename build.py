@@ -79,8 +79,9 @@ def ensure_nuitka_available() -> None:
     try:
         import nuitka  # type: ignore  # noqa: F401
     except ImportError:
-        print("[build] Nuitka is not installed. Installing latest stable release...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "nuitka"])
+        print("[build] Nuitka is not installed.", file=sys.stderr)
+        print("[build] Install it yourself: pip install --upgrade nuitka ordered-set", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def resolve_profile(mode: str) -> dict[str, str | Path | list[str]]:
@@ -141,6 +142,12 @@ def build_command(args: argparse.Namespace, profile: dict[str, str | Path | list
 
     for package in THIRD_PARTY_PACKAGES:
         base_flags.append(f"--include-package={package}")
+
+    # 打包 settings.json：config.py 用 __file__ 所在目录定位它，
+    # 缺失会导致发行版静默回退默认配置（"唯一数据源"失效）
+    settings_file = PROJECT_ROOT / "settings.json"
+    if settings_file.exists():
+        base_flags.append(f"--include-data-files={settings_file}=settings.json")
 
     for plugin in resolve_available_plugins():
         base_flags.append(f"--enable-plugin={plugin}")
@@ -205,6 +212,11 @@ def clean_previous_outputs(output_dir: Path) -> None:
     if output_dir.exists():
         print(f"[build] Removing existing output directory: {output_dir}")
         shutil.rmtree(output_dir)
+    # 历史遗留的旧构建目录一并清理
+    legacy = Path(__file__).resolve().parent / "dist_nuitka"
+    if legacy.exists():
+        print(f"[build] Removing legacy output directory: {legacy}")
+        shutil.rmtree(legacy)
 
 
 def main() -> None:

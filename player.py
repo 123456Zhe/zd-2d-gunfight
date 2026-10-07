@@ -89,7 +89,7 @@ class Player:
         
         # 护甲系统
         self.armor = 0  # 护甲值
-        self.armor_damage_reduction = 0.5  # 护甲伤害减免比例
+        self.armor_damage_reduction = ITEM_ARMOR_REDUCTION
         
         # 伤害提升效果
         self.damage_boost_end_time = 0  # 伤害提升结束时间
@@ -139,7 +139,7 @@ class Player:
         
         if effect_type == 'health':
             old_health = self.health
-            self.health = min(self.health + effect.get('amount', 0), 100)
+            self.health = min(self.health + effect.get('amount', 0), self.max_health)
             healed = self.health - old_health
             self.effect_message = f"+{healed} 生命值"
         elif effect_type == 'ammo':
@@ -155,12 +155,12 @@ class Player:
         elif effect_type == 'speed_boost':
             duration = effect.get('duration', 10)
             self.speed_boost_end_time = time.time() + duration
-            self.speed_boost_multiplier = 1.5
+            self.speed_boost_multiplier = ITEM_SPEED_BOOST_MULTIPLIER
             self.effect_message = f"速度提升 {duration}秒"
         elif effect_type == 'damage_boost':
             duration = effect.get('duration', 15)
             self.damage_boost_end_time = time.time() + duration
-            self.damage_boost_multiplier = 1.5
+            self.damage_boost_multiplier = ITEM_DAMAGE_BOOST_MULTIPLIER
             self.effect_message = f"伤害提升 {duration}秒"
         elif effect_type == 'grenade':
             count = effect.get('count', 1)
@@ -177,13 +177,13 @@ class Player:
         current_time = time.time()
         
         if current_time < self.speed_boost_end_time:
-            self.speed_boost_multiplier = 1.5
+            self.speed_boost_multiplier = ITEM_SPEED_BOOST_MULTIPLIER
         else:
             self.speed_boost_end_time = 0
             self.speed_boost_multiplier = 1.0
         
         if current_time < self.damage_boost_end_time:
-            self.damage_boost_multiplier = 1.5
+            self.damage_boost_multiplier = ITEM_DAMAGE_BOOST_MULTIPLIER
         else:
             self.damage_boost_end_time = 0
             self.damage_boost_multiplier = 1.0
@@ -212,7 +212,7 @@ class Player:
             # 实际受到的伤害 = 总伤害 - 护甲吸收的伤害
             actual_damage = damage - actual_armor_absorb
             
-            print(f"[护甲] 伤害{damage}，护甲吸收{actual_armor_absorb}，实际伤害{actual_damage}，剩余护甲{self.armor}")
+            dprint(f"[护甲] 伤害{damage}，护甲吸收{actual_armor_absorb}，实际伤害{actual_damage}，剩余护甲{self.armor}")
         else:
             actual_damage = damage
         
@@ -247,7 +247,7 @@ class Player:
             self.weapon_type = "gun"
         
         self.last_weapon_switch = current_time
-        print(f"玩家{self.id}切换到{'近战武器' if self.weapon_type == 'melee' else '枪械'}")
+        dprint(f"玩家{self.id}切换到{'近战武器' if self.weapon_type == 'melee' else '枪械'}")
         return True
 
     def update_aim_offset(self):
@@ -377,7 +377,7 @@ class Player:
         # 重置道具效果
         self.reset_item_effects()
         
-        print(f"玩家{self.id}在位置({new_pos.x:.0f}, {new_pos.y:.0f})复活")
+        dprint(f"玩家{self.id}在位置({new_pos.x:.0f}, {new_pos.y:.0f})复活")
         
         if network_manager:
             # 发送复活事件

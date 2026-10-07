@@ -22,8 +22,21 @@ from enum import Enum, auto
 from constants import (
     PLAYER_RADIUS,
     FIELD_OF_VIEW,
+    AIMED_FIELD_OF_VIEW,
+    ITEMS_ENABLED,
+    ITEMS_RESPAWN_ENABLED,
     ITEMS_PICKUP_RANGE,
     ITEMS_SPAWN_COUNT,
+    ITEM_HEALTH_PACK_ENABLED,
+    ITEM_AMMO_BOX_ENABLED,
+    ITEM_ARMOR_ENABLED,
+    ITEM_SPEED_BOOST_ENABLED,
+    ITEM_DAMAGE_BOOST_ENABLED,
+    ITEM_GRENADE_ENABLED,
+    ITEM_GRENADE_THROW_SPEED,
+    ITEM_GRENADE_FUSE_TIME,
+    ITEM_GRENADE_FRICTION,
+    ITEM_GRENADE_BOUNCE_DAMPING,
     ITEM_HEALTH_PACK_HEAL,
     ITEM_HEALTH_PACK_RESPAWN,
     ITEM_AMMO_BOX_AMMO,
@@ -49,9 +62,6 @@ from constants import (
 )
 
 
-AIMED_FIELD_OF_VIEW = 30
-
-
 class ItemType(Enum):
     """道具类型枚举"""
     HEALTH_PACK = auto()
@@ -60,6 +70,17 @@ class ItemType(Enum):
     SPEED_BOOST = auto()
     DAMAGE_BOOST = auto()
     GRENADE = auto()
+
+
+# 道具类型 -> settings.json 开关（items.types.<type>.enabled）
+ITEM_TYPE_ENABLED = {
+    ItemType.HEALTH_PACK: ITEM_HEALTH_PACK_ENABLED,
+    ItemType.AMMO_BOX: ITEM_AMMO_BOX_ENABLED,
+    ItemType.ARMOR: ITEM_ARMOR_ENABLED,
+    ItemType.SPEED_BOOST: ITEM_SPEED_BOOST_ENABLED,
+    ItemType.DAMAGE_BOOST: ITEM_DAMAGE_BOOST_ENABLED,
+    ItemType.GRENADE: ITEM_GRENADE_ENABLED,
+}
 
 
 class Item:
@@ -140,7 +161,7 @@ class Item:
                 text = font.render(self.NAME[:1], True, (255, 255, 0))
             else:
                 text = pygame.font.Font(None, 20).render(self.NAME[:1], True, (255, 255, 0))
-        except:
+        except Exception:
             text = pygame.font.Font(None, 20).render(self.NAME[:1], True, (255, 255, 0))
         
         text_rect = text.get_rect(center=(screen_pos.x, screen_pos.y))
@@ -183,7 +204,6 @@ class HealthPack(Item):
     RADIUS = 15
     RESPAWN_TIME = ITEM_HEALTH_PACK_RESPAWN
     HEAL_AMOUNT = ITEM_HEALTH_PACK_HEAL
-    MAX_HEALTH = 100
     
     def get_effect(self, player: 'Player') -> Dict:
         return {
@@ -287,11 +307,10 @@ class Grenade(Item):
     RESPAWN_TIME = ITEM_GRENADE_RESPAWN
     DAMAGE = ITEM_GRENADE_DAMAGE
     EXPLOSION_RADIUS = ITEM_GRENADE_RADIUS
-    THROW_SPEED = 400
-    FUSE_TIME = 3.0
-    GRAVITY = 600
-    BOUNCE_DAMPING = 0.6
-    BOUNCE_COUNT = 3
+    THROW_SPEED = ITEM_GRENADE_THROW_SPEED
+    FUSE_TIME = ITEM_GRENADE_FUSE_TIME
+    FRICTION = ITEM_GRENADE_FRICTION
+    BOUNCE_DAMPING = ITEM_GRENADE_BOUNCE_DAMPING
     
     def get_effect(self, player: 'Player') -> Dict:
         return {
@@ -321,13 +340,17 @@ class ThrownGrenade:
         self.damage = Grenade.DAMAGE
         self.explosion_radius = Grenade.EXPLOSION_RADIUS
         self.fuse_time = Grenade.FUSE_TIME
-        self.gravity = Grenade.GRAVITY
+        self.friction = Grenade.FRICTION
         self.bounce_damping = Grenade.BOUNCE_DAMPING
     
     def update(self, dt: float, walls: List) -> bool:
         """更新手雷位置，返回是否爆炸"""
         if self.exploded:
             return True
+        
+        # 摩擦力：俯视角无重力，速度随时间指数衰减
+        if dt > 0:
+            self.velocity *= max(0.0, 1.0 - self.friction * dt)
         
         new_pos = self.pos + self.velocity * dt
         
@@ -365,7 +388,7 @@ class ThrownGrenade:
         obj.damage = Grenade.DAMAGE
         obj.explosion_radius = Grenade.EXPLOSION_RADIUS
         obj.fuse_time = Grenade.FUSE_TIME
-        obj.gravity = Grenade.GRAVITY
+        obj.friction = Grenade.FRICTION
         obj.bounce_damping = Grenade.BOUNCE_DAMPING
         obj.apply_state(state)
         return obj
@@ -448,7 +471,7 @@ class ItemManager:
         self.next_item_id = 1
         self.item_spawn_points: List[Tuple[float, float]] = []
         self.item_weights: Dict[ItemType, float] = {}
-        self.respawn_enabled = True
+        self.respawn_enabled = ITEMS_RESPAWN_ENABLED
     
     def generate_spawn_points(self, map_rooms: List[pygame.Rect], walls: List[pygame.Rect]):
         """生成道具生成点（避开墙壁和门）"""
@@ -488,7 +511,10 @@ class ItemManager:
                 weights = list(self.item_weights.values())
                 item_type = random.choices(types, weights=weights)[0]
             else:
-                item_type = random.choice(list(ItemType))
+                enabled_types = [t for t in ItemType if ITEM_TYPE_ENABLED.get(t, True)]
+                if not enabled_types:
+                    return None
+                item_type = random.choice(enabled_types)
         
         if pos is None:
             pos = random.choice(self.item_spawn_points)
@@ -508,10 +534,12 @@ class ItemManager:
             self.spawn_item()
     
     def spawn_all_types(self):
-        """确保每种道具类型都至少生成一个，每个位置都不同"""
+        """确保每种启用的道具类型都至少生成一个，每个位置都不同"""
         if not self.item_spawn_points:
             return
-        available_types = list(ItemType)
+        if not ITEMS_ENABLED:
+            return
+        available_types = [t for t in ItemType if ITEM_TYPE_ENABLED.get(t, True)]
         used_positions = set()
         
         for item_type in available_types:
@@ -570,130 +598,11 @@ class ItemManager:
         
         return None
     
-    def check_grenade_throw(self, player: 'Player', target_pos: pygame.Vector2,
-                           game_map, players: Dict) -> List[Dict]:
-        """检查手雷投掷效果 - 带墙壁反弹和视线检测"""
-        if getattr(player, 'grenades', 0) <= 0:
-            return []
-        
-        player.grenades -= 1
-        
-        explosion_radius = Grenade.EXPLOSION_RADIUS
-        explosion_damage = Grenade.DAMAGE
-        throw_speed = Grenade.THROW_SPEED
-        bounce_count = Grenade.BOUNCE_COUNT
-        
-        final_pos = self._simulate_grenade_path(
-            player.pos, target_pos, game_map, throw_speed, bounce_count
-        )
-        
-        targets = []
-        for other_id, other_player in players.items():
-            if other_id == player.id or other_player.is_dead:
-                continue
-            
-            if not self._has_line_of_sight(final_pos, other_player.pos, game_map):
-                continue
-            
-            distance = final_pos.distance_to(other_player.pos)
-            if distance <= explosion_radius:
-                damage_ratio = 1 - (distance / explosion_radius)
-                damage = int(explosion_damage * max(0.1, damage_ratio))
-                targets.append({
-                    'target_id': other_id,
-                    'damage': damage,
-                    'attacker_id': player.id,
-                    'type': 'grenade',
-                    'explosion_pos': (final_pos.x, final_pos.y)
-                })
-        
-        return targets
-    
-    def _simulate_grenade_path(self, start_pos: pygame.Vector2, target_pos: pygame.Vector2,
-                                 game_map, throw_speed: float, max_bounces: int) -> pygame.Vector2:
-        """模拟手雷轨迹，计算反弹后的最终位置"""
-        direction = (target_pos - start_pos).normalize()
-        current_pos = pygame.Vector2(start_pos)
-        velocity = direction * throw_speed
-        gravity = 200
-        dt = 0.05
-        
-        walls = getattr(game_map, 'walls', [])
-        
-        for bounce in range(max_bounces):
-            steps = int(3.0 / dt)
-            for step in range(steps):
-                velocity.y += gravity * dt
-                new_pos = current_pos + velocity * dt
-                
-                for wall in walls:
-                    if wall.collidepoint(new_pos.x, new_pos.y):
-                        if abs(velocity.x) > abs(velocity.y):
-                            velocity.x *= -0.6
-                        else:
-                            velocity.y *= -0.6
-                        new_pos = current_pos
-                        break
-                
-                current_pos = new_pos
-            
-            if velocity.length() < 50:
-                break
-        
-        return current_pos
-    
-    def _has_line_of_sight(self, from_pos: pygame.Vector2, to_pos: pygame.Vector2,
-                            game_map) -> bool:
-        """检查两点之间是否有视线（不穿过墙壁）"""
-        walls = getattr(game_map, 'walls', [])
-        doors = getattr(game_map, 'doors', [])
-        
-        for wall in walls:
-            if self._line_intersects_rect(from_pos, to_pos, wall):
-                return False
-        
-        # 按门板当前旋转后的实际形状判断遮挡
-        for door in doors:
-            if door.line_intersects(from_pos, to_pos):
-                return False
-        
-        return True
-    
-    def _line_intersects_rect(self, p1: pygame.Vector2, p2: pygame.Vector2, rect: pygame.Rect) -> bool:
-        """检查线段是否与矩形相交"""
-        if rect.left <= p1.x <= rect.right and rect.top <= p1.y <= rect.bottom:
-            return True
-        if rect.left <= p2.x <= rect.right and rect.top <= p2.y <= rect.bottom:
-            return True
-        
-        left = rect.left
-        right = rect.right
-        top = rect.top
-        bottom = rect.bottom
-        
-        if self._line_intersects_line(p1, p2, pygame.Vector2(left, top), pygame.Vector2(right, top)):
-            return True
-        if self._line_intersects_line(p1, p2, pygame.Vector2(right, top), pygame.Vector2(right, bottom)):
-            return True
-        if self._line_intersects_line(p1, p2, pygame.Vector2(right, bottom), pygame.Vector2(left, bottom)):
-            return True
-        if self._line_intersects_line(p1, p2, pygame.Vector2(left, bottom), pygame.Vector2(left, top)):
-            return True
-        
-        return False
-    
-    def _line_intersects_line(self, p1: pygame.Vector2, p2: pygame.Vector2,
-                               p3: pygame.Vector2, p4: pygame.Vector2) -> bool:
-        """检查两条线段是否相交"""
-        def ccw(a, b, c):
-            return (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x)
-        
-        return ccw(p1, p3, p4) != ccw(p2, p3, p4) and ccw(p1, p2, p3) != ccw(p1, p2, p4)
-    
     def update(self, dt: float):
         """更新所有道具"""
         for item in self.items.values():
-            item.update(dt)
+            if self.respawn_enabled:
+                item.update(dt)
     
     def get_active_items(self) -> List[Item]:
         """获取所有活跃道具"""
@@ -741,8 +650,10 @@ class ItemManager:
 
 
 def create_default_item_manager() -> ItemManager:
-    """创建默认的道具管理器"""
+    """创建默认的道具管理器（遵循 settings.json 的 enabled 开关）"""
     manager = ItemManager()
+    if not ITEMS_ENABLED:
+        return manager
     
     weights = {
         ItemType.HEALTH_PACK: ITEM_HEALTH_PACK_WEIGHT,
@@ -752,6 +663,8 @@ def create_default_item_manager() -> ItemManager:
         ItemType.DAMAGE_BOOST: ITEM_DAMAGE_BOOST_WEIGHT,
         ItemType.GRENADE: ITEM_GRENADE_WEIGHT,
     }
+    # 按类型开关过滤掉禁用的道具
+    weights = {t: w for t, w in weights.items() if ITEM_TYPE_ENABLED.get(t, True)}
     manager.set_spawn_weights(weights)
     
     return manager

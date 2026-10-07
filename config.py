@@ -96,10 +96,6 @@ class Settings:
         with open(settings_path, "w", encoding="utf-8") as f:
             json.dump(self._settings, f, indent=4, ensure_ascii=False)
 
-    def reload(self):
-        """重新加载配置"""
-        self._load_settings()
-
     def get_all(self) -> Dict[str, Any]:
         """获取所有配置"""
         return self._settings.copy()
@@ -123,11 +119,6 @@ def set(key: str, value: Any):
 def save():
     """保存配置"""
     settings.save()
-
-
-def reload():
-    """重新加载配置"""
-    settings.reload()
 
 
 # 游戏配置
@@ -189,7 +180,8 @@ AIM_OFFSET_LERP = get("aiming.offset_lerp", 0.25)
 
 # 网络配置
 SERVER_PORT = get("network.server_port", 5555)
-BUFFER_SIZE = get("network.buffer_size", 4096)
+MAX_PLAYERS = get("network.max_players", 10)
+BUFFER_SIZE = get("network.buffer_size", 65536)
 HEARTBEAT_INTERVAL = get("network.heartbeat_interval", 1.0)
 CLIENT_TIMEOUT = get("network.client_timeout", 5.0)
 CONNECTION_TIMEOUT = get("network.connection_timeout", 10.0)
@@ -198,6 +190,7 @@ SCAN_TIMEOUT = get("network.scan_timeout", 1.0)
 # 视角配置
 FIELD_OF_VIEW = get("vision.field_of_view", 120)
 VISION_RANGE = get("vision.vision_range", 300)
+AIMED_FIELD_OF_VIEW = get("vision.aimed_field_of_view", 30)
 
 # 聊天配置
 MAX_CHAT_MESSAGES = get("chat.max_messages", 10)
@@ -215,6 +208,12 @@ ITEMS_ENABLED = get("items.enabled", True)
 ITEMS_SPAWN_COUNT = get("items.spawn_count", 12)
 ITEMS_RESPAWN_ENABLED = get("items.respawn_enabled", True)
 ITEMS_PICKUP_RANGE = get("items.pickup_range", 35)
+ITEM_HEALTH_PACK_ENABLED = get("items.types.health_pack.enabled", True)
+ITEM_AMMO_BOX_ENABLED = get("items.types.ammo_box.enabled", True)
+ITEM_ARMOR_ENABLED = get("items.types.armor.enabled", True)
+ITEM_SPEED_BOOST_ENABLED = get("items.types.speed_boost.enabled", True)
+ITEM_DAMAGE_BOOST_ENABLED = get("items.types.damage_boost.enabled", True)
+ITEM_GRENADE_ENABLED = get("items.types.grenade.enabled", True)
 
 # 医疗包
 ITEM_HEALTH_PACK_WEIGHT = get("items.types.health_pack.weight", 0.35)
@@ -247,6 +246,10 @@ ITEM_DAMAGE_BOOST_RESPAWN = get("items.types.damage_boost.respawn_time", 25)
 # 手雷
 ITEM_GRENADE_WEIGHT = get("items.types.grenade.weight", 0.15)
 ITEM_GRENADE_DAMAGE = get("items.types.grenade.damage", 80)
+ITEM_GRENADE_THROW_SPEED = get("items.types.grenade.throw_speed", 400)
+ITEM_GRENADE_FUSE_TIME = get("items.types.grenade.fuse_time", 3.0)
+ITEM_GRENADE_FRICTION = get("items.types.grenade.friction", 1.2)
+ITEM_GRENADE_BOUNCE_DAMPING = get("items.types.grenade.bounce_damping", 0.6)
 ITEM_GRENADE_RADIUS = get("items.types.grenade.explosion_radius", 140)
 ITEM_GRENADE_RESPAWN = get("items.types.grenade.respawn_time", 40)
 

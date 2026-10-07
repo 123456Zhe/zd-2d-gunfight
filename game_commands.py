@@ -135,6 +135,14 @@ class GameCommandSystem:
             prefix = COMMANDS_PREFIX
             return f"未知命令: {prefix}{cmd_name}，输入 {prefix}help 查看帮助"
 
+        # 集中权限校验：新增命令无需各自手写，漏写也不再越权
+        if cmd.permission == CommandPermission.SERVER and not is_server:
+            return "该命令仅限服务端执行"
+        if cmd.permission == CommandPermission.ADMIN and not (
+            is_server and player_id == 1
+        ):
+            return "该命令需要管理员权限"
+
         try:
             result = cmd.handler(args, game, player_id, is_server)
             return result if result else "操作成功"
@@ -467,6 +475,8 @@ class GameCommandSystem:
         def heal_handler(args, game, player_id, is_server) -> str:
             if not is_server:
                 return "只有服务器可以治疗玩家"
+            if player_id != 1:
+                return "只有管理员可以治疗玩家"
             if len(args) < 1:
                 return f"用法: {prefix}heal <玩家ID|all>"
             try:

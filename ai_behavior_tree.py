@@ -9,7 +9,14 @@ import math
 import time
 import pygame
 from constants import *
-from utils import dprint
+from utils import dprint, is_in_field_of_view
+
+
+def ai_has_reacted(ai_player):
+    """AI 是否已度过对当前锁定目标的反应时间（防零反应瞬狙）"""
+    reaction_time = getattr(ai_player, 'reaction_time', 0.3)
+    last_seen = getattr(ai_player, '_last_seen_target', None)
+    return last_seen is not None and time.time() - last_seen[1] >= reaction_time
 
 
 class NodeStatus(enum.Enum):
@@ -90,32 +97,6 @@ class SequenceNode(CompositeNode):
         return self.status
 
 
-class ParallelNode(CompositeNode):
-    """并行节点：同时执行所有子节点"""
-    
-    def __init__(self, name="Parallel", children=None, success_count=1):
-        super().__init__(name, children)
-        self.success_count = success_count  # 需要成功的子节点数量
-    
-    def tick(self, ai_player, blackboard):
-        success_count = 0
-        failure_count = 0
-        
-        for child in self.children:
-            status = child.tick(ai_player, blackboard)
-            if status == NodeStatus.SUCCESS:
-                success_count += 1
-            elif status == NodeStatus.FAILURE:
-                failure_count += 1
-        
-        if success_count >= self.success_count:
-            self.status = NodeStatus.SUCCESS
-        elif failure_count > len(self.children) - self.success_count:
-            self.status = NodeStatus.FAILURE
-        else:
-            self.status = NodeStatus.RUNNING
-        
-        return self.status
 
 
 class DecoratorNode(BehaviorNode):
@@ -133,53 +114,8 @@ class DecoratorNode(BehaviorNode):
         child.parent = self
 
 
-class InverterNode(DecoratorNode):
-    """反转节点：反转子节点的结果"""
-    
-    def tick(self, ai_player, blackboard):
-        if not self.child:
-            return NodeStatus.FAILURE
-        
-        status = self.child.tick(ai_player, blackboard)
-        if status == NodeStatus.SUCCESS:
-            return NodeStatus.FAILURE
-        elif status == NodeStatus.FAILURE:
-            return NodeStatus.SUCCESS
-        else:
-            return NodeStatus.RUNNING
 
 
-class RepeatNode(DecoratorNode):
-    """重复节点：重复执行子节点指定次数"""
-    
-    def __init__(self, name="Repeat", child=None, count=-1):
-        super().__init__(name, child)
-        self.count = count  # -1表示无限重复
-        self.current_count = 0
-    
-    def tick(self, ai_player, blackboard):
-        if not self.child:
-            return NodeStatus.FAILURE
-        
-        if self.count > 0 and self.current_count >= self.count:
-            self.current_count = 0
-            return NodeStatus.SUCCESS
-        
-        status = self.child.tick(ai_player, blackboard)
-        if status == NodeStatus.SUCCESS:
-            self.current_count += 1
-            if self.count > 0 and self.current_count >= self.count:
-                return NodeStatus.SUCCESS
-            return NodeStatus.RUNNING
-        
-        return status
-    
-    def reset(self):
-        super().reset()
-        self.current_count = 0
-
-
-# ==================== 条件节点 ====================
 
 class ConditionNode(BehaviorNode):
     """条件节点基类"""
@@ -217,7 +153,8 @@ class HasEnemyInSight(ConditionNode):
         
         # 激进型AI使用更大的检测范围
         sight_range = 400 if is_aggressive else 300
-        close_range = 200  # 近距离范围（即使没有视线也尝试攻击）
+        # AI 视野锥与玩家一致（防 360° 全向感知）
+        sight_fov = FIELD_OF_VIEW
         
         best_enemy = None
         best_score = float('-inf')
@@ -232,8 +169,12 @@ class HasEnemyInSight(ConditionNode):
             
             has_los = ai_player.has_line_of_sight(enemy_pos, game_map)
             
-            # 优先选择有视线的敌人，如果距离很近也考虑
-            if not has_los and not (distance <= close_range and is_aggressive):
+            # 视野锥检查：只能感知到朝向视野内的敌人
+            if not is_in_field_of_view(ai_player.pos, ai_player.angle, enemy_pos, sight_fov):
+                continue
+
+            # 无视线不可锁定（移除激进型近距离穿墙感知豁免）
+            if not has_los:
                 continue
             
             # 威胁评估：能打到的、近的、残血的、正在开火的优先
@@ -252,8 +193,16 @@ class HasEnemyInSight(ConditionNode):
             blackboard['target_enemy'] = best_enemy
             blackboard['target_pos'] = pygame.Vector2(*best_enemy['pos'])
             blackboard['has_line_of_sight'] = best_has_los  # 记录是否有视线
+            # 记录首次锁定时间，用于反应时间延迟（防瞬狙）
+            now = time.time()
+            last_seen = getattr(ai_player, '_last_seen_target', None)
+            if not last_seen or last_seen[0] != best_enemy.get('id'):
+                ai_player._last_seen_target = (best_enemy.get('id'), now)
             return NodeStatus.SUCCESS
-        
+
+        # 失去目标：清除锁定记录，下次重新锁定需重新经过反应时间
+        if hasattr(ai_player, '_last_seen_target'):
+            delattr(ai_player, '_last_seen_target')
         return NodeStatus.FAILURE
 
 
@@ -297,7 +246,25 @@ class IsHealthLow(ConditionNode):
         self.threshold = threshold
     
     def tick(self, ai_player, blackboard):
-        if ai_player.health <= self.threshold:
+        threshold = self.threshold
+        traits = getattr(ai_player, "personality_traits", None)
+        if traits is not None:
+            threshold = traits.retreat_threshold * 100
+        if ai_player.health <= threshold:
+            return NodeStatus.SUCCESS
+        return NodeStatus.FAILURE
+
+
+class ShouldFlank(ConditionNode):
+    """性格是否倾向侧翼攻击（接 personality.should_flank）"""
+
+    def tick(self, ai_player, blackboard):
+        traits = getattr(ai_player, "personality_traits", None)
+        if traits is None:
+            return NodeStatus.SUCCESS
+        enemies = blackboard.get('enemies') or []
+        allies = blackboard.get('allies') or []
+        if traits.should_flank(len(enemies), len(allies)):
             return NodeStatus.SUCCESS
         return NodeStatus.FAILURE
 
@@ -1005,7 +972,8 @@ class RetreatAction(ActionNode):
         
         can_shoot = (not ai_player.is_reloading and 
                     ai_player.ammo > 0 and 
-                    time.time() - ai_player.last_shot_time >= BULLET_COOLDOWN)
+                    time.time() - ai_player.last_shot_time >= BULLET_COOLDOWN and 
+                    ai_player.can_shoot_at_target(target_pos, game_map))
         
         speed_multiplier = ai_player.get_movement_speed_multiplier()
         blackboard['action'] = {
@@ -1158,6 +1126,11 @@ class AmbushAction(ActionNode):
         target_enemy = blackboard.get('target_enemy')
         if not target_enemy:
             return NodeStatus.FAILURE
+        # 目标变化时丢弃针对旧目标的伏击点
+        target_id = target_enemy.get('id')
+        if self.ambush_position is not None and getattr(self, '_ambush_target_id', None) != target_id:
+            self.ambush_position = None
+        self._ambush_target_id = target_id
         
         enemy_pos = pygame.Vector2(*target_enemy['pos'])
         game_map = blackboard.get('game_map')
@@ -1276,16 +1249,8 @@ class TeamSupportAction(ActionNode):
     
     def __init__(self, name="TeamSupport"):
         super().__init__(name)
-        self.cost_calculator = None
     
     def tick(self, ai_player, blackboard):
-        if self.cost_calculator is None:
-            try:
-                from ai_cost_calculator import AICostCalculator
-                self.cost_calculator = AICostCalculator()
-            except ImportError:
-                self.cost_calculator = None
-        
         allies = blackboard.get('allies', [])
         enemies = blackboard.get('enemies', [])
         game_map = blackboard.get('game_map')
@@ -1780,6 +1745,7 @@ class BehaviorTree:
         flank_sequence = SequenceNode("FlankSequence")
         flank_sequence.children = [
             HasEnemyInSight("HasEnemyInSight"),
+            ShouldFlank("ShouldFlank"),
             FlankAction("FlankAction"),
             AttackAction("AttackAction")
         ]
@@ -1905,6 +1871,7 @@ class BehaviorTree:
         flank_sequence.children = [
             HasEnemyInSight("HasEnemyInSight"),
             HasTeammateNearby("HasTeammateNearby", max_distance=400),  # 有队友时才侧翼
+            ShouldFlank("ShouldFlank"),
             FlankAction("FlankAction"),
             AttackAction("AttackAction")
         ]

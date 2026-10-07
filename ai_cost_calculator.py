@@ -37,6 +37,7 @@ class AICostCalculator:
         # 代价网格缓存：避免每帧重算（AI 决策对网格的时效性要求很低）
         self.cost_update_interval = AI_COST_UPDATE_INTERVAL
         self._grid_cache = None
+        self._grid_cache_key = None
         self._grid_cache_time = 0.0
         
         # 预计算网格中心点坐标
@@ -97,8 +98,9 @@ class AICostCalculator:
             threat = distance_factor * los_factor * health_factor
             threat_cost += threat
         
-        # 归一化到0-1
-        return min(1.0, threat_cost / len(enemies)) if enemies else 0.0
+        # 归一化到0-1（按存活敌人计数：分子跳过死亡敌人，分母也要跳过）
+        alive = sum(1 for e in enemies if not e.get('is_dead', False))
+        return min(1.0, threat_cost / alive) if alive else 0.0
     
     def calculate_cover_value(self, position, enemies, game_map):
         """
@@ -153,9 +155,10 @@ class AICostCalculator:
         
         return min(1.0, cover_score / enemy_count)
     
-    def calculate_position_cost_grid(self, ai_pos, enemies, game_map, allies=None):
+    def calculate_position_cost_grid(self, ai_pos, enemies, game_map, allies=None,
+                                     center=None, radius=None):
         """
-        批量计算整个地图的代价网格
+        批量计算代价网格（默认整图；传入 center/radius 时只算窗口内格子）
         
         Args:
             ai_pos: AI当前位置
@@ -167,8 +170,14 @@ class AICostCalculator:
             numpy.ndarray or list: 代价网格（值越小越好）
         """
         # 命中缓存则直接复用，显著降低纯 Python 逐格计算的开销
+        # 缓存键包含计算窗口：窗口外格子是未计算的 0.0，不能给别的窗口用
         now = time.time()
+        cache_key = (
+            None if center is None else (int(center.x / self.grid_size), int(center.y / self.grid_size)),
+            radius,
+        )
         if (self._grid_cache is not None and
+                self._grid_cache_key == cache_key and
                 now - self._grid_cache_time < self.cost_update_interval):
             return self._grid_cache
         
@@ -178,9 +187,18 @@ class AICostCalculator:
         else:
             cost_grid = [[0.0 for _ in range(self.grid_width)] for _ in range(self.grid_height)]
         
-        # 计算每个网格点的代价
-        for i in range(self.grid_height):
-            for j in range(self.grid_width):
+        # 只计算搜索窗口内的格子（find_best_position 只在半径内找最优）
+        if center is not None and radius is not None:
+            ci = int(center.y / self.grid_size)
+            cj = int(center.x / self.grid_size)
+            r = int(radius / self.grid_size) + 1
+            i_range = range(max(0, ci - r), min(self.grid_height, ci + r + 1))
+            j_range = range(max(0, cj - r), min(self.grid_width, cj + r + 1))
+        else:
+            i_range = range(self.grid_height)
+            j_range = range(self.grid_width)
+        for i in i_range:
+            for j in j_range:
                 if HAS_NUMPY:
                     grid_x = self.grid_centers_x[j]
                     grid_y = self.grid_centers_y[i]
@@ -218,6 +236,7 @@ class AICostCalculator:
                     cost_grid[i][j] = max(0.0, total_cost)
         
         self._grid_cache = cost_grid
+        self._grid_cache_key = cache_key
         self._grid_cache_time = now
         return cost_grid
     
@@ -236,8 +255,11 @@ class AICostCalculator:
         Returns:
             pygame.Vector2: 最佳位置，如果找不到则返回None
         """
-        # 计算代价网格
-        cost_grid = self.calculate_position_cost_grid(ai_pos, enemies, game_map, allies)
+        # 计算代价网格（只算搜索半径内的格子，约 1/16 计算量）
+        cost_grid = self.calculate_position_cost_grid(
+            ai_pos, enemies, game_map, allies,
+            center=ai_pos, radius=max_search_radius
+        )
         
         # 只考虑在搜索半径内的位置
         ai_grid_x = int(ai_pos.x / self.grid_size)
@@ -420,7 +442,7 @@ class AICostCalculator:
         # 使用pygame的碰撞检测
         try:
             return rect.clipline((start.x, start.y), (end.x, end.y))
-        except:
+        except (TypeError, ValueError):
             # 如果失败，使用简单的边界检查
             min_x = min(start.x, end.x)
             max_x = max(start.x, end.x)

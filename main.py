@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import ipaddress
 
 # 第三方库导入
@@ -45,6 +46,7 @@ VISION_MAX_RANGE = ROOM_SIZE * 3 * 1.5
 from network import NetworkManager, ChatMessage, generate_default_player_name
 from player import Player
 from weapons import MeleeWeapon, Bullet
+from items import Grenade
 
 # 本地模块导入 - 工具和UI
 from utils import *
@@ -52,6 +54,16 @@ import ui
 
 # 本地模块导入 - 团队系统
 from team import TeamManager
+
+class AIPlayerWrapper:
+    """服务端碰撞检测用的轻量 AI 包装：每帧重新绑定 pos/存活状态"""
+
+    def __init__(self, ai):
+        self.id = ai.id
+        self.pos = ai.pos
+        self.is_dead = ai.is_dead
+        self.source = ai
+
 
 # generate_default_player_name is now imported from network module
 
@@ -117,43 +129,10 @@ def get_local_ip():
         local_ip = s.getsockname()[0]
         s.close()
         return local_ip
-    except:
+    except OSError:
         return "127.0.0.1"
 
 
-def get_network_range():
-    """
-    获取当前网络的IP地址范围
-
-    智能检测当前网络的子网掩码，尝试/24、/16、/8等常见掩码，
-    选择合适的网络范围（不超过65536个主机）。
-
-    Returns:
-        tuple: (网络地址, 广播地址) 的元组
-               例如: ("192.168.1.0", "192.168.1.255")
-               如果检测失败，返回默认值 ("192.168.1.1", "192.168.1.254")
-
-    Note:
-        - 优先使用较小的子网范围以提高扫描效率
-        - 对于10.x.x.x网段会尝试/16掩码
-        - 默认使用/24掩码作为后备方案
-    """
-    local_ip = get_local_ip()
-    try:
-        # 尝试多种常见的子网掩码
-        for prefix in [24, 16, 8]:
-            try:
-                network = ipaddress.IPv4Network(f"{local_ip}/{prefix}", strict=False)
-                # 如果网络不是太大（小于65536个主机），就使用这个
-                if network.num_addresses <= 65536:
-                    return str(network.network_address), str(network.broadcast_address)
-            except:
-                continue
-        # 默认使用/24
-        network = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
-        return str(network.network_address), str(network.broadcast_address)
-    except:
-        return "192.168.1.1", "192.168.1.254"
 
 
 def scan_for_servers():
@@ -211,7 +190,7 @@ def scan_for_servers():
                     ip_list_16 = list(network_16.hosts())
                     ip_lists.append(("16位网段", ip_list_16))
                     print(f"检测到/16网段: {network_16}, 包含{len(ip_list_16)}个IP")
-            except:
+            except ValueError:
                 pass
 
     except Exception as e:
@@ -223,7 +202,7 @@ def scan_for_servers():
         nearby_ips = [ipaddress.IPv4Address(f"{base_ip}.{i}") for i in range(1, 255)]
         ip_lists.append(("当前子网", nearby_ips))
         print(f"添加当前子网扫描: {base_ip}.1-254")
-    except:
+    except ValueError:
         pass
 
     # 如果没有任何IP列表，使用默认
@@ -245,47 +224,45 @@ def scan_for_servers():
     print(f"总共需要扫描 {len(all_ips)} 个唯一IP地址")
 
     def check_server(ip):
+        # with 语句保证 socket 关闭，sendto 抛异常也不泄漏句柄
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(SCAN_TIMEOUT)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(SCAN_TIMEOUT)
 
-            # 发送服务器探测消息
-            probe_msg = "server_probe"
-            sock.sendto(probe_msg.encode(), (str(ip), SERVER_PORT))
+                # 发送服务器探测消息
+                sock.sendto("server_probe".encode(), (str(ip), SERVER_PORT))
 
-            # 等待响应
-            try:
-                data, addr = sock.recvfrom(1024)
-                response = data.decode()
-                if response.startswith("server_info:"):
-                    # 解析服务器信息
-                    _, info = response.split(":", 1)
-                    server_info = json.loads(info)
-                    server_info["ip"] = str(ip)
+                # 等待响应
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    response = data.decode()
+                    if response.startswith("server_info:"):
+                        # 解析服务器信息
+                        _, info = response.split(":", 1)
+                        server_info = json.loads(info)
+                        server_info["ip"] = str(ip)
 
-                    # 使用服务器ID去重
-                    server_id = server_info.get("id")
+                        # 使用服务器ID去重
+                        server_id = server_info.get("id")
 
-                    with server_list_lock:
-                        if server_id and server_id in seen_server_ids:
-                            # 已经发现过这个服务器（可能是通过另一个IP）
-                            pass
-                        else:
-                            if server_id:
-                                seen_server_ids.add(server_id)
-                            found_servers.append(server_info)
-                            print(
-                                f"找到服务器: {ip} - {server_info.get('name', '未知')}"
-                            )
-            except socket.timeout:
-                pass
-            except Exception as e:
-                # 调试：打印解析错误
-                if str(ip) == local_ip:
-                    print(f"本机IP {ip} 响应解析失败: {e}")
-
-            sock.close()
-        except Exception as e:
+                        with server_list_lock:
+                            if server_id and server_id in seen_server_ids:
+                                # 已经发现过这个服务器（可能是通过另一个IP）
+                                pass
+                            else:
+                                if server_id:
+                                    seen_server_ids.add(server_id)
+                                found_servers.append(server_info)
+                                print(
+                                    f"找到服务器: {ip} - {server_info.get('name', '未知')}"
+                                )
+                except socket.timeout:
+                    pass
+                except (OSError, ValueError, json.JSONDecodeError) as e:
+                    # 调试：打印解析错误
+                    if str(ip) == local_ip:
+                        print(f"本机IP {ip} 响应解析失败: {e}")
+        except OSError as e:
             # 调试：打印连接错误
             if str(ip) == local_ip:
                 print(f"本机IP {ip} 连接失败: {e}")
@@ -297,23 +274,11 @@ def scan_for_servers():
         check_server(local_ip_addr)
         all_ips.remove(local_ip_addr)
 
-    # 使用线程池扫描其他IP
-    threads = []
-    for ip in all_ips:
-        thread = threading.Thread(target=check_server, args=(ip,))
-        thread.daemon = True
-        thread.start()
-        threads.append(thread)
-
-        # 限制并发线程数
-        if len(threads) >= 50:  # 增加并发数
-            for t in threads:
-                t.join()
-            threads = []
-
-    # 等待剩余线程完成
-    for thread in threads:
-        thread.join()
+    # 线程池并发扫描：as_completed 逐个回收，无 50 线程批 join 的长尾阻塞
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        futures = {executor.submit(check_server, ip): ip for ip in all_ips}
+        for future in as_completed(futures):
+            future.result()  # 异常已在 check_server 内处理，这里只为回收
 
     print(f"扫描完成，找到 {len(found_servers)} 个服务器")
     return found_servers
@@ -517,7 +482,11 @@ class Game:
                     self.running = False
                     return
                 elif event.type == KEYDOWN:
-                    if event.key == K_ESCAPE:
+                    if event.key == K_ESCAPE and show_player_name_edit:
+                        # 取消改名（优先于返回主菜单）
+                        show_player_name_edit = False
+                        player_name_active = False
+                    elif event.key == K_ESCAPE:
                         self.state = "MENU"
                         return
                     elif (
@@ -546,12 +515,10 @@ class Game:
                     elif player_name_active:
                         if event.key == K_BACKSPACE:
                             player_name_input = player_name_input[:-1]
-                        elif event.key == K_ESCAPE:
-                            show_player_name_edit = False
-                            player_name_active = False
                         else:
-                            if len(player_name_input) < 16:
-                                player_name_input += event.unicode
+                            ch = event.unicode
+                            if ch.isprintable() and len(player_name_input) < 16:
+                                player_name_input += ch
                 elif event.type == MOUSEBUTTONDOWN:
                     # 检查是否点击了修改名称按钮
                     if (
@@ -861,12 +828,12 @@ class Game:
                 if self.network_manager.player_id is None:
                     return False
 
-            # 随机选择一个房间作为出生点
-            spawn_room = random.choice(range(9))
-            spawn_row = spawn_room // 3
-            spawn_col = spawn_room % 3
-            spawn_x = spawn_col * ROOM_SIZE + ROOM_SIZE // 2
-            spawn_y = spawn_row * ROOM_SIZE + ROOM_SIZE // 2
+            # 初始化游戏地图（地图类型由 settings.json 的 map.type 决定）
+            # 地图需先于出生点创建：出生房间从地图房间列表取，不再假设 3x3
+            self.game_map = Map(MAP_TYPE)
+            spawn_rect = random.choice(self.game_map.rooms)
+            spawn_x = spawn_rect.centerx
+            spawn_y = spawn_rect.centery
 
             # 创建本地玩家
             player_name = self.connection_info.get(
@@ -881,8 +848,6 @@ class Game:
             )
             self.other_players = {}  # 存储其他玩家
 
-            # 初始化游戏地图（地图类型由 settings.json 的 map.type 决定）
-            self.game_map = Map(MAP_TYPE)
             self.bullets = []  # 本地子弹对象
             self.grenades = []  # 飞行手雷列表（由服务端状态同步）
             self.last_grenade_explosion = None  # 爆炸特效状态
@@ -903,11 +868,6 @@ class Game:
             print(f"初始化游戏失败: {e}")
             self.error_message = f"游戏初始化失败: {e}"
             return False
-
-    def on_server_name_received(self, server_name):
-        """处理接收到的服务器名称"""
-        self.server_name = server_name
-        print(f"接收到服务器名称: {server_name}")
 
     def handle_events(self):
         events = pygame.event.get()
@@ -1014,13 +974,6 @@ class Game:
             for ai_id, ai_player in self.ai_players.items():
                 if ai_id not in all_players:
                     # 创建一个简单的Player对象用于碰撞检测
-                    class AIPlayerWrapper:
-                        def __init__(self, ai):
-                            self.id = ai.id
-                            self.pos = ai.pos
-                            self.is_dead = ai.is_dead
-                            self.source = ai  # AI 每帧可能重新绑定 pos，这里保留真实对象
-
                     wrapper = AIPlayerWrapper(ai_player)
                     all_players[ai_id] = wrapper
                     dprint(
@@ -1115,17 +1068,30 @@ class Game:
 
                     # 创建或更新其他玩家
                     if pid not in self.other_players:
+                        pos = pdata.get("pos")
+                        if (
+                            not isinstance(pos, (list, tuple))
+                            or len(pos) != 2
+                            or not all(isinstance(v, (int, float)) for v in pos)
+                        ):
+                            continue  # 畸形同步包：缺有效坐标则跳过该玩家
                         player_name = pdata.get("name", f"玩家{pid}")
                         self.other_players[pid] = Player(
-                            pid, pdata["pos"][0], pdata["pos"][1], name=player_name
+                            pid, pos[0], pos[1], name=player_name
                         )
                         print(f"[客户端] 添加新玩家{pid}")
 
                     # 更新玩家数据
                     other_player = self.other_players[pid]
                     # 只在非复活状态下更新位置（记录为插值目标，渲染时平滑过渡）
-                    if not pdata.get("is_respawning", False):
-                        new_pos = pygame.Vector2(pdata["pos"])
+                    pos = pdata.get("pos")
+                    pos_valid = (
+                        isinstance(pos, (list, tuple))
+                        and len(pos) == 2
+                        and all(isinstance(v, (int, float)) for v in pos)
+                    )
+                    if not pdata.get("is_respawning", False) and pos_valid:
+                        new_pos = pygame.Vector2(pos)
                         now_sync = time.time()
                         prev = other_player.net_curr_pos
                         if prev is None or new_pos.distance_to(prev) > 300:
@@ -1148,11 +1114,11 @@ class Game:
                     else:
                         other_player.net_prev_angle = other_player.net_curr_angle
                         other_player.net_curr_angle = new_angle
-                    other_player.health = pdata["health"]
-                    other_player.ammo = pdata["ammo"]
+                    other_player.health = pdata.get("health", other_player.health)
+                    other_player.ammo = pdata.get("ammo", other_player.ammo)
                     other_player.armor = pdata.get("armor", 0)
-                    other_player.is_reloading = pdata["is_reloading"]
-                    other_player.shooting = pdata["shooting"]
+                    other_player.is_reloading = pdata.get("is_reloading", False)
+                    other_player.shooting = pdata.get("shooting", False)
                     other_player.is_dead = pdata.get("is_dead", False)
                     other_player.death_time = pdata.get("death_time", 0)
                     other_player.respawn_time = pdata.get("respawn_time", 0)
@@ -1170,15 +1136,16 @@ class Game:
                     # 同步状态（包括武器类型和瞄准状态）
                     other_player.sync_from_network(pdata)
 
-            # 更新AI玩家（仅服务端）
-            if self.network_manager.is_server:
-                self.update_ai_players(dt, all_players)
-
             # 服务端定期广播
             self.network_manager.update_and_broadcast()
 
             # 同步子弹
             self.sync_bullets()
+
+        # AI 独立节拍：每帧更新，不再绑定 20Hz 网络同步节拍
+        # （修复前 AI 每 50ms 只推进约 16.7ms 的位移，等效速度打三折）
+        if self.network_manager.is_server:
+            self.update_ai_players(dt, all_players)
 
         # 平滑其他玩家位置与朝向：在网络快照之间插值，消除 20Hz 跳变
         now_interp = time.time()
@@ -1213,9 +1180,10 @@ class Game:
         # 更新相机：位置平滑跟随玩家，瞄准偏移直接叠加。
         # 偏移方向跟随朝向，若连它一起平滑，开镜转身时相机会明显拖尾。
         if not self.player.is_dead and not self.player.is_respawning:
+            follow_k = 1.0 - (1.0 - CAMERA_FOLLOW_LERP) ** (dt * 60)
             self.camera_follow += (
                 self.player.pos - self.camera_follow
-            ) * CAMERA_FOLLOW_LERP
+            ) * follow_k
 
         target_center = self.camera_follow + self.player.aim_offset
 
@@ -1322,37 +1290,32 @@ class Game:
 
     def get_safe_spawn_pos(self, max_attempts=50):
         """获取安全的复活位置（不与墙壁或门碰撞）"""
-        # 尝试使用房间中心位置（更安全）
+        rooms = getattr(self.game_map, "rooms", [])
+        # 优先在房间中心附近随机（房间列表由地图类型决定，不再假设 3x3）
         for attempt in range(max_attempts):
-            room_id = random.randint(0, 8)
-            room_row = room_id // 3
-            room_col = room_id % 3
-
-            # 在房间中心附近随机位置
-            spawn_x = room_col * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
-            spawn_y = room_row * ROOM_SIZE + ROOM_SIZE // 2 + random.randint(-100, 100)
-
-            # 确保在房间边界内
-            spawn_x = max(
-                room_col * ROOM_SIZE + 50, min(spawn_x, (room_col + 1) * ROOM_SIZE - 50)
-            )
-            spawn_y = max(
-                room_row * ROOM_SIZE + 50, min(spawn_y, (room_row + 1) * ROOM_SIZE - 50)
-            )
-
-            # 检查位置是否安全
+            if not rooms:
+                break
+            room = random.choice(rooms)
+            spawn_x = room.centerx + random.randint(-100, 100)
+            spawn_y = room.centery + random.randint(-100, 100)
+            spawn_x = max(room.left + 50, min(spawn_x, room.right - 50))
+            spawn_y = max(room.top + 50, min(spawn_y, room.bottom - 50))
             if self.is_position_safe(spawn_x, spawn_y):
                 return spawn_x, spawn_y
 
-        # 如果所有尝试都失败，使用更保守的方法：在整个地图范围内随机尝试
-        for attempt in range(max_attempts):
-            spawn_x = random.randint(100, ROOM_SIZE * 3 - 100)
-            spawn_y = random.randint(100, ROOM_SIZE * 3 - 100)
+        # 备选：在整张地图包围盒内随机尝试
+        if rooms:
+            map_right = max(r.right for r in rooms)
+            map_bottom = max(r.bottom for r in rooms)
+            for attempt in range(max_attempts):
+                spawn_x = random.randint(100, max(101, map_right - 100))
+                spawn_y = random.randint(100, max(101, map_bottom - 100))
+                if self.is_position_safe(spawn_x, spawn_y):
+                    return spawn_x, spawn_y
 
-            if self.is_position_safe(spawn_x, spawn_y):
-                return spawn_x, spawn_y
-
-        # 如果还是找不到安全位置，返回地图中心（作为最后的备选）
+        # 最后备选：第一个房间中心
+        if rooms:
+            return rooms[0].centerx, rooms[0].centery
         return ROOM_SIZE * 1.5, ROOM_SIZE * 1.5
 
     def update_ai_players(self, dt, all_players):
@@ -1363,13 +1326,17 @@ class Game:
         # 准备玩家位置数据供AI使用
         players_data = {}
         for pid, player in all_players.items():
+            # AI 包装对象（AIPlayerWrapper）本身缺少感知字段，从真实 AI 对象取
+            real_player = getattr(player, "source", player)
             players_data[pid] = {
                 "pos": [player.pos.x, player.pos.y],
                 "is_dead": player.is_dead,
-                "shooting": getattr(player, "shooting", False),
-                "is_reloading": getattr(player, "is_reloading", False),
-                "is_walking": getattr(player, "is_walking", False),
-                "team_id": getattr(player, "team_id", None),  # 添加团队ID
+                "health": getattr(real_player, "health", 100),
+                "shooting": getattr(real_player, "shooting", False),
+                "is_reloading": getattr(real_player, "is_reloading", False),
+                "is_walking": getattr(real_player, "is_walking", False),
+                "is_making_sound": getattr(real_player, "is_making_sound", False),
+                "team_id": getattr(real_player, "team_id", None),  # 添加团队ID
             }
 
         # 添加网络玩家数据（合并，优先使用网络数据中的完整信息）
@@ -1381,6 +1348,13 @@ class Game:
                         "shooting": pdata.get("shooting", False),
                         "is_reloading": pdata.get("is_reloading", False),
                         "is_walking": pdata.get("is_walking", False),
+                        "is_making_sound": pdata.get(
+                            "is_making_sound",
+                            players_data[pid].get("is_making_sound", False),
+                        ),
+                        "health": pdata.get(
+                            "health", players_data[pid].get("health", 100)
+                        ),
                         "team_id": pdata.get(
                             "team_id", players_data[pid].get("team_id")
                         ),  # 优先使用网络数据中的team_id
@@ -1761,7 +1735,6 @@ class Game:
                     self.last_grenade_explosion['pos'].y,
                 )
                 alpha = int(255 * (1.0 - elapsed))
-                from items import Grenade
                 radius = max(1, int(Grenade.EXPLOSION_RADIUS * (elapsed / 1.0)))
                 grenade_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
                 pygame.draw.circle(grenade_surface, (255, 100, 0, alpha), (radius, radius), radius)
@@ -1808,10 +1781,6 @@ class Game:
             is_local_player=True,
         )
 
-        # 绘制视角指示（可选）
-        if self.show_vision and not self.player.is_dead:
-            self.draw_fov_indicator()
-
         # 绘制UI（总是在最上层）
         self.render_ui()
 
@@ -1837,8 +1806,12 @@ class Game:
         # 根据瞄准状态选择视野角度
         current_fov = 30 if self.player.is_aiming else 120
 
-        # 创建一个透明表面用于绘制视野
-        vision_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        # 复用预分配的透明表面，避免每帧创建全屏 Surface
+        vision_surface = getattr(self, "_vision_surface", None)
+        if vision_surface is None or vision_surface.get_size() != (SCREEN_WIDTH, SCREEN_HEIGHT):
+            vision_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+            self._vision_surface = vision_surface
+        vision_surface.fill((0, 0, 0, 0))
 
         # 玩家屏幕位置（相机中心即屏幕中心）
         player_screen_pos = self.camera.to_screen_vec(self.player.pos)
@@ -2216,10 +2189,6 @@ class Game:
             pygame.draw.polygon(self.screen, door.get_color(False), points)
             pygame.draw.polygon(self.screen, DARK_DOOR_COLOR, points, 1)
 
-    def draw_fov_indicator(self):
-        """绘制视角指示线"""
-        # 移除了视角边缘线和中心线的绘制
-
     def render_ui(self):
         """绘制UI元素（使用新的 pygame-menu 管理器）"""
         # 更新并绘制 HUD
@@ -2281,109 +2250,6 @@ class Game:
         self.chat_history_manager.update()
         self.chat_history_manager.draw()
 
-    def render_minimap(self):
-        """绘制小地图（显示所有队员的位置）"""
-        minimap_width, minimap_height = 200, 150
-        minimap_surface = pygame.Surface((minimap_width, minimap_height))
-        minimap_surface.fill(BLACK)
-
-        # 设置小地图的缩放比例
-        minimap_scale = 0.08
-        # 使玩家位于小地图中心
-        minimap_center_x = minimap_width / 2
-        minimap_center_y = minimap_height / 2
-
-        # 绘制游戏区域的房间和墙壁，以玩家为中心
-        for wall in self.game_map.walls:
-            rel_x = (wall.x - self.player.pos.x) * minimap_scale + minimap_center_x
-            rel_y = (wall.y - self.player.pos.y) * minimap_scale + minimap_center_y
-            rel_width = wall.width * minimap_scale
-            rel_height = wall.height * minimap_scale
-
-            # 只绘制在小地图区域内的墙壁
-            if (
-                rel_x + rel_width > 0
-                and rel_x < minimap_width
-                and rel_y + rel_height > 0
-                and rel_y < minimap_height
-            ):
-                pygame.draw.rect(
-                    minimap_surface, GRAY, (rel_x, rel_y, rel_width, rel_height)
-                )
-
-        # 绘制门
-        for door in self.game_map.doors:
-            if not door.is_open:  # 只绘制未完全打开的门
-                rel_x = (
-                    door.rect.x - self.player.pos.x
-                ) * minimap_scale + minimap_center_x
-                rel_y = (
-                    door.rect.y - self.player.pos.y
-                ) * minimap_scale + minimap_center_y
-                rel_width = door.rect.width * minimap_scale
-                rel_height = door.rect.height * minimap_scale
-
-                if (
-                    rel_x + rel_width > 0
-                    and rel_x < minimap_width
-                    and rel_y + rel_height > 0
-                    and rel_y < minimap_height
-                ):
-                    pygame.draw.rect(
-                        minimap_surface,
-                        door.get_color(False),
-                        (rel_x, rel_y, rel_width, rel_height),
-                    )
-
-        # 绘制本地玩家 - 始终在小地图中心
-        player_color = DEAD_COLOR if self.player.is_dead else self.player.color
-        if self.player.weapon_type == "melee":
-            player_color = MELEE_COLOR
-        pygame.draw.circle(
-            minimap_surface,
-            player_color,
-            (int(minimap_center_x), int(minimap_center_y)),
-            4,
-        )
-
-        # 移除了小地图上的视角方向线绘制
-
-        # 绘制瞄准指示
-        if not self.player.is_dead and self.player.is_aiming:
-            # 绘制瞄准圈
-            pygame.draw.circle(
-                minimap_surface,
-                AIM_COLOR,
-                (int(minimap_center_x), int(minimap_center_y)),
-                8,
-                1,
-            )
-
-        # 绘制近战攻击范围指示
-        if (
-            not self.player.is_dead
-            and self.player.weapon_type == "melee"
-            and self.player.melee_weapon.can_attack()
-        ):
-            # 绘制近战攻击范围
-            pygame.draw.circle(
-                minimap_surface,
-                MELEE_COLOR,
-                (int(minimap_center_x), int(minimap_center_y)),
-                int(MELEE_RANGE * minimap_scale),
-                1,
-            )
-
-        # 绘制小地图边框
-        pygame.draw.rect(
-            minimap_surface, WHITE, (0, 0, minimap_width, minimap_height), 2
-        )
-
-        # 将小地图绘制到屏幕上
-        self.screen.blit(
-            minimap_surface,
-            (SCREEN_WIDTH - minimap_width - 10, SCREEN_HEIGHT - minimap_height - 10),
-        )
 
     def detect_nearby_footsteps(self):
         """检测发出声音的玩家（静步0范围，正常移动根据速度调整范围0-400，开枪600范围）"""
@@ -2489,14 +2355,21 @@ class Game:
             arrow_x = center_x + screen_direction.x * arrow_distance
             arrow_y = center_y + screen_direction.y * arrow_distance
 
-            # 创建指示器表面
-            indicator_surface = pygame.Surface(
-                (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA
-            )
+            # 复用预分配的指示器表面，每声音清空一次
+            indicator_surface = getattr(self, "_indicator_surface", None)
+            if indicator_surface is None or indicator_surface.get_size() != (
+                SCREEN_WIDTH,
+                SCREEN_HEIGHT,
+            ):
+                indicator_surface = pygame.Surface(
+                    (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA
+                )
+                self._indicator_surface = indicator_surface
+            indicator_surface.fill((0, 0, 0, 0))
 
             # 根据声音强度调整箭头大小
             arrow_size = 10 + int(5 * sound_intensity)  # 10-15之间变化
-            angle = math.atan2(direction.y, direction.x)
+            angle = math.atan2(screen_direction.y, screen_direction.x)
 
             # 箭头顶点
             end_x = arrow_x + math.cos(angle) * arrow_size
@@ -2581,7 +2454,7 @@ class Game:
             elif self.state == "ERROR":
                 self.show_error_screen()
             elif self.state == "PLAYING":
-                dt = self.clock.tick(FPS) / 1000.0
+                dt = min(self.clock.tick(FPS) / 1000.0, 1 / 20)
                 self.handle_events()
                 self.update(dt)
 

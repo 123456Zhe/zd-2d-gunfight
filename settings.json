@@ -58,7 +58,8 @@
     },
     "network": {
         "server_port": 5555,
-        "buffer_size": 4096,
+        "max_players": 10,
+        "buffer_size": 65536,
         "heartbeat_interval": 1.0,
         "client_timeout": 5.0,
         "connection_timeout": 10.0,
@@ -66,7 +67,8 @@
     },
     "vision": {
         "field_of_view": 120,
-        "vision_range": 300
+        "vision_range": 300,
+        "aimed_field_of_view": 30
     },
     "chat": {
         "max_messages": 10,
@@ -121,7 +123,11 @@
                 "weight": 0.15,
                 "damage": 80,
                 "explosion_radius": 140,
-                "respawn_time": 40
+                "respawn_time": 40,
+                "throw_speed": 400,
+                "fuse_time": 3.0,
+                "friction": 1.2,
+                "bounce_damping": 0.6
             }
         }
     },

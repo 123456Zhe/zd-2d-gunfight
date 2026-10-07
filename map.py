@@ -361,8 +361,11 @@ class Door:
             self.animation_progress = max(
                 -1.0, min(1.0, state.get('animation_progress', 0.0))
             )
-            # 同步角速度，让远端也按同样的惯性继续摆动
-            self.swing_velocity = state.get('swing_velocity', 0.0)
+            # 同步角速度，让远端也按同样的惯性继续摆动；钳制防恶意超速
+            self.swing_velocity = max(
+                -DOOR_MAX_SPEED,
+                min(DOOR_MAX_SPEED, state.get('swing_velocity', 0.0)),
+            )
             self.state_version = state['version']
             self.update_rect()
             return True

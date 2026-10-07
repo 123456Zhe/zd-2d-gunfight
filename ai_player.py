@@ -61,7 +61,7 @@ class AIPlayer:
         self.pathfind_interval = 1.0  # 每秒重新计算路径
         self.grid_size = 20  # 网格大小（像素）
         self.game_grid = None
-        self.finder = AStarFinder(diagonal_movement=DiagonalMovement.always)
+        self.finder = AStarFinder(diagonal_movement=DiagonalMovement.only_when_no_obstacle)
         
         # 门交互
         self.last_door_interaction = 0

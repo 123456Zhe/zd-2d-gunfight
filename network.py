@@ -6,7 +6,7 @@ import random
 import math
 from pygame.locals import *
 from constants import (
-    SERVER_PORT, BUFFER_SIZE, HEARTBEAT_INTERVAL, CLIENT_TIMEOUT,
+    SERVER_PORT, MAX_PLAYERS, BUFFER_SIZE, HEARTBEAT_INTERVAL, CLIENT_TIMEOUT,
     CHAT_DISPLAY_TIME, MAX_CHAT_LENGTH, MAX_CHAT_MESSAGES,
     WHITE, RED, BLUE, GREEN, YELLOW, ORANGE, PURPLE,
     ROOM_SIZE, MAGAZINE_SIZE, CONNECTION_TIMEOUT, RESPAWN_TIME,
@@ -14,7 +14,8 @@ from constants import (
     MELEE_DAMAGE, HEAVY_MELEE_DAMAGE, PLAYER_RADIUS, BULLET_DAMAGE,
     BULLET_SPEED, BULLET_RADIUS, USE_ENHANCED_AI,
     MELEE_RANGE, MELEE_ANGLE, MELEE_COOLDOWN,
-    HEAVY_MELEE_RANGE, HEAVY_MELEE_ANGLE, HEAVY_MELEE_COOLDOWN
+    HEAVY_MELEE_RANGE, HEAVY_MELEE_ANGLE, HEAVY_MELEE_COOLDOWN,
+    PLAYER_SPEED, BULLET_COOLDOWN, RELOAD_TIME, ITEMS_PICKUP_RANGE
 )
 from utils import friendly_fire_enabled, has_line_of_sight, angle_difference, dprint
 
@@ -107,11 +108,17 @@ class NetworkManager:
         
         # 近战冷却（服务端权威校验）
         self._last_melee_time = {}
+
+        # 开火/换弹/位置校验（服务端权威）
+        self._last_fire_time = {}  # 玩家ID -> 上次开火时间（射速校验）
+        self._reload_start = {}  # 玩家ID -> 弹药打空后开始换弹的时间
+        self._last_pos_check = {}  # 玩家ID -> (上次校验位置, 时间)（速度校验）
         
         # 系统消息去重：近期团队加入广播
         self._recent_team_join_announcements = {}
         self._last_jointeam_command = {}
         self._recent_message_hashes = {}
+        self._chat_rate_limit = {}  # 玩家ID -> 上次聊天时间（服务端限频）
         
         if self.is_server:
             try:
@@ -187,6 +194,16 @@ class NetworkManager:
             print(f"[服务端] 分配新ID: {player_id}")
             return player_id
     
+    def _clear_player_combat_state(self, player_id):
+        """清理玩家断开后的战斗校验状态，避免字典无限增长"""
+        self._chat_rate_limit.pop(player_id, None)
+        self._last_fire_time.pop(player_id, None)
+        self._reload_start.pop(player_id, None)
+        self._last_pos_check.pop(player_id, None)
+        self._last_melee_time.pop(player_id, None)
+        self._seen_bullet_seq.pop(player_id, None)
+        self._seen_grenade_seq.pop(player_id, None)
+
     def recycle_player_id(self, player_id):
         """回收玩家ID"""
         if player_id != 1:  # 服务端ID不回收
@@ -212,7 +229,7 @@ class NetworkManager:
             'id': self.server_uuid,
             'name': server_name,
             'players': len(self.players),
-            'max_players': 10,
+            'max_players': MAX_PLAYERS,
             'version': '1.0'
         }
     
@@ -241,10 +258,6 @@ class NetworkManager:
                         self.connected = True
                         self.last_server_response = time.time()
                         print(f"连接成功！分配到玩家ID: {self.player_id}, 服务器名称: {self.server_name}")
-                        
-                        # 通知游戏实例服务器名称已更新
-                        if self.game_instance:
-                            self.game_instance.on_server_name_received(self.server_name)
                         return True
                         
                 except socket.timeout:
@@ -306,6 +319,7 @@ class NetworkManager:
                         del self.client_last_seen[addr]
                         if player_id in self.players:
                             del self.players[player_id]
+                        self._clear_player_combat_state(player_id)
                         
                         print(f"[服务端] 已清理玩家{player_id}的数据，当前玩家数: {len(self.players)}")
     
@@ -343,6 +357,12 @@ class NetworkManager:
             try:
                 data, addr = self.socket.recvfrom(BUFFER_SIZE)
                 message_str = data.decode()
+                
+                # 客户端：只接受来自已连接服务器地址的包，
+                # 防局域网内任意主机注入状态/伪造保活
+                if (not self.is_server and self.server_address
+                        and addr != (self.server_address, SERVER_PORT)):
+                    continue
                 
                 # 更新最后收到数据的时间
                 if self.is_server:
@@ -390,46 +410,23 @@ class NetworkManager:
                 
                 # 服务端将身份绑定到来源地址，绝不信任数据包中自称的玩家ID
                 sender_id = self.clients.get(addr) if self.is_server else None
+                msg_type = message['type']
+
+                # 未知地址门禁：未连接过的地址（除心跳外）消息一律丢弃。
+                # server_probe/connect_request 已在上游单独处理。
+                if self.is_server and sender_id is None and msg_type != 'heartbeat':
+                    continue
                 
                 with self.lock:
-                    msg_type = message['type']
                     msg_data = message.get('data', {})
                     
-                    if msg_type == 'player_update':
-                        self._update_players(msg_data, sender_id)
-                    elif msg_type == 'init_players':
-                        self._init_players(msg_data)
-                    elif msg_type == 'door_update':
-                        self._update_door(msg_data, sender_id)
-                    elif msg_type == 'item_update':
-                        self._update_items(msg_data)
-                    elif msg_type == 'item_pickup':
-                        self._handle_item_pickup(msg_data, sender_id)
-                    elif msg_type == 'request_bullet':
-                        self._handle_bullet_request(msg_data, sender_id)
-                    elif msg_type == 'bullets_update':
-                        self._update_bullets(msg_data)
-                    elif msg_type == 'request_grenade':
-                        self._handle_grenade_request(msg_data, sender_id)
-                    elif msg_type == 'grenade_update':
-                        self._update_grenades(msg_data)
-                    elif msg_type == 'hit_damage':
-                        self._handle_damage(msg_data, sender_id)
-                    elif msg_type == 'melee_attack':
-                        self._handle_melee_attack(msg_data, sender_id)
-                    elif msg_type == 'respawn':
-                        self._handle_respawn(msg_data, sender_id)
-                    elif msg_type == 'chat_message':
-                        # 服务端和客户端都使用_handle_chat_message
-                        # 服务端会处理队内聊天并转发，客户端直接接收
-                        self._handle_chat_message(msg_data, sender_id)
-                    elif msg_type == 'chat_history':
-                        self._handle_chat_history(msg_data)
-                    elif msg_type == 'heartbeat':
-                        self._handle_heartbeat(msg_data, addr)
-                    elif msg_type == 'kick':
-                        self._handle_kick(msg_data)
-                        
+                    # 单个 handler 异常只记日志不断线（防畸形包 DoS）
+                    try:
+                        self._dispatch_message(msg_type, msg_data, sender_id, addr)
+                    except Exception as e:
+                        print(f"处理 {msg_type} 消息异常: {e}")
+                        continue
+                    
             except socket.timeout:
                 continue
             except Exception as e:
@@ -440,11 +437,58 @@ class NetworkManager:
                     self.running = False
                 continue
 
+    def _dispatch_message(self, msg_type, msg_data, sender_id, addr):
+        """按消息类型分发到各 handler（调用方负责捕获异常）"""
+        if msg_type == 'player_update':
+            self._update_players(msg_data, sender_id)
+        elif msg_type == 'init_players':
+            self._init_players(msg_data)
+        elif msg_type == 'door_update':
+            self._update_door(msg_data, sender_id)
+        elif msg_type == 'item_update':
+            self._update_items(msg_data)
+        elif msg_type == 'item_pickup':
+            self._handle_item_pickup(msg_data, sender_id)
+        elif msg_type == 'request_bullet':
+            self._handle_bullet_request(msg_data, sender_id)
+        elif msg_type == 'bullets_update':
+            self._update_bullets(msg_data)
+        elif msg_type == 'request_grenade':
+            self._handle_grenade_request(msg_data, sender_id)
+        elif msg_type == 'grenade_update':
+            self._update_grenades(msg_data)
+        elif msg_type == 'hit_damage':
+            # 伤害由服务端权威模拟结算，从不经网络传输；
+            # 任何来源的 hit_damage 包一律丢弃（防单包秒杀）。
+            return
+        elif msg_type == 'melee_attack':
+            self._handle_melee_attack(msg_data, sender_id)
+        elif msg_type == 'respawn':
+            self._handle_respawn(msg_data, sender_id)
+        elif msg_type == 'chat_message':
+            # 服务端和客户端都使用_handle_chat_message
+            # 服务端会处理队内聊天并转发，客户端直接接收
+            self._handle_chat_message(msg_data, sender_id)
+        elif msg_type == 'chat_history':
+            self._handle_chat_history(msg_data)
+        elif msg_type == 'heartbeat':
+            self._handle_heartbeat(msg_data, addr)
+        elif msg_type == 'kick':
+            self._handle_kick(msg_data)
+
+
     def _handle_connection_request(self, addr, data=None):
         """处理连接请求（仅服务端）"""
         try:
             # 检查是否已经连接
             if addr in self.clients:
+                return
+            
+            # 房间满员检查：get_server_info 对外宣称 max_players=10
+            if len(self.players) >= MAX_PLAYERS:
+                self.socket.sendto(
+                    json.dumps({'type': 'room_full'}).encode(), addr
+                )
                 return
             
             # 分配玩家ID（使用新的ID管理系统）
@@ -466,6 +510,8 @@ class NetworkManager:
             
             # 初始化新玩家
             spawn_pos = self.get_safe_spawn_pos()
+            # 初始化位置校验基线（服务端权威速度校验用）
+            self._last_pos_check[new_player_id] = (list(spawn_pos), time.time())
             self.players[new_player_id] = {
                 'pos': spawn_pos,
                 'angle': 0,
@@ -599,6 +645,20 @@ class NetworkManager:
                                 max(0, min(float(pdata['pos'][0]), max_x)),
                                 max(0, min(float(pdata['pos'][1]), max_x)),
                             ]
+                            # 速度校验：位移/时间超上限视为瞬移作弊，忽略
+                            now = time.time()
+                            last = self._last_pos_check.get(pid)
+                            if last is not None:
+                                last_pos, last_time = last
+                                dt = now - last_time
+                                if dt > 0:
+                                    dx = pdata['pos'][0] - last_pos[0]
+                                    dy = pdata['pos'][1] - last_pos[1]
+                                    max_speed = PLAYER_SPEED * 1.5 * 1.5  # 加速上限×容差
+                                    if (dx * dx + dy * dy) ** 0.5 > max_speed * dt:
+                                        old_pos = self.players[pid].get('pos', pdata['pos'])
+                                        pdata['pos'] = list(old_pos)
+                            self._last_pos_check[pid] = (list(pdata['pos']), now)
                         # 保存当前权威数据
                         current_health = self.players[pid]['health']
                         current_is_dead = self.players[pid]['is_dead']
@@ -609,6 +669,8 @@ class NetworkManager:
                         current_speed_boost = self.players[pid].get('speed_boost_end_time', 0)
                         current_damage_boost = self.players[pid].get('damage_boost_end_time', 0)
                         current_grenades = self.players[pid].get('grenades', 0)
+                        # 弹药由服务端权威维护，不接受客户端上报值
+                        current_ammo = self.players[pid].get('ammo', MAGAZINE_SIZE)
                         
                         # 更新客户端发来的数据
                         self.players[pid].update(pdata)
@@ -623,6 +685,7 @@ class NetworkManager:
                         self.players[pid]['speed_boost_end_time'] = current_speed_boost
                         self.players[pid]['damage_boost_end_time'] = current_damage_boost
                         self.players[pid]['grenades'] = current_grenades
+                        self.players[pid]['ammo'] = current_ammo
                     else:
                         # 服务端不通过客户端上报创建新玩家，避免伪造条目
                         continue
@@ -682,7 +745,7 @@ class NetworkManager:
                             'type': 'door_update',
                             'data': door_data
                         }, addr)
-                    except:
+                    except OSError:
                         pass
     
     def _update_items(self, items_data):
@@ -697,32 +760,43 @@ class NetworkManager:
                     game.item_manager.set_state(items_data)
     
     def _handle_item_pickup(self, pickup_data, sender_id=None):
-        """处理道具拾取"""
+        """处理道具拾取（服务端权威：效果查表生成 + 距离校验）"""
         if isinstance(pickup_data, dict):
             player_id = pickup_data.get('player_id')
             # 服务端以来源地址绑定的身份为准，不信任包内自称的玩家ID
             if self.is_server and sender_id is not None:
                 player_id = sender_id
             item_id = pickup_data.get('item_id')
-            effect = pickup_data.get('effect', {})
-            
+
             if self.is_server and self.game_instance:
                 game = self.game_instance
                 if hasattr(game, 'item_manager') and player_id and item_id:
                     item_manager = game.item_manager
-                    
+
                     # 检查道具是否还存在且活跃
                     if item_id in item_manager.items:
                         item = item_manager.items[item_id]
                         if not item.is_active:
                             print(f"[服务端] 道具{item_id}已被拾取，忽略重复请求")
                             return
-                        
+                        if not item.can_pickup(player_id):
+                            return
+
+                        # 拾取者必须在道具附近（防隔空拾取）
+                        pdata = self.players.get(player_id)
+                        ppos = pdata.get('pos') if pdata else None
+                        if not ppos or len(ppos) != 2:
+                            return
+                        dist = ((ppos[0] - item.pos.x) ** 2 + (ppos[1] - item.pos.y) ** 2) ** 0.5
+                        if dist > ITEMS_PICKUP_RANGE:
+                            return
+
                         # 标记道具为已拾取
                         item.is_active = False
+                        item.last_pickup_time = time.time()
                         item.respawn_time_remaining = item.RESPAWN_TIME
                         print(f"[服务端] 道具{item_id}被玩家{player_id}拾取")
-                        
+
                         # 找到玩家并应用效果
                         player = None
                         if hasattr(game, 'player') and game.player and game.player.id == player_id:
@@ -731,10 +805,12 @@ class NetworkManager:
                             player = game.other_players[player_id]
                         elif hasattr(game, 'ai_players') and player_id in game.ai_players:
                             player = game.ai_players[player_id]
-                        
+
+                        # 效果由服务端查表生成，不信任客户端上报的 effect
+                        effect = item.get_effect(player)
                         if player and effect:
                             player.apply_item_effect(effect)
-                            
+
                             # 同步到self.players字典
                             if player_id in self.players:
                                 self.players[player_id]['health'] = player.health
@@ -743,8 +819,8 @@ class NetworkManager:
                                 self.players[player_id]['damage_boost_end_time'] = player.damage_boost_end_time
                                 self.players[player_id]['grenades'] = getattr(player, 'grenades', 0)
                                 print(f"[服务端] 同步玩家{player_id}状态: health={player.health}, armor={player.armor}")
-                        
-                        # 广播道具拾取消息给所有客户端
+
+                        # 广播拾取消息（携带服务端生成的效果）
                         self.send_data({
                             'type': 'item_pickup',
                             'data': {
@@ -753,12 +829,13 @@ class NetworkManager:
                                 'effect': effect
                             }
                         })
-                        
+
                         # 广播道具状态更新
                         self.send_item_update(item_manager.get_state())
-            
-            # 客户端：应用道具效果
+
+            # 客户端：应用服务端广播的道具效果
             if not self.is_server and self.game_instance:
+                effect = pickup_data.get('effect', {})
                 game = self.game_instance
                 player = None
                 if hasattr(game, 'player') and game.player and game.player.id == player_id:
@@ -767,11 +844,11 @@ class NetworkManager:
                     player = game.other_players[player_id]
                 elif hasattr(game, 'ai_players') and player_id in game.ai_players:
                     player = game.ai_players[player_id]
-                
+
                 if player and effect:
                     player.apply_item_effect(effect)
                     print(f"[客户端] 玩家{player_id}应用道具效果: {effect.get('message', '')}")
-    
+
     def send_item_update(self, items_state):
         """发送道具状态更新"""
         self.send_data({
@@ -790,34 +867,75 @@ class NetworkManager:
         })
 
     def _handle_bullet_request(self, bullet_data, sender_id=None):
-        """处理子弹发射请求 - 只有服务端处理"""
-        if self.is_server and isinstance(bullet_data, dict):
-            # 服务端以来源地址绑定的身份为准，防止冒用他人身份发射子弹
-            owner = bullet_data.get('owner')
-            if sender_id is not None:
-                owner = sender_id
-            # 序号去重：重传的同一发子弹只生成一次
-            seq = bullet_data.get('seq')
-            if seq is not None:
-                seen = self._seen_bullet_seq.setdefault(owner, set())
-                if seq in seen:
-                    return
-                seen.add(seq)
-                if len(seen) > 256:
-                    for old in sorted(seen)[:-64]:
-                        seen.discard(old)
-            now = time.time()
-            # 创建新子弹（位置/方向由客户端提供，移动与命中由服务端模拟）
-            new_bullet = {
-                'id': self.next_bullet_id,
-                'pos': bullet_data.get('pos'),
-                'dir': bullet_data.get('dir'),  # 简化为dir
-                'owner': owner,
-                'time': now,
-                'last_update': now,
-            }
-            self.next_bullet_id += 1
-            self.active_bullets.append(new_bullet)
+        """处理子弹发射请求 - 只有服务端处理（服务端权威校验）"""
+        if not self.is_server or not isinstance(bullet_data, dict):
+            return
+        # 服务端以来源地址绑定的身份为准，防止冒用他人身份发射子弹
+        owner = bullet_data.get('owner')
+        if sender_id is not None:
+            owner = sender_id
+        if owner not in self.players:
+            return
+        pdata = self.players[owner]
+        # 死亡玩家不能开火
+        if pdata.get('is_dead', False):
+            return
+        now = time.time()
+        # 服务端权威射速校验（留少量容差）
+        if now - self._last_fire_time.get(owner, 0) < BULLET_COOLDOWN * 0.9:
+            return
+        # 服务端权威弹药：打空后需经过换弹时间才能继续开火
+        ammo = pdata.get('ammo', 0)
+        if ammo <= 0:
+            reload_start = self._reload_start.get(owner)
+            if reload_start is None:
+                self._reload_start[owner] = now
+                return
+            if now - reload_start < RELOAD_TIME:
+                return
+            # 换弹完成
+            ammo = MAGAZINE_SIZE
+            pdata['ammo'] = ammo
+            del self._reload_start[owner]
+        # 出生点校验：子弹必须从开火者附近生成（防任意位置刷子弹）
+        spawn = bullet_data.get('pos')
+        ppos = pdata.get('pos')
+        if (not isinstance(spawn, (list, tuple)) or len(spawn) != 2
+                or not isinstance(ppos, (list, tuple)) or len(ppos) != 2):
+            return
+        max_dist = PLAYER_RADIUS + BULLET_RADIUS + PLAYER_SPEED * 0.25
+        if ((spawn[0] - ppos[0]) ** 2 + (spawn[1] - ppos[1]) ** 2) ** 0.5 > max_dist:
+            return
+        # 方向校验
+        direction = bullet_data.get('dir')
+        if (not isinstance(direction, (list, tuple)) or len(direction) != 2
+                or (direction[0] == 0 and direction[1] == 0)):
+            return
+        # 序号去重：重传的同一发子弹只生成一次
+        seq = bullet_data.get('seq')
+        if seq is not None:
+            seen = self._seen_bullet_seq.setdefault(owner, set())
+            if seq in seen:
+                return
+            seen.add(seq)
+            if len(seen) > 256:
+                for old in sorted(seen)[:-64]:
+                    seen.discard(old)
+        # 全部校验通过：扣减权威弹药并生成子弹
+        pdata['ammo'] = ammo - 1
+        if pdata['ammo'] <= 0:
+            self._reload_start[owner] = now
+        self._last_fire_time[owner] = now
+        new_bullet = {
+            'id': self.next_bullet_id,
+            'pos': [float(spawn[0]), float(spawn[1])],
+            'dir': [float(direction[0]), float(direction[1])],
+            'owner': owner,
+            'time': now,
+            'last_update': now,
+        }
+        self.next_bullet_id += 1
+        self.active_bullets.append(new_bullet)
 
     def _update_bullets(self, bullets_data):
         """更新子弹数据 - 客户端接收服务端的子弹"""
@@ -1455,9 +1573,19 @@ class NetworkManager:
         """处理复活事件"""
         if isinstance(respawn_data, dict) and 'player_id' in respawn_data and 'pos' in respawn_data:
             player_id = respawn_data['player_id']
-            # 服务端以来源地址绑定的身份为准，防止他人强制复活/传送
             if self.is_server and sender_id is not None:
+                # 服务端以来源地址绑定的身份为准，防止他人强制复活/传送
                 player_id = sender_id
+                # 只有死亡玩家才能复活（防活人发包刷血刷弹药）
+                pdata = self.players.get(player_id)
+                if not pdata or not pdata.get('is_dead', False):
+                    return
+                # 复活位置由服务端生成，不采用客户端上报的坐标（防传送）
+                respawn_data = dict(respawn_data)
+                respawn_data['pos'] = self.get_safe_spawn_pos()
+                # 重置战斗校验状态
+                self._reload_start.pop(player_id, None)
+                self._last_pos_check[player_id] = (list(respawn_data['pos']), time.time())
             if player_id in self.players:
                 dprint(f"[复活] 玩家{player_id}复活到位置{respawn_data['pos']}")
                 self.players[player_id].update({
@@ -1475,12 +1603,12 @@ class NetworkManager:
                     'is_aiming': False,  # 重置瞄准状态
                     'protection_end': time.time() + RESPAWN_PROTECTION  # 出生保护
                 })
-                
+
                 # 如果是本地玩家，还需要更新游戏实例中的玩家对象
                 game_instance = getattr(self, 'game_instance', None)
-                if (game_instance and hasattr(game_instance, 'player') and 
+                if (game_instance and hasattr(game_instance, 'player') and
                     game_instance.player and game_instance.player.id == player_id):
-                    
+
                     # 更新本地玩家对象
                     game_instance.player.pos.x = respawn_data['pos'][0]
                     game_instance.player.pos.y = respawn_data['pos'][1]
@@ -1491,13 +1619,23 @@ class NetworkManager:
                     game_instance.player.respawn_time = 0
                     game_instance.player.ammo = MAGAZINE_SIZE
                     game_instance.player.is_reloading = False
-                    
+
                     dprint(f"[复活] 本地玩家{player_id}已复活，位置更新为{respawn_data['pos']}")
-    
+
     def _handle_chat_message(self, chat_data, sender_id=None):
         """处理聊天消息"""
         if isinstance(chat_data, dict) and all(key in chat_data for key in ['player_id', 'message']):
             message = chat_data['message']
+            # 服务端不信任客户端的截断：超长消息直接截断 + 0.5 秒限频
+            if self.is_server:
+                if not isinstance(message, str):
+                    return
+                message = message[:MAX_CHAT_LENGTH]
+                now = time.time()
+                sender_key = sender_id if sender_id is not None else chat_data.get('player_id')
+                if now - self._chat_rate_limit.get(sender_key, 0) < 0.5:
+                    return
+                self._chat_rate_limit[sender_key] = now
             # 服务端以来源地址绑定的身份为准，防止客户端冒充管理员或其他玩家
             if self.is_server and sender_id is not None:
                 player_id = sender_id
@@ -1713,6 +1851,7 @@ class NetworkManager:
                             del self.client_last_seen[target_addr]
                         if target_id in self.players:
                             del self.players[target_id]
+                    self._clear_player_combat_state(target_id)
                             
                     # 回收玩家ID
                     self.recycle_player_id(target_id)
@@ -1834,8 +1973,9 @@ class NetworkManager:
                 y = float(args[2])
                 
                 # 确保坐标在地图范围内
-                x = max(0, min(x, self.map_width))
-                y = max(0, min(y, self.map_height))
+                map_size = ROOM_SIZE * 3
+                x = max(0, min(x, map_size))
+                y = max(0, min(y, map_size))
                 
                 if target == "all":
                     # 传送所有玩家
@@ -1911,6 +2051,7 @@ class NetworkManager:
             # 补充弹药
             self.players[player_id]['ammo'] = MAGAZINE_SIZE
             self.players[player_id]['is_reloading'] = False
+            self._reload_start.pop(player_id, None)
             self._send_system_message(f"已补充弹药")
             print(f"[服务端] 管理员{player_id}补充了弹药")
             
@@ -2244,6 +2385,23 @@ class NetworkManager:
                     self._send_system_message("离开团队失败：你不在任何团队中")
                 return
 
+            elif subcmd == 'delete':
+                if not subargs:
+                    self._send_system_message("用法: .team delete <团队ID>")
+                    return
+                try:
+                    team_id = int(subargs[0])
+                    # 管理员（玩家1）可删任意团队，否则仅队长可删
+                    ok = manager.delete_team(team_id, None if player_id == 1 else player_id)
+                    if ok:
+                        self._send_system_message(f"已删除团队 {team_id}")
+                        self._sync_team_info(player_id, None)
+                    else:
+                        self._send_system_message("删除失败：团队不存在或你不是队长")
+                except ValueError:
+                    self._send_system_message(f"无效的团队ID: {subargs[0]}")
+                return
+
             elif subcmd == 'list':
                 teams = manager.list_teams()
                 if teams:
@@ -2560,6 +2718,7 @@ class NetworkManager:
                                     del self.client_last_seen[addr]
                                 if player_id in self.players:
                                     del self.players[player_id]
+                                self._clear_player_combat_state(player_id)
             else:
                 # 客户端发送到服务端
                 self.socket.sendto(serialized, (self.server_address, SERVER_PORT))
@@ -2618,25 +2777,18 @@ class NetworkManager:
             for addr in list(self.clients.keys()):
                 try:
                     self.send_to_client(chat_data, addr)
-                except:
+                except OSError:
                     pass
 
     def request_fire_bullet(self, pos, direction, owner_id):
         """请求发射子弹"""
         if self.is_server:
-            # 服务端直接创建子弹
-            now = time.time()
-            new_bullet = {
-                'id': self.next_bullet_id,
-                'pos': pos,
-                'dir': direction,
-                'owner': owner_id,
-                'time': now,
-                'last_update': now,
-            }
-            self.next_bullet_id += 1
+            # 服务端：走与客户端请求相同的权威校验
             with self.lock:
-                self.active_bullets.append(new_bullet)
+                self._handle_bullet_request(
+                    {'pos': pos, 'dir': direction, 'owner': owner_id},
+                    sender_id=owner_id,
+                )
         else:
             # 客户端发送请求给服务端（带序号，支持重传去重）
             seq = self._next_fire_seq
@@ -2781,6 +2933,9 @@ class NetworkManager:
                     # 重置武器状态
                     player_data['ammo'] = MAGAZINE_SIZE
                     player_data['is_reloading'] = False
+                    self._reload_start.pop(player_id, None)  # 清除换弹计时
+                    # 重置速度校验基线（复活是合法传送）
+                    self._last_pos_check[player_id] = (list(spawn_pos), current_time)
                     # 复活后的出生保护
                     player_data['protection_end'] = current_time + RESPAWN_PROTECTION
                     
@@ -2843,6 +2998,6 @@ class NetworkManager:
         self.running = False
         try:
             self.socket.close()
-        except:
+        except OSError:
             pass
 
