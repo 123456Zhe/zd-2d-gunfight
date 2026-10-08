@@ -68,6 +68,8 @@ class AIPlayer:
         self.door_interaction_cooldown = 1.0  # 门交互冷却时间
         self.nearby_doors = []  # 附近的门
         self.target_door = None  # 当前目标门
+        self.waiting_for_door = None  # 正在等开的门：等完全打开再进门洞
+        self.waiting_for_door_since = 0.0
         
         # 静步系统
         self.is_walking = False  # 是否静步
@@ -262,6 +264,8 @@ class AIPlayer:
                             
                             if ai_distance_to_door < 80:  # AI在开门范围内
                                 self.target_door = door
+                                self.waiting_for_door = door
+                                self.waiting_for_door_since = current_time
                                 self.last_door_interaction = current_time
                                 return door
         
@@ -276,6 +280,8 @@ class AIPlayer:
                 # 如果AI非常接近门，也尝试开门
                 if distance < 50:
                     self.target_door = door
+                    self.waiting_for_door = door
+                    self.waiting_for_door_since = current_time
                     self.last_door_interaction = current_time
                     return door
         
@@ -451,6 +457,14 @@ class AIPlayer:
     
     def get_next_move_direction(self):
         """获取下一个移动方向"""
+        if self.waiting_for_door is not None:
+            door = self.waiting_for_door
+            if door.is_open:
+                self.waiting_for_door = None
+            elif time.time() - self.waiting_for_door_since > 3.0:
+                self.waiting_for_door = None
+            else:
+                return pygame.Vector2(0, 0)
         if not self.current_path or self.path_index >= len(self.current_path):
             return pygame.Vector2(0, 0)
         

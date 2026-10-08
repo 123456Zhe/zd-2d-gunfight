@@ -248,6 +248,25 @@ class Door:
         _play_door_sound('door_open', self.hinge)
         return True
     
+    def open_away_from(self, opener_pos):
+        """从 opener_pos 一侧开门：选择门板摆动远离开门者的方向。
+
+        门板拍到开门者会被推回（防夹），若开门者是 AI 且站在摆动弧内，
+        门会反复回退、AI 会被挡在门外造成死锁。让门朝远离人的方向摆即可避免。
+        """
+        if abs(self.animation_progress) >= 1.0:
+            return False
+        if abs(self.animation_progress) < 1e-6:
+            # 门处于关闭状态：比较两个终态门板自由端离手的距离，选远的
+            end_plus = self.hinge + rotate_vector(self.base_dir, DOOR_OPEN_ANGLE) * self.panel_length
+            end_minus = self.hinge + rotate_vector(self.base_dir, -DOOR_OPEN_ANGLE) * self.panel_length
+            op = pygame.Vector2(opener_pos.x, opener_pos.y)
+            if end_plus.distance_to(op) < end_minus.distance_to(op):
+                # + 方向离手更近，选 - 方向：给一个微小负值让 open() 判向 -1
+                self.animation_progress = -1e-9
+            # 否则保持 >= 0，open() 会判向 +1
+        return self.open()
+    
     def close(self):
         """开始自动播放关门动画"""
         if abs(self.animation_progress) <= 0.0:

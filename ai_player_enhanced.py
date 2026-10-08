@@ -93,6 +93,8 @@ class EnhancedAIPlayer:
         self.door_interaction_cooldown = 1.0
         self.door_positions = []
         self.target_door = None
+        self.waiting_for_door = None  # 正在等开的门：等完全打开再进门洞，避免被摆动门板挡住
+        self.waiting_for_door_since = 0.0
 
         # 静步系统
         self.is_walking = False
@@ -408,6 +410,16 @@ class EnhancedAIPlayer:
 
     def get_next_move_direction(self, game_map=None):
         """获取下一个移动方向，并检查碰撞"""
+        # 等门：门完全打开前不进门洞，避免走进摆动门板的路径导致门回退死锁
+        if self.waiting_for_door is not None:
+            door = self.waiting_for_door
+            if door.is_open:
+                self.waiting_for_door = None
+            elif time.time() - self.waiting_for_door_since > 3.0:
+                # 门 3 秒还没开（被挡住等异常），放弃等待重新寻路
+                self.waiting_for_door = None
+            else:
+                return pygame.Vector2(0, 0)
         if not self.current_path or self.path_index >= len(self.current_path):
             return pygame.Vector2(0, 0)
 
@@ -489,6 +501,8 @@ class EnhancedAIPlayer:
 
                             if ai_distance_to_door < 80:
                                 self.target_door = door
+                                self.waiting_for_door = door
+                                self.waiting_for_door_since = current_time
                                 self.last_door_interaction = current_time
                                 return door
 

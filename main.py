@@ -1564,8 +1564,8 @@ class Game:
                 if "interact_door" in action and action["interact_door"]:
                     door = action["interact_door"]
                     if not door.is_open:
-                        # AI开门
-                        door.open()
+                        # AI开门：门板朝远离 AI 的方向摆，避免拍到 AI 被推回造成死锁
+                        door.open_away_from(ai_player.pos)
                         try:
                             door_index = self.game_map.doors.index(door)
                             self.network_manager.update_door(
