@@ -71,14 +71,15 @@ from constants import PLAYER_SPEED, FPS  # Actually from settings.json
 ```
 
 ### AI System Selection
-AI type is controlled by `settings.json` → `ai.use_enhanced_ai`:
+Backend priority is controlled by `settings.json` → `ai.use_rl_ai` / `ai.use_enhanced_ai`:
 ```python
-# In main.py - conditional import based on config
-if USE_ENHANCED_AI:
-    from ai_player_enhanced import EnhancedAIPlayer as AIPlayer
-else:
-    from ai_player import AIPlayer
+# ai_factory.make_ai_player() picks the backend
+# 1. ai.use_rl_ai: rl_ai.RLAIPlayer (numpy PPO policy, assets/rl_ai_policy.npz)
+# 2. ai.use_enhanced_ai: ai_player_enhanced.EnhancedAIPlayer (behavior tree)
+# 3. fallback: ai_player.AIPlayer
 ```
+`ai.rl_fallback` controls whether a missing/broken policy falls back to the behavior tree.
+Re-export a trained policy with `python -m rl.export_policy --model <ppo.zip> --out assets/rl_ai_policy.npz`.
 
 ### File Organization
 - One class per file for major classes (Player, Game, NetworkManager)
@@ -91,6 +92,9 @@ else:
 - `player.py`: Player movement, shooting, health
 - `network.py`: UDP communication, state sync
 - `ai_player_enhanced.py`: Behavior tree AI
+- `rl_ai.py`: Neural-network AI (numpy inference + 47-dim observation encoder)
+- `ai_factory.py`: AI backend selection (RL / behavior tree / basic)
+- `rl/`: RL training pipeline (collect / BC / PPO / SAC / evaluate / export)
 - `team.py`: Team management system
 - `map.py`: Room-based map generation, hinged doors (oriented-box collision)
 - `camera.py`: World-to-screen transform with camera rotation

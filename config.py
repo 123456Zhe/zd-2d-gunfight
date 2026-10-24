@@ -53,7 +53,12 @@ class Settings:
                 "respawn_time": 3.0,
             },
             "network": {"server_port": 5555, "buffer_size": 4096},
-            "ai": {"use_enhanced_ai": True},
+            "ai": {
+                "use_enhanced_ai": True,
+                "use_rl_ai": True,
+                "rl_policy_path": "assets/rl_ai_policy.npz",
+                "rl_fallback": True,
+            },
             "commands": {"prefix": ".", "enabled": True},
         }
 
@@ -223,6 +228,9 @@ MAX_CHAT_LENGTH = get("chat.max_length", 50)
 
 # AI配置
 USE_ENHANCED_AI = get("ai.use_enhanced_ai", True)
+USE_RL_AI = get("ai.use_rl_ai", True)
+RL_POLICY_PATH = get("ai.rl_policy_path", "assets/rl_ai_policy.npz")
+RL_POLICY_FALLBACK = get("ai.rl_fallback", True)
 AI_COST_UPDATE_INTERVAL = get("ai.cost_update_interval", 0.25)
 COMMANDS_PREFIX = get("commands.prefix", ".")
 COMMANDS_ENABLED = get("commands.enabled", True)

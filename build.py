@@ -149,6 +149,16 @@ def build_command(args: argparse.Namespace, profile: dict[str, str | Path | list
     if settings_file.exists():
         base_flags.append(f"--include-data-files={settings_file}=settings.json")
 
+    policy_file = PROJECT_ROOT / "assets" / "rl_ai_policy.npz"
+    if policy_file.exists():
+        base_flags.append(
+            f"--include-data-files={policy_file}=assets/rl_ai_policy.npz"
+        )
+
+    # 神经网络 AI 是动态导入的，显式告诉 Nuitka 别漏掉
+    for module in ("rl_ai", "ai_factory"):
+        base_flags.append(f"--include-module={module}")
+
     for plugin in resolve_available_plugins():
         base_flags.append(f"--enable-plugin={plugin}")
 

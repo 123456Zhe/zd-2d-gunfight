@@ -22,19 +22,12 @@ from pygame.locals import *
 # 本地模块导入 - 常量（现在从 settings.json 加载）
 from constants import *
 
-# AI系统选择现在从 config/settings.json 加载
-# 如需修改，请编辑 settings.json 中的 "ai.use_enhanced_ai"
-if USE_ENHANCED_AI:
-    try:
-        from ai_player_enhanced import EnhancedAIPlayer as AIPlayer
-
-        print("[AI系统] 使用增强版AI系统（行为树+个性化特征）")
-    except ImportError as e:
-        print(f"[AI系统] 增强版AI导入失败: {e}，使用原版AI系统")
-        from ai_player import AIPlayer
+# AI 后端由 settings.json 决定：神经网络优先，加载失败时按配置回退行为树
+if USE_RL_AI:
+    print("[AI系统] 神经网络策略已启用（.addai 使用 RL AI）")
+elif USE_ENHANCED_AI:
+    print("[AI系统] 使用增强版AI系统（行为树+个性化特征）")
 else:
-    from ai_player import AIPlayer
-
     print("[AI系统] 使用原版AI系统")
 
 from map import Map, Door
@@ -1634,28 +1627,13 @@ class Game:
 
         spawn_x, spawn_y = self.get_safe_spawn_pos()
 
-        try:
-            if USE_ENHANCED_AI:
-                from ai_player_enhanced import EnhancedAIPlayer
-                from ai_personality import AIPersonality, AIPersonalityTraits
+        from ai_factory import make_ai_player
 
-                # 性格随机生成，玩家无法选择
-                personality_traits = AIPersonalityTraits.random_personality()
-
-                ai_player = EnhancedAIPlayer(
-                    ai_id, spawn_x, spawn_y, difficulty, personality_traits
-                )
-                ai_player_name = ai_player.name
-                use_enhanced_ai = True
-            else:
-                raise ImportError("USE_ENHANCED_AI is False")
-
-        except ImportError:
-            from ai_player import AIPlayer
-
-            ai_player = AIPlayer(ai_id, spawn_x, spawn_y, difficulty)
-            ai_player_name = f"AI_{difficulty}_{ai_id}"
-            use_enhanced_ai = False
+        ai_player, backend = make_ai_player(
+            ai_id, spawn_x, spawn_y, difficulty
+        )
+        ai_player_name = ai_player.name
+        use_enhanced_ai = backend != "basic"
 
         if hasattr(ai_player, "generate_patrol_points"):
             ai_player.generate_patrol_points(self.game_map)
@@ -1690,10 +1668,14 @@ class Game:
 
         self.network_manager.players[ai_id] = player_data
 
-        # 不显示性格信息
-        self.network_manager._send_system_message(
-            f"已添加AI玩家 (难度: {difficulty}, ID: {ai_id})"
-        )
+        if backend == "rl":
+            self.network_manager._send_system_message(
+                f"已添加神经网络AI (ID: {ai_id})"
+            )
+        else:
+            self.network_manager._send_system_message(
+                f"已添加AI玩家 (难度: {difficulty}, ID: {ai_id})"
+            )
 
         return ai_id
 

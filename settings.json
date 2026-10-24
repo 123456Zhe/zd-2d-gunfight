@@ -80,6 +80,9 @@
     },
     "ai": {
         "use_enhanced_ai": true,
+        "use_rl_ai": true,
+        "rl_policy_path": "assets/rl_ai_policy.npz",
+        "rl_fallback": true,
         "cost_update_interval": 0.25
     },
     "items": {

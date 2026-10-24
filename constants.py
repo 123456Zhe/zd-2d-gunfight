@@ -82,6 +82,9 @@ try:
         MAX_CHAT_LENGTH,
         # AI配置
         USE_ENHANCED_AI,
+        USE_RL_AI,
+        RL_POLICY_PATH,
+        RL_POLICY_FALLBACK,
         AI_COST_UPDATE_INTERVAL,
         COMMANDS_PREFIX,
         COMMANDS_ENABLED,
@@ -238,6 +241,9 @@ except ImportError:
 
     # AI配置
     USE_ENHANCED_AI = True
+    USE_RL_AI = True
+    RL_POLICY_PATH = "assets/rl_ai_policy.npz"
+    RL_POLICY_FALLBACK = True
     AI_COST_UPDATE_INTERVAL = 0.25
     COMMANDS_PREFIX = "."
     COMMANDS_ENABLED = True

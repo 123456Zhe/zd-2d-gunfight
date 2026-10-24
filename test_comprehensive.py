@@ -3,6 +3,7 @@
 用于验证代码重构后的所有功能
 """
 
+import math
 import sys
 import time
 import pygame
@@ -258,7 +259,41 @@ def test_ai_player_module():
         log_test("AI Player模块测试", False, str(e))
 
 # ============================================================================
-# 测试 8: 集成测试 - 模拟游戏场景
+# 测试 8: 神经网络 AI
+# ============================================================================
+def test_rl_ai_module():
+    """测试神经网络 AI 的加载与推理"""
+    print("\n=== 测试神经网络 AI ===")
+
+    try:
+        from ai_factory import make_ai_player
+
+        game_map = Map("grid3x3")
+        ai, backend = make_ai_player(900, 900, 900)
+        log_test("神经网络AI创建", backend == "rl", f"backend={backend}")
+
+        ai.generate_patrol_points(game_map)
+        players = {
+            ai.id: {"pos": [900, 900], "health": 100, "is_dead": False,
+                    "shooting": False, "is_reloading": False, "team_id": None},
+            1: {"pos": [1050, 900], "health": 100, "is_dead": False,
+                "shooting": False, "is_reloading": False, "team_id": None},
+        }
+        action = ai.update(1 / 60, players, game_map, [], None)
+
+        log_test("神经网络推理输出",
+                 isinstance(action, dict) and
+                 all(key in action for key in ("move", "angle", "shoot", "reload")))
+        log_test("神经网络动作数值有效",
+                 action["move"].length() <= PLAYER_SPEED + 1e-3 and
+                 math.isfinite(action["angle"]))
+
+    except Exception as e:
+        log_test("神经网络AI测试", False, str(e))
+
+
+# ============================================================================
+# 测试 9: 集成测试 - 模拟游戏场景
 # ============================================================================
 def test_game_integration():
     """集成测试 - 模拟完整游戏场景"""
@@ -322,6 +357,7 @@ def run_all_tests():
     test_map_module()
     test_network_module()
     test_ai_player_module()
+    test_rl_ai_module()
     test_game_integration()
     
     # 打印测试总结

@@ -2237,48 +2237,34 @@ class NetworkManager:
                 spawn_x, spawn_y = self._get_safe_spawn_pos_for_ai(game_instance)
             
             # 创建AI玩家（延迟导入以避免循环依赖）
-            # 检查是否使用增强版AI
-            try:
-                # 与 main.py 保持一致：由配置决定是否使用增强版AI
-                if not USE_ENHANCED_AI:
-                    raise ImportError("USE_ENHANCED_AI is False")
-                # 尝试导入增强版AI
-                from ai_player_enhanced import EnhancedAIPlayer
-                from ai_personality import AIPersonality, AIPersonalityTraits
-                
-                # 处理性格参数
-                if personality:
-                    # 尝试解析性格
-                    personality_map = {
-                        'aggressive': AIPersonality.AGGRESSIVE,
-                        'defensive': AIPersonality.DEFENSIVE,
-                        'tactical': AIPersonality.TACTICAL,
-                        'stealthy': AIPersonality.STEALTHY,
-                        'team': AIPersonality.TEAM_PLAYER,
-                        'team_player': AIPersonality.TEAM_PLAYER,
-                        'random': AIPersonality.RANDOM
-                    }
-                    
-                    if personality.lower() in personality_map:
-                        personality_traits = AIPersonalityTraits(personality_map[personality.lower()])
-                    else:
-                        # 无效的性格，使用随机
-                        personality_traits = AIPersonalityTraits.random_personality()
+            # 处理性格参数（神经网络模式会忽略它）
+            from ai_personality import AIPersonality, AIPersonalityTraits
+
+            if personality:
+                personality_map = {
+                    'aggressive': AIPersonality.AGGRESSIVE,
+                    'defensive': AIPersonality.DEFENSIVE,
+                    'tactical': AIPersonality.TACTICAL,
+                    'stealthy': AIPersonality.STEALTHY,
+                    'team': AIPersonality.TEAM_PLAYER,
+                    'team_player': AIPersonality.TEAM_PLAYER,
+                    'random': AIPersonality.RANDOM
+                }
+                if personality.lower() in personality_map:
+                    personality_traits = AIPersonalityTraits(
+                        personality_map[personality.lower()]
+                    )
                 else:
-                    # 没有指定性格，随机生成
                     personality_traits = AIPersonalityTraits.random_personality()
-                
-                # 创建增强版AI
-                ai_player = EnhancedAIPlayer(ai_id, spawn_x, spawn_y, difficulty, personality_traits)
-                ai_player_name = ai_player.name
-                use_enhanced_ai = True
-                
-            except ImportError:
-                # 如果增强版AI不可用，使用原版AI
-                from ai_player import AIPlayer
-                ai_player = AIPlayer(ai_id, spawn_x, spawn_y, difficulty)
-                ai_player_name = f'AI_{difficulty}_{ai_id}'
-                use_enhanced_ai = False
+            else:
+                personality_traits = AIPersonalityTraits.random_personality()
+
+            from ai_factory import make_ai_player
+            ai_player, backend = make_ai_player(
+                ai_id, spawn_x, spawn_y, difficulty, personality_traits
+            )
+            ai_player_name = ai_player.name
+            use_enhanced_ai = backend != "basic"
             
             # 生成巡逻点（如果方法存在）
             if hasattr(ai_player, 'generate_patrol_points'):
@@ -2317,9 +2303,8 @@ class NetworkManager:
             self.players[ai_id] = player_data
             
             # 生成消息
-            if use_enhanced_ai and personality:
-                personality_name = personality_traits.personality_type.value
-                self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, 性格: {personality_name}, ID: {ai_id})")
+            if backend == "rl":
+                self._send_system_message(f"已添加神经网络AI (ID: {ai_id})")
             elif use_enhanced_ai:
                 personality_name = personality_traits.personality_type.value
                 self._send_system_message(f"已添加AI玩家 (难度: {difficulty}, 性格: {personality_name}, ID: {ai_id})")

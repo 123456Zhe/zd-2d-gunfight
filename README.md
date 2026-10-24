@@ -46,6 +46,11 @@ zd-2d-gunfight/
 ├── ai_behavior_tree.py  # AI行为树系统
 ├── ai_personality.py    # AI个性化系统
 ├── ai_cost_calculator.py # AI代价/掩体计算
+├── rl_ai.py             # 神经网络 AI（纯 numpy 推理 + 观测编码）
+├── ai_factory.py        # AI 后端选择（RL / 行为树 / 基础）
+├── assets/
+│   └── rl_ai_policy.npz # 导出的 PPO 策略权重
+├── rl/                  # RL 训练包（采集/BC/PPO/SAC/评估）
 ├── team.py              # 团队系统模块
 ├── map.py               # 地图和门系统
 ├── weapons.py           # 武器系统（MeleeWeapon, Bullet）
@@ -527,6 +532,24 @@ sudo ufw allow 5555/udp
 ### 功能介绍
 
 AI玩家系统允许你添加智能AI对手进行单人或多人对战。AI会自动巡逻、追击敌人、进行攻击和战术撤退。
+
+### 神经网络 AI（默认）
+
+`.addai` 默认创建神经网络 AI（名称 `AI_RL_<ID>`），不再使用行为树：
+
+- 推理权重：`assets/rl_ai_policy.npz`（由 PPO 训练导出，运行时只用 numpy，不需要 torch）
+- 配置：`settings.json` → `ai.use_rl_ai` / `ai.rl_policy_path` / `ai.rl_fallback`
+- 加载失败时按 `ai.rl_fallback` 自动回退到增强版行为树 AI
+- 神经网络模式会忽略 `.addai` 的难度/性格参数（策略是固定的）
+
+重新导出某个训练好的模型：
+
+```bash
+.venv/bin/python -m rl.export_policy --model rl/models/ppo_mix3_best.zip \
+    --out assets/rl_ai_policy.npz
+```
+
+训练方法、各模型胜率和算法对比见 [`rl/README.md`](rl/README.md)。
 
 ### 快速开始
 

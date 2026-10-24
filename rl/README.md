@@ -47,6 +47,7 @@ python3 -m venv --system-site-packages .venv
 | `train_ppo.py` | PPO 微调 + 定期评估回调（支持每局随机 1~3 对手） |
 | `train_sac.py` | SAC 对照实验（BC actor 热启动 + 蒸馏；当前版本会崩，见第 12 节） |
 | `evaluate.py` | 评估 BC / PPO / SAC / 随机基线 |
+| `export_policy.py` | 把 PPO 策略导出成游戏用的纯 numpy npz |
 
 ## 3. 接口设计
 
@@ -328,3 +329,21 @@ python -m rl.train_ppo --resume rl/checkpoints/ppo_zd_800000_steps.zip \
   需要给 shoot/reload 单独做 Bernoulli 头（混合动作策略），或改用 BC 正则化的
   AWAC/IQL 类算法；标准 Gaussian SAC 不建议继续投入。
 - 速度参考：SAC 4 环境约 194~319 steps/s，PPO 8 环境约 600~760 steps/s。
+
+## 13. 部署到游戏（神经网络 AI）
+
+游戏侧由 `rl_ai.py` 加载导出的 numpy 权重，不依赖 torch / stable-baselines3：
+
+```bash
+.venv/bin/python -m rl.export_policy \
+    --model rl/models/ppo_mix3_best.zip \
+    --out assets/rl_ai_policy.npz
+```
+
+- `settings.json` → `ai.use_rl_ai: true` 时，`.addai` 创建 `AI_RL_<ID>`。
+- `ai.rl_policy_path` 指向权重；`ai.rl_fallback: true` 时加载失败自动回退行为树。
+- `rl_ai.py` 复刻了训练观测（自身 7 维 + 16 射线 + 3 敌人×8 维）和动作应用，
+  并对开火冷却、换弹、队友挡枪线做了游戏侧约束。
+- 一致性校验：numpy 前向与 SB3 `predict(deterministic=True)` 最大误差 `<1e-6`；
+  观测编码与 `HeadlessSim.obs()` 在 grid3x3 / arena 上逐元素一致。
+- 导出权重会随 `build.py` 一起打进发行版（`assets/rl_ai_policy.npz`）。
