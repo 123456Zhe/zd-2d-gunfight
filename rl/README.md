@@ -143,6 +143,10 @@ RL 侧额外支持 `"random"`（每局随机采样），用于泛化。
 | BC（起点） | 0.00 | 38.0 | 6.9 |
 | 内置行为树教师 | ~0.25 | 92~110 | 6.4~9.1 |
 | PPO 300k（对手血量 0.5） | 0.2~0.4 | ~28 | — |
+| v3_best（grid 1v1 close） | 0.83 | 87.3 | 14 |
+| arena2_best（arena 1v1 close） | 0.85 | 91.0 | 18 |
+| arena2_best（arena 1v2 close） | 0.72 | 167.6 | 30 |
+| arena2_best（grid 1v2 close） | 0.72 | 172.4 | 21 |
 
 - BC 明显强于随机，达到教师的 ~40%——作为热启动是合格的。
 - 交战状态下瞄准误差中位数仅 **8°**、有视线时开火率 **89~99%**，说明观测/动作/机制都正常。
@@ -168,10 +172,13 @@ RL 侧额外支持 `"random"`（每局随机采样），用于泛化。
 ## 9. 产出的文件
 
 ```
-rl/data/teacher.npz        # 教师数据集
-rl/models/bc_policy.pt     # 行为克隆权重
-rl/models/ppo_zd.zip       # PPO 权重（SB3 格式）
-rl/checkpoints/            # 训练中途检查点
+rl/data/teacher.npz          # 教师数据集
+rl/models/bc_policy.pt       # 行为克隆权重
+rl/models/ppo_zd.zip         # PPO 权重（SB3 格式）
+rl/models/ppo_v3_best.zip    # grid close 1v1 最佳
+rl/models/ppo_arena2_best.zip # arena close 1v2 最佳（950k）
+rl/checkpoints/              # 训练中途检查点
+rl/checkpoints_arena2/       # arena 遭遇战训练检查点
 ```
 
 游戏本身不受影响：`Map()` 默认仍是 `grid3x3`，`settings.json` 的 `map.type` 也是 `grid3x3`。
@@ -244,3 +251,33 @@ python -m rl.train_ppo --resume rl/checkpoints/ppo_zd_800000_steps.zip \
 - 量级：整局 1300 步全程苟着约 **-2.3**（对比：赢一局 +1.0、打 1 点伤害 +0.01），
   而正常找人 300 步只花约 -0.08、真交火的局几乎不触发；`--camp-penalty 0` 可完全关闭。
 - `info` 里多了 `engaged` / `steps_since_engage`，方便监控苟着比例。
+
+## 11. 遭遇战 / 多人遭遇战（arena + close）
+
+“找人”是地图设计问题，所以先在不要求搜索的 arena 地图上、close 出生专练交战。
+
+```bash
+.venv/bin/python -m rl.train_ppo \
+    --resume rl/models/ppo_v3_best.zip \
+    --timesteps 850000 --n-envs 8 \
+    --map-type arena --spawn-mode close --opponents 2 --difficulty hard \
+    --selfplay-prob 0.2 --selfplay-sync 100000 \
+    --eval-freq 50000 --eval-episodes 20 \
+    --damage-taken-weight 0.003 --warmup-steps 0 \
+    --out rl/models/ppo_arena2 --ckpt-dir rl/checkpoints_arena2
+```
+
+同种子复评（新模型 `ppo_arena2_best` vs 旧 `ppo_v3_best`）：
+
+| 场景 | 旧胜率 | 新胜率 | 新输出伤害 |
+|------|------|------|------|
+| arena 1v2 close | 0.48 | **0.72** | 167.6 |
+| arena 1v1 close | 0.60（20 局） | **0.85**（20 局） | 91.0 |
+| grid3x3 1v2 close | 0.48 | **0.72** | 172.4 |
+
+- 训练中每 50k 做一次 20 局 eval，波动较大：150k 时 0.20，550k 0.75，950k 0.85，1M 0.80。
+- `--selfplay-prob 0.2`：20% 的局把对手换成当前策略快照，其余仍是脚本 hard，
+  既引入比教师更强的对手，又不脱离脚本 AI 的分布。
+- 教师是脚本行为树，和人类差距很大，不能只靠模仿。这轮从已经强于教师的
+  `ppo_v3_best` 续训并加入自对弈；下一阶段可把 `--selfplay-prob` 提到 0.5，
+  并随机 1~3 个对手做混编。
