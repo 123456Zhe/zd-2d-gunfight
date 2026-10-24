@@ -12,6 +12,15 @@ from config import get as cfg_get
 
 _SAMPLE_RATE = 22050
 
+# int16 边界：噪声/混音的理论峰值会超过 32767，直接 append 到 array('h') 会
+# 抛 OverflowError（音频设备可用时启动即崩），所以所有采样都要夹一下。
+_SAMPLE_MIN = -32768
+_SAMPLE_MAX = 32767
+
+
+def _clamp16(value):
+    return max(_SAMPLE_MIN, min(_SAMPLE_MAX, int(value)))
+
 
 def _sine_buffer(freq, duration, volume=0.5, decay=6.0, freq_end=None):
     """生成带指数衰减包络的正弦波（可选滑音）"""
@@ -23,7 +32,7 @@ def _sine_buffer(freq, duration, volume=0.5, decay=6.0, freq_end=None):
         f = freq if freq_end is None else freq + (freq_end - freq) * t
         phase += 2.0 * math.pi * f / _SAMPLE_RATE
         env = math.exp(-decay * t)
-        buf.append(int(32767 * volume * env * math.sin(phase)))
+        buf.append(_clamp16(32767 * volume * env * math.sin(phase)))
     return buf
 
 
@@ -37,7 +46,7 @@ def _noise_buffer(duration, volume=0.5, decay=8.0, lowpass=0.35):
         sample = random.uniform(-1.0, 1.0)
         last = last + lowpass * (sample - last)
         env = math.exp(-decay * t)
-        buf.append(int(32767 * volume * env * last * 2.2))
+        buf.append(_clamp16(32767 * volume * env * last * 2.2))
     return buf
 
 
@@ -48,7 +57,7 @@ def _click_buffer(duration=0.03, volume=0.4):
     for i in range(n):
         t = i / n
         env = math.exp(-40.0 * t)
-        buf.append(int(32767 * volume * env * math.sin(2 * math.pi * 2200 * i / _SAMPLE_RATE)))
+        buf.append(_clamp16(32767 * volume * env * math.sin(2 * math.pi * 2200 * i / _SAMPLE_RATE)))
     return buf
 
 def _mix(*bufs):
@@ -58,7 +67,7 @@ def _mix(*bufs):
     for b in bufs:
         for i, s in enumerate(b):
             v = out[i] + s
-            out[i] = max(-32768, min(32767, v))
+            out[i] = _clamp16(v)
     return out
 
 
