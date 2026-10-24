@@ -292,7 +292,12 @@ def main():
     ap = argparse.ArgumentParser(description="PPO 微调 ZD 枪战 AI")
     ap.add_argument("--timesteps", type=int, default=1_000_000)
     ap.add_argument("--n-envs", type=int, default=8)
-    ap.add_argument("--opponents", type=int, default=1)
+    ap.add_argument("--opponents", type=int, default=1,
+                    help="固定对手数；与 --opponents-min/max 同用时作为默认值")
+    ap.add_argument("--opponents-min", type=int, default=None,
+                    help="每局最少对手数（与 max 一起启用 1~3 混编）")
+    ap.add_argument("--opponents-max", type=int, default=None,
+                    help="每局最多对手数（上限 3，受观测槽位限制）")
     ap.add_argument("--difficulty", default="normal")
     ap.add_argument("--max-episode-steps", type=int, default=1800)
     ap.add_argument("--spawn-mode", default="mixed",
@@ -349,6 +354,9 @@ def main():
                     help="扣分随苟着时长增长的倍数上限")
     args = ap.parse_args()
 
+    opp_min = args.opponents if args.opponents_min is None else args.opponents_min
+    opp_max = args.opponents if args.opponents_max is None else args.opponents_max
+
     reward_overrides = {
         "win": args.win_reward,
         "kill": args.kill_reward,
@@ -362,10 +370,11 @@ def main():
         "camp_max_mult": args.camp_max_mult,
     }
     env_fns = [
-        make_env(i, args.seed, args.opponents, args.difficulty,
+        make_env(i, args.seed, opp_max, args.difficulty,
                  args.max_episode_steps, args.spawn_mode, args.map_type,
                  args.opponent_hp, selfplay_prob=args.selfplay_prob,
-                 reward_overrides=reward_overrides)
+                 reward_overrides=reward_overrides,
+                 opponents_min=opp_min, opponents_max=opp_max)
         for i in range(args.n_envs)
     ]
     vec_env = SubprocVecEnv(env_fns) if args.n_envs > 1 else DummyVecEnv(env_fns)
@@ -404,7 +413,7 @@ def main():
     callbacks.append(EvalCallback(
         eval_freq=args.eval_freq,
         episodes=args.eval_episodes,
-        n_opponents=args.opponents,
+        n_opponents=opp_max,
         difficulty=args.difficulty,
         max_episode_steps=args.max_episode_steps,
         map_type=args.map_type,
@@ -421,7 +430,7 @@ def main():
 
     print("=" * 72, flush=True)
     print(f"TRAINING STARTED  timesteps={args.timesteps} envs={args.n_envs} "
-          f"opponents={args.opponents}({args.difficulty}) "
+          f"opponents={opp_min}~{opp_max}({args.difficulty}) "
           f"map={args.map_type} spawn={args.spawn_mode} "
           f"opp_hp={args.opponent_hp} "
           f"curriculum={args.curriculum or '-'} "

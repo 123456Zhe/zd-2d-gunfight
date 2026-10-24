@@ -43,6 +43,18 @@ def _ppo_policy(path):
     return policy
 
 
+def _sac_policy(path):
+    from stable_baselines3 import SAC
+
+    model = SAC.load(path, device="cpu")
+
+    def policy(obs):
+        action, _ = model.predict(obs, deterministic=True)
+        return action
+
+    return policy
+
+
 def _random_policy(rng):
     def policy(obs):
         return rng.uniform(-1.0, 1.0, size=ACTION_DIM).astype(np.float32)
@@ -108,6 +120,7 @@ def main():
     ap = argparse.ArgumentParser(description="评估策略")
     ap.add_argument("--bc", default=None)
     ap.add_argument("--ppo", default=None)
+    ap.add_argument("--sac", default=None)
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--opponents", type=int, default=1)
     ap.add_argument("--difficulty", default="normal")
@@ -140,6 +153,8 @@ def main():
         print(_fmt("BC", evaluate(_bc_policy(args.bc), **common)))
     if args.ppo and os.path.exists(args.ppo):
         print(_fmt("PPO", evaluate(_ppo_policy(args.ppo), **common)))
+    if args.sac and os.path.exists(args.sac):
+        print(_fmt("SAC", evaluate(_sac_policy(args.sac), **common)))
 
 
 if __name__ == "__main__":

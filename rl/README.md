@@ -44,8 +44,9 @@ python3 -m venv --system-site-packages .venv
 | `env.py` | Gymnasium 封装（`Box` 观测/动作 + `make_env` 工厂，供 `SubprocVecEnv` 使用） |
 | `collect.py` | 行为树教师数据采集（多进程） |
 | `bc.py` | 行为克隆（网络结构与 SB3 `MlpPolicy(net_arch=[256,256])` 对齐，权重可直灌） |
-| `train_ppo.py` | PPO 微调 + 定期评估回调 |
-| `evaluate.py` | 评估 BC / PPO / 随机基线 |
+| `train_ppo.py` | PPO 微调 + 定期评估回调（支持每局随机 1~3 对手） |
+| `train_sac.py` | SAC 对照实验（BC actor 热启动 + 蒸馏；当前版本会崩，见第 12 节） |
+| `evaluate.py` | 评估 BC / PPO / SAC / 随机基线 |
 
 ## 3. 接口设计
 
@@ -177,6 +178,8 @@ rl/models/bc_policy.pt       # 行为克隆权重
 rl/models/ppo_zd.zip         # PPO 权重（SB3 格式）
 rl/models/ppo_v3_best.zip    # grid close 1v1 最佳
 rl/models/ppo_arena2_best.zip # arena close 1v2 最佳（950k）
+rl/models/ppo_mix3_best.zip  # arena 1~3 对手 + 50% 自对弈最佳（1.35M）
+rl/models/sac_arena2b_best.zip # SAC 对照组最佳（仅 25k，0.30）
 rl/checkpoints/              # 训练中途检查点
 rl/checkpoints_arena2/       # arena 遭遇战训练检查点
 ```
@@ -279,5 +282,49 @@ python -m rl.train_ppo --resume rl/checkpoints/ppo_zd_800000_steps.zip \
 - `--selfplay-prob 0.2`：20% 的局把对手换成当前策略快照，其余仍是脚本 hard，
   既引入比教师更强的对手，又不脱离脚本 AI 的分布。
 - 教师是脚本行为树，和人类差距很大，不能只靠模仿。这轮从已经强于教师的
-  `ppo_v3_best` 续训并加入自对弈；下一阶段可把 `--selfplay-prob` 提到 0.5，
-  并随机 1~3 个对手做混编。
+  `ppo_v3_best` 续训并加入自对弈。
+
+### 1~3 对手混编 + 50% 自对弈
+
+在上一轮基础上继续提高对抗强度：每局随机 1~3 个对手，50% 概率整局换成当前策略快照。
+
+```bash
+.venv/bin/python -m rl.train_ppo \
+    --resume rl/models/ppo_arena2_best.zip \
+    --timesteps 500000 --n-envs 8 \
+    --map-type arena --spawn-mode close --difficulty hard \
+    --opponents 3 --opponents-min 1 --opponents-max 3 \
+    --selfplay-prob 0.5 --selfplay-sync 100000 \
+    --eval-freq 50000 --eval-episodes 20 \
+    --damage-taken-weight 0.003 --warmup-steps 0 \
+    --out rl/models/ppo_mix3 --ckpt-dir rl/checkpoints_mix3
+```
+
+同种子复评（`ppo_arena2_best` → `ppo_mix3_best`）：
+
+| 场景 | 旧胜率 | 新胜率 | 旧伤害 | 新伤害 |
+|------|------|------|------|------|
+| arena 3v1 close | 0.67（30 局） | **0.70**（20 局） | 222.7 | 256.0 |
+| arena 2v1 close | 0.67（30 局） | **0.85**（20 局） | 163.3 | 187.0 |
+| arena 1v1 close | 0.90（20 局） | 0.85（20 局） | 96.0 | 93.0 |
+| grid3x3 3v1 close | 0.40（30 局） | **0.50**（30 局） | 205.3 | 218.0 |
+
+训练中 eval 在 1.35M 步达到 0.95（3 对手、20 局），波动较大；最终 1.45M 收尾 0.80。
+混编主要提升多人场景和 grid 泛化，1v1 基本持平。
+
+## 12. SAC 对照实验（负结果）
+
+`rl/train_sac.py` 用 SAC 从 BC actor 热启动，在相同 arena/close/奖励下训练。两版配置都失败了：
+
+| 配置 | 25k | 50k | 75k | 100k+ |
+|------|------|------|------|------|
+| auto 熵，8 环境，4 grad steps | 0.05 | 0.10 | 0.00 | 0.00 |
+| ent=0.001，4 环境，1 grad step，actor 预热 25k | 0.30 | 0.00 | 0.00 | — |
+
+- 失败模式一致：actor 解冻后很快退化成“不开火、拖到超时”，eval 伤害掉到 1~12。
+- 原因是动作空间是 **4 连续 + 2 二值**（shoot/reload）。SAC 的对角高斯把二值维也当连续量，
+  熵项/价值梯度会把 shoot 的均值推回 0；预训练权重只能短暂维持。
+- 结论：这个混合动作空间下，**PPO（on-policy + BC 热启动）明显更稳**。要让 SAC 可用，
+  需要给 shoot/reload 单独做 Bernoulli 头（混合动作策略），或改用 BC 正则化的
+  AWAC/IQL 类算法；标准 Gaussian SAC 不建议继续投入。
+- 速度参考：SAC 4 环境约 194~319 steps/s，PPO 8 环境约 600~760 steps/s。

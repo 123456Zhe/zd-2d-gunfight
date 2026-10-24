@@ -50,12 +50,23 @@ class ZDGunfightEnv(gym.Env):
     def __init__(self, n_opponents=1, opponent_difficulty="normal",
                  max_episode_steps=1800, spawn_mode="mixed",
                  map_type="grid3x3", opponent_hp_fraction=1.0,
-                 selfplay_prob=0.0, reward_overrides=None):
+                 selfplay_prob=0.0, reward_overrides=None,
+                 opponents_min=None, opponents_max=None):
         super().__init__()
         self.spawn_mode = spawn_mode
         self.map_type = map_type
         self.opponent_hp_fraction = opponent_hp_fraction
         self.selfplay_prob = float(selfplay_prob)
+        self.opponents_min = int(
+            n_opponents if opponents_min is None else opponents_min
+        )
+        self.opponents_max = int(
+            n_opponents if opponents_max is None else opponents_max
+        )
+        self.opponents_min = max(1, min(3, self.opponents_min))
+        self.opponents_max = max(1, min(3, self.opponents_max))
+        if self.opponents_min > self.opponents_max:
+            self.opponents_min = self.opponents_max
         self.policy = SnapshotPolicy()
         self.selfplay_episodes = 0
         self.sim = HeadlessSim(
@@ -95,9 +106,14 @@ class ZDGunfightEnv(gym.Env):
             and self.policy.ready
             and float(self.np_random.random()) < self.selfplay_prob
         )
+        n_opponents = options.get("n_opponents")
+        if n_opponents is None:
+            n_opponents = int(self.np_random.integers(
+                self.opponents_min, self.opponents_max + 1
+            ))
         obs = self.sim.reset(
             seed=seed,
-            n_opponents=options.get("n_opponents"),
+            n_opponents=n_opponents,
             opponent_difficulty=options.get("opponent_difficulty"),
             spawn_mode=options.get("spawn_mode", self.spawn_mode),
             map_type=options.get("map_type", self.map_type),
@@ -106,7 +122,11 @@ class ZDGunfightEnv(gym.Env):
         self._episode_count += 1
         if use_selfplay:
             self.selfplay_episodes += 1
-        return obs, {"seed": seed, "selfplay": use_selfplay}
+        return obs, {
+            "seed": seed,
+            "selfplay": use_selfplay,
+            "n_opponents": n_opponents,
+        }
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.sim.step(action)
@@ -118,7 +138,8 @@ class ZDGunfightEnv(gym.Env):
 
 def make_env(rank=0, seed=0, n_opponents=1, opponent_difficulty="normal",
              max_episode_steps=1800, spawn_mode="mixed", map_type="grid3x3",
-             opponent_hp_fraction=1.0, selfplay_prob=0.0, reward_overrides=None):
+             opponent_hp_fraction=1.0, selfplay_prob=0.0, reward_overrides=None,
+             opponents_min=None, opponents_max=None):
     """返回一个可被 SubprocVecEnv（cloudpickle）序列化的环境构造器。"""
 
     def _init():
@@ -131,6 +152,8 @@ def make_env(rank=0, seed=0, n_opponents=1, opponent_difficulty="normal",
             opponent_hp_fraction=opponent_hp_fraction,
             selfplay_prob=selfplay_prob,
             reward_overrides=reward_overrides,
+            opponents_min=opponents_min,
+            opponents_max=opponents_max,
         )
         env = EpisodeStats(env)
         env.reset(seed=seed + rank)
