@@ -1182,10 +1182,15 @@ class Game:
                     # 同步状态（包括武器类型和瞄准状态）
                     other_player.sync_from_network(pdata)
 
-            # 服务端定期广播
-            self.network_manager.update_and_broadcast()
+            # 客户端：子弹位置按服务端 20Hz 快照对齐，两次快照之间由
+            # Bullet.update 做本地外推
+            if not self.network_manager.is_server:
+                self.sync_bullets()
 
-            # 同步子弹
+        # 服务端权威模拟每帧推进（内部广播仍按 20Hz 节流）。
+        # 放在 20Hz 同步块之外，保证高速子弹的命中检测和主机端渲染都按帧更新。
+        self.network_manager.update_and_broadcast()
+        if self.network_manager.is_server:
             self.sync_bullets()
 
         # AI 独立节拍：每帧更新，不再绑定 20Hz 网络同步节拍
