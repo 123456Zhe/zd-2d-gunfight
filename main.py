@@ -40,6 +40,7 @@ else:
 from map import Map, Door
 import map as map_module
 from camera import Camera
+from config import get as cfg_get
 
 # 视野射线长度上限：覆盖整张地图对角线，等效于取消视距限制
 # （射线仍会被墙壁和门板挡住，只是不再有固定长度截断）
@@ -931,24 +932,25 @@ class Game:
             return
 
         # 非聊天模式下的标准处理
+        bindings = cfg_get("controls.bindings", None) or {}
+        k_chat = get_binding(bindings, "chat", "y")
+        k_switch = get_binding(bindings, "switch_weapon", "3")
+        k_reload = get_binding(bindings, "reload", "r")
+        k_grenade = get_binding(bindings, "grenade", "g")
         for event in events:
             if event.type == QUIT:
                 self.running = False
             elif event.type == KEYDOWN:
                 if event.key == K_ESCAPE:
                     self.open_pause_menu()
-                elif event.key == K_y:  # 按Y开启聊天
+                elif event.key == k_chat:
                     self.chat_active = True
                     self.chat_menu_manager.enable()
-                elif event.key == K_3:  # 按3切换武器
+                elif event.key == k_switch:
                     if self.player and not self.player.is_dead:
                         self.player.switch_weapon()
-                elif event.key == K_UP:  # 非聊天模式下，上下键用于滚动查看历史
-                    self.chat_history_manager.scroll_up()
-                elif event.key == K_DOWN:
-                    self.chat_history_manager.scroll_down()
                 elif (
-                    event.key == K_r
+                    event.key == k_reload
                     and not self.player.is_reloading
                     and not self.player.is_dead
                     and self.player.weapon_type == "gun"
@@ -959,7 +961,7 @@ class Game:
                     self.debug_mode = not self.debug_mode
                 elif event.key == K_F4:  # 切换视角显示
                     self.show_vision = not self.show_vision
-                elif event.key == K_g:  # 按G投掷手雷
+                elif event.key == k_grenade:
                     if self.player and not self.player.is_dead and hasattr(self.player, 'grenades'):
                         if self.player.grenades > 0:
                             # 沿当前朝向投掷
@@ -981,10 +983,14 @@ class Game:
                 elif event.button == 3 and not self.player.is_dead:  # 右键按下
                     if self.player.weapon_type == "melee":  # 近战武器时触发重击
                         self.player.start_melee_attack(is_heavy=True)
+                    else:  # 枪械：右键开镜
+                        self.player.mouse_aiming = True
             elif event.type == MOUSEBUTTONUP:
                 if event.button == 1:  # 左键释放
                     if self.player.weapon_type != "melee":  # 非近战武器时停止射击
                         self.player.mouse_shooting = False
+                elif event.button == 3:
+                    self.player.mouse_aiming = False
 
     def update(self, dt):
         # 检查网络连接状态
@@ -1027,6 +1033,7 @@ class Game:
             self.network_manager,
             all_players,
             chat_active=self.chat_active,
+            camera=self.camera,
         )
         
         # 更新道具效果
@@ -1192,12 +1199,13 @@ class Game:
             interpolate_network_player(other_player, now_interp)
 
         # 更新子弹
-        for bullet in list(self.bullets):
-            if bullet.update(dt, self.game_map, all_players, self.network_manager):
-                self.bullets.remove(bullet)
-                # 通知服务器移除子弹
-                if self.network_manager.is_server:
-                    self.network_manager.remove_bullet(bullet.id)
+        # 服务端：位置/命中/伤害已由 update_and_broadcast 里的 _simulate_bullets
+        # 权威推进。这里再做一次本地预测会“提前一帧”撞到玩家并删除权威子弹，
+        # 导致真正命中的那一帧无弹可结算（表现为子弹穿过敌人不掉血）。
+        if not self.network_manager.is_server:
+            for bullet in list(self.bullets):
+                if bullet.update(dt, self.game_map, all_players, self.network_manager):
+                    self.bullets.remove(bullet)
         
         # 手雷位置由服务端权威同步；客户端在两次同步之间做本地外推，消除 20Hz 跳变
         # （服务端主机在 update_and_broadcast 中已按帧推进，无需再外推）
@@ -1226,8 +1234,11 @@ class Game:
 
         target_center = self.camera_follow + self.player.aim_offset
 
-        # 相机跟随朝向旋转：玩家正前方始终朝向屏幕上方
-        angle = (90.0 - self.player.angle) % 360 if ROTATE_CAMERA else 0.0
+        # 相机旋转只属于经典坦克操作。twinstick 的鼠标瞄准按“屏幕方向=世界方向”
+        # 计算，相机若跟着转会把瞄准方向带偏，因此该模式固定不旋转。
+        scheme = cfg_get("controls.scheme", "twinstick")
+        rotate_camera = ROTATE_CAMERA and scheme == "classic"
+        angle = (90.0 - self.player.angle) % 360 if rotate_camera else 0.0
         self.camera.set_view(target_center, angle)
         # 门音效的听者位置：本地玩家（用于距离衰减）
         map_module.DOOR_SOUND_LISTENER = self.player.pos
@@ -1698,15 +1709,21 @@ class Game:
     def sync_bullets(self):
         """同步子弹 - 完全基于服务器数据"""
         network_bullets = self.network_manager.get_bullets()
-
-        # 获取当前子弹ID集合
-        current_bullet_ids = {b.id for b in self.bullets}
-        network_bullet_ids = {b["id"] for b in network_bullets}
+        network_by_id = {b["id"]: b for b in network_bullets}
 
         # 移除不在网络列表中的子弹
-        self.bullets = [b for b in self.bullets if b.id in network_bullet_ids]
+        self.bullets = [b for b in self.bullets if b.id in network_by_id]
+
+        # 已有子弹对齐到服务端权威位置（服务端不再做本地预测推进；
+        # 客户端也借此修正两次快照之间的外推误差）
+        for bullet in self.bullets:
+            data = network_by_id[bullet.id]
+            pos = data.get("pos")
+            if pos and len(pos) == 2:
+                bullet.pos.update(pos[0], pos[1])
 
         # 添加新子弹
+        current_bullet_ids = {b.id for b in self.bullets}
         for bullet_data in network_bullets:
             if bullet_data["id"] not in current_bullet_ids:
                 # 使用游戏规则中的子弹速度

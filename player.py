@@ -431,6 +431,8 @@ class Player:
         # 重置武器和瞄准状态
         self.weapon_type = "gun"
         self.is_aiming = False
+        self.mouse_shooting = False
+        self.mouse_aiming = False
         self.aim_offset = pygame.Vector2(0, 0)
         self.aim_offset_length = 0.0
         
@@ -543,6 +545,9 @@ class Player:
                 # 操作方案：twinstick（默认）= WASD 移动 + 鼠标瞄准；classic = 坦克式
                 scheme = cfg_get("controls.scheme", "twinstick")
                 bindings = cfg_get("controls.bindings", None) or {}
+                k_shoot = get_binding(bindings, "shoot", "up")
+                k_aim = get_binding(bindings, "aim", "space")
+                k_reload = get_binding(bindings, "reload", "r")
                 
                 # 抓门 / 推门
                 self.update_door_control(dt, game_map, network_manager, keys,
@@ -557,9 +562,8 @@ class Player:
                         cfg_get("aiming.sensitivity", 1.0)
                     self.angle = turn_angle_toward(self.angle, self.aim_angle,
                                                       turn_speed * dt)
-                    # 左键射击；空格 / 右键开镜（仅枪械）
-                    self.shooting = self.mouse_shooting
-                    k_aim = get_binding(bindings, "aim", "space")
+                    # 左键或射击键开火；右键 / 瞄准键开镜（仅枪械）
+                    self.shooting = self.mouse_shooting or bool(keys[k_shoot])
                     self.is_aiming = (self.mouse_aiming or keys[k_aim]) \
                         and self.weapon_type == "gun"
                 else:
@@ -587,12 +591,11 @@ class Player:
                             self.angle = (self.angle + turn_rate * dt) % 360
                 
                     # 开火键或鼠标左键
-                    k_shoot = get_binding(bindings, "shoot", "up")
                     self.shooting = bool(keys[k_shoot]) or self.mouse_shooting
                 
                     # 开镜（仅枪械）
-                    k_aim = get_binding(bindings, "aim", "space")
-                    self.is_aiming = bool(keys[k_aim]) and self.weapon_type == "gun"
+                    self.is_aiming = (bool(keys[k_aim]) or self.mouse_aiming) \
+                        and self.weapon_type == "gun"
                 
                 # 更新瞄准偏移
                 self.update_aim_offset()
@@ -602,16 +605,17 @@ class Player:
                 k_left = get_binding(bindings, "move_left", "a")
                 k_right = get_binding(bindings, "move_right", "d")
                 if scheme == "twinstick":
-                    # 相机不旋转：WASD / 方向键对应屏幕方向；抓门时只推门不移动
+                    # 相机不旋转：WASD 对应屏幕方向；抓门时只推门不移动
+                    # 方向键留给射击/其他绑定，避免和 "shoot": "up" 冲突
                     move_dir = pygame.Vector2(0, 0)
                     if self.controlled_door is None:
-                        if keys[k_up] or keys[K_UP]:
+                        if keys[k_up]:
                             move_dir.y -= 1
-                        if keys[k_down] or keys[K_DOWN]:
+                        if keys[k_down]:
                             move_dir.y += 1
-                        if keys[k_left] or keys[K_LEFT]:
+                        if keys[k_left]:
                             move_dir.x -= 1
-                        if keys[k_right] or keys[K_RIGHT]:
+                        if keys[k_right]:
                             move_dir.x += 1
                 else:
                     # 键盘控制移动（WASD 相对视角：W 为屏幕正上方）
@@ -748,7 +752,7 @@ class Player:
                             self.sound_volume = 0.4  # 近战攻击声音音量（略小于射击）
                 
                 # 换弹控制
-                if (keys[K_r] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE and self.weapon_type == "gun":
+                if (keys[k_reload] or self.ammo <= 0) and not self.is_reloading and self.ammo < MAGAZINE_SIZE and self.weapon_type == "gun":
                     self.is_reloading = True
                     self.reload_start = current_time
                     

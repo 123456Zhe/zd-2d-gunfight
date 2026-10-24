@@ -1177,12 +1177,14 @@ class ControlHintsManager:
         self.interact_text = f"点按{k_interact}开关门 · 长按{k_interact}抓门"
 
         # 武器提示
+        k_shoot = key_display_name(get_binding(bindings, "shoot", "up"))
+        k_aim = key_display_name(get_binding(bindings, "aim", "space"))
         if scheme == "twinstick":
             self.weapon_text = "WASD移动 · 鼠标瞄准 · 左键射击 · 右键瞄准"
         elif player.weapon_type == "gun":
-            self.weapon_text = "←→转向 ↑射击 空格瞄准"
+            self.weapon_text = f"←→转向 {k_shoot}射击 {k_aim}瞄准"
         else:
-            self.weapon_text = "←→转向 ↑近战攻击"
+            self.weapon_text = f"←→转向 {k_shoot}近战攻击"
 
         k_switch = key_display_name(get_binding(bindings, "switch_weapon", "3"))
         k_chat = key_display_name(get_binding(bindings, "chat", "y"))
